@@ -4,9 +4,9 @@
 // Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
-use aisimulate_core::engine::{Backend, EngineConfig, KvEventData, TimingModelConfig};
-use aisimulate_core::replay::loadgen::ReplayRequestHashes;
-use aisimulate_core::replay::{
+use aisim_core::engine::{Backend, EngineConfig, KvEventData, TimingModelConfig};
+use aisim_core::replay::loadgen::ReplayRequestHashes;
+use aisim_core::replay::{
     CURRENT_REPLAY_SPEC_VERSION, ReplayArtifactKvEventVisibility, ReplayCaptureOptions,
     ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayRequest, ReplaySpec,
     ReplayTopology, Replayer, WorkerPoolSpec,

@@ -414,7 +414,7 @@ impl AfdForwardPassPerfModel {
         // confusing partition errors.
         let (architecture, shape) = pyo3::Python::with_gil(|py| {
             use pyo3::prelude::PyAnyMethods;
-            let module = py.import("aisimulate_core.sdk.models.afd")?;
+            let module = py.import("aisim_core.sdk.models.afd")?;
             let info = module
                 .getattr("_get_afd_model_info")?
                 .call1((config.model.as_str(),))?;
@@ -1152,8 +1152,7 @@ mod tests {
     /// Repo systems root (committed parquet data), mirroring the readiness
     /// tests' CARGO_MANIFEST_DIR-relative access.
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
     }
 
     fn golden_dir() -> PathBuf {

@@ -22,14 +22,14 @@ FILES = {
     "Cargo.toml",
     "Cargo.lock",
     "crates/core/Cargo.toml",
-    "python/aisimulate/pyproject.toml",
-    "python/aisimulate/uv.lock",
+    "python/aisim/pyproject.toml",
+    "python/aisim/uv.lock",
 }
 PREFIXES = (
     "crates/core/src/",
-    "python/aisimulate/src/aisimulate/",
-    "python/aisimulate/src/aisimulate_core/",
-    "python/aisimulate/tools/simulation_perf_gate/",
+    "python/aisim/src/aisim/",
+    "python/aisim/src/aisim_core/",
+    "python/aisim/tools/simulation_perf_gate/",
 )
 
 

@@ -5,8 +5,8 @@
 
 import pytest
 
-import aisimulate.sweeper.kv_estimate as kv_estimate_mod
-from aisimulate.sweeper.kv_estimate import (
+import aisim.sweeper.kv_estimate as kv_estimate_mod
+from aisim.sweeper.kv_estimate import (
     IllegalParallelShape,
     NoPerfDatabase,
     estimate_kv_tokens,
@@ -14,7 +14,7 @@ from aisimulate.sweeper.kv_estimate import (
     memory_fraction_kind,
     resolve_backend_version,
 )
-from aisimulate.sweeper.parallel_enum import ParallelShape
+from aisim.sweeper.parallel_enum import ParallelShape
 
 _COMMON = {
     "model_name": "m",
@@ -119,7 +119,7 @@ def test_estimate_kv_tokens_flags_tp_that_does_not_split_heads(monkeypatch):
 
 def test_feasible_shape_tokens_skips_and_logs_illegal_tp(monkeypatch, caplog):
     monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", _reject_tp16)
-    caplog.set_level("WARNING", logger="aisimulate.sweeper.kv_estimate")
+    caplog.set_level("WARNING", logger="aisim.sweeper.kv_estimate")
     tp8 = ParallelShape(tp=8, dp=1, moe_tp=1, moe_ep=8)
     tp16 = ParallelShape(tp=16, dp=1, moe_tp=1, moe_ep=16)
     tp2 = ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=2)  # 20000 tokens, short of 25000
@@ -139,7 +139,7 @@ def test_feasible_shape_tokens_skips_and_logs_illegal_tp(monkeypatch, caplog):
 
 def test_feasible_shape_tokens_resolves_version_when_missing(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.kv_estimate.get_latest_database_version",
+        "aisim.sweeper.kv_estimate.get_latest_database_version",
         lambda *a, **k: None,
     )
     with pytest.raises(NoPerfDatabase):
@@ -154,7 +154,7 @@ def test_feasible_shape_tokens_resolves_version_when_missing(monkeypatch):
 
 def test_resolve_backend_version_missing(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.kv_estimate.get_latest_database_version",
+        "aisim.sweeper.kv_estimate.get_latest_database_version",
         lambda *a, **k: None,
     )
     with pytest.raises(NoPerfDatabase):

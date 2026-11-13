@@ -52,7 +52,7 @@ jobs:
   resolve:
     name: Resolve exact accuracy source
     if: >-
-      github.repository == 'ai-dynamo/aisimulate' &&
+      github.repository == 'ai-dynamo/aisim' &&
       (github.ref == 'refs/heads/main' ||
       (github.event_name == 'workflow_dispatch' && inputs.preview && startsWith(github.ref, 'refs/heads/pull-request/')))
     runs-on: ubuntu-24.04

@@ -4,9 +4,9 @@
 // original paths: root THIRD_PARTY_NOTICES.md (AISimulate heterogeneous AFD).
 // Source: https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
 
-//! Typed system hardware spec parsed from `python/aisimulate/src/aisimulate_core/systems/*.yaml`.
+//! Typed system hardware spec parsed from `python/aisim/src/aisim_core/systems/*.yaml`.
 //!
-//! Mirrors `aisimulate.sdk.system_spec.SystemSpec`. The Python type
+//! Mirrors `aisim.sdk.system_spec.SystemSpec`. The Python type
 //! subclasses `dict`; the Rust port uses a typed struct because every
 //! downstream consumer here needs typed field access. The on-disk YAML schema
 //! is the contract; struct layout follows the YAML shape one-to-one.
@@ -286,7 +286,7 @@ mod tests {
         // dir is two levels up.
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems")
+            .join("python/aisim/src/aisim_core/systems")
     }
 
     #[test]

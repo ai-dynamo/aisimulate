@@ -124,7 +124,7 @@ def configure_scenario_interpolation(request: Any, artifact: Any, prepared: Any)
 def is_interpolation_support_miss(error: Exception) -> bool:
     """Recognize only typed, explicit domain misses; retain native capability errors."""
     try:
-        from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+        from aisim_core.sdk.errors import PerfDataNotAvailableError
     except ImportError:
         return False
     if not isinstance(error, PerfDataNotAvailableError):

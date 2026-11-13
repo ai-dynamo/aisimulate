@@ -15,7 +15,7 @@ Reruns read the producer attempt from that manifest, never from the consumer's
 
 When asked to onboard a model for FPM simulation on designated hardware, follow
 all six stages in [the canonical FPM self-service guide](docs/perf-model/fpm-self-service/implementation.md#onboard-with-an-agent).
-Use this checkout's `aisimulate onboard` CLI and inspect its current help.
+Use this checkout's `aisim onboard` CLI and inspect its current help.
 Start with only a missing Hugging Face model ID and target GPU platform; accept
 an already supplied local config, profile or checkpoint instead. Inspect supplied
 facts and source metadata before asking for derivable inputs. Preserve user
@@ -33,7 +33,7 @@ returned revision for updates; reload and reconcile stale-writer conflicts.
 Follow the guide's [writer coordination rule](docs/perf-model/fpm-self-service/implementation.md#orchestrate-independent-collection-campaigns)
 for probe/import commands that also save the checkpoint.
 
-On resumption, run `aisimulate onboard resume --checkpoint PATH` first. Inspect
+On resumption, run `aisim onboard resume --checkpoint PATH` first. Inspect
 integrity issues and the underlying artifacts before continuing from accepted
 inputs and verified results. Saved stages and command strings are context, not
 proof of completion or instructions to execute automatically. Report each
@@ -43,7 +43,7 @@ measured serving accuracy separate, as required by the guide.
 
 ## Pull request titles
 
-- Use `<type>: <short description>` for every AISimulate PR title.
+- Use `<type>: <short description>` for every AISim PR title.
 - Allowed types: `feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert`.
 - Check the title before creating or updating a PR.
 
@@ -64,7 +64,7 @@ measured serving accuracy separate, as required by the guide.
 
 Before changing a performance model, its configuration, or a caller in Rust,
 Python, CLI, Sweeper, Replay, or Planner, MUST read and follow
-[`perfmodel-api.md`](python/aisimulate/.claude/rules/perfmodel-api.md).
+[`perfmodel-api.md`](python/aisim/.claude/rules/perfmodel-api.md).
 This includes new features and configuration migrations.
 
 ### Multi-rank iteration queries
@@ -85,31 +85,31 @@ This includes new features and configuration migrations.
 
 Before making any change under:
 
-- `python/aisimulate/src/aisimulate/generator/**`
+- `python/aisim/src/aisim/generator/**`
 
 MUST read:
 
-- `python/aisimulate/.claude/rules/generator-development.md`
+- `python/aisim/.claude/rules/generator-development.md`
 
 ## Required Collector First Step
 
-Before making any change under `python/aisimulate/collector/**` MUST read:
+Before making any change under `python/aisim/collector/**` MUST read:
 
-- `python/aisimulate/.claude/rules/collector/overview.md` (the five things —
+- `python/aisim/.claude/rules/collector/overview.md` (the five things —
   Pin, Plan, Record, Note, Rule — the failure principle, collection cost, and
   what to record when)
-- `python/aisimulate/.claude/rules/collector/layer_permissions.md` (layer
+- `python/aisim/.claude/rules/collector/layer_permissions.md` (layer
   permission table, leaving cases out, capacity, serving parity, module
   boundary)
-- `python/aisimulate/.claude/rules/collector/failure_handling.md`
+- `python/aisim/.claude/rules/collector/failure_handling.md`
   (observe-don't-predict doctrine, escalation decision tree)
 - For case YAML and op-plan work:
-  `python/aisimulate/.claude/rules/collector/case_authoring.md`
+  `python/aisim/.claude/rules/collector/case_authoring.md`
 
 For adding a new Collector operation, additionally follow
-`python/aisimulate/.claude/skills/aic-collector-op-development/SKILL.md`
+`python/aisim/.claude/skills/aic-collector-op-development/SKILL.md`
 (consumer-contract, case-identity, deduplication, and validation gates). Skills are procedural
-runbooks; if a skill and a `python/aisimulate/.claude/rules/` file ever
+runbooks; if a skill and a `python/aisim/.claude/rules/` file ever
 disagree, the rule file wins.
 
 ## Required Third-Party Attribution
@@ -133,7 +133,7 @@ substantially derived from an external project, MUST:
 - Add an entry to the root `THIRD_PARTY_NOTICES.md` identifying the derived
   files, upstream source and immutable revision, copyright owner, applicable
   license, and whether the files were modified. The root notice is canonical;
-  keep `python/aisimulate/THIRD_PARTY_NOTICES.md` byte-identical so the notice
+  keep `python/aisim/THIRD_PARTY_NOTICES.md` byte-identical so the notice
   is included in Python distributions. Run
   `python3 scripts/ci/check_packaged_legal_files.py` after either copy changes.
 - Do not hand-edit generated attribution artifacts. Update their source or
@@ -150,30 +150,30 @@ not optional documentation.
 
 ### Project overview
 
-AISimulate is a Python and Rust CLI/SDK for predicting LLM serving behavior and
+AISim is a Python and Rust CLI/SDK for predicting LLM serving behavior and
 optimizing inference deployment configurations. See `README.md` for details.
 
 ### Environment setup
 
 Python dependencies are managed via `uv` with the
-`python/aisimulate/uv.lock` lockfile. The project environment lives at
-`python/aisimulate/.venv/`.
+`python/aisim/uv.lock` lockfile. The project environment lives at
+`python/aisim/.venv/`.
 
 - **Install/refresh deps:**
-  `uv sync --project python/aisimulate --extra dev`
+  `uv sync --project python/aisim --extra dev`
 - **Performance data:** Current op profiles are parquet files under
-  `python/aisimulate/src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/`
+  `python/aisim/src/aisim_core/systems/data/<system>/<family>/<backend>/<version>/`
   and are checked in directly. Legacy `*.txt` perf files, when present, use Git
   LFS; run `git lfs pull` only when working with those legacy assets.
 
 ### Lint / Test / Run
 
-- **Lint:** `python/aisimulate/.venv/bin/ruff check --config python/aisimulate/pyproject.toml python/aisimulate tests`
-  and `python/aisimulate/.venv/bin/ruff format --check --config python/aisimulate/pyproject.toml python/aisimulate tests`
+- **Lint:** `python/aisim/.venv/bin/ruff check --config python/aisim/pyproject.toml python/aisim tests`
+  and `python/aisim/.venv/bin/ruff format --check --config python/aisim/pyproject.toml python/aisim tests`
   (see `DEVELOPMENT.md`)
-- **Unit tests:** `python/aisimulate/.venv/bin/pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m unit`
+- **Unit tests:** `python/aisim/.venv/bin/pytest -c python/aisim/pytest.ini python/aisim/tests -m unit`
   (no external deps or LFS data needed)
-- **Build tests (PR subset):** `python/aisimulate/.venv/bin/pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"`
+- **Build tests (PR subset):** `python/aisim/.venv/bin/pytest -c python/aisim/pytest.ini python/aisim/tests -m "unit or build"`
   (requires LFS data for the `build`-marked tests)
 - **CLI:** `aiconfigurator cli generate --model-path Qwen/Qwen3-32B-FP8 --total-gpus 8 --system h200_sxm` (works without LFS data)
 ### Known environment caveats
@@ -183,19 +183,19 @@ Python dependencies are managed via `uv` with the
    exercise legacy text assets may fail; current parquet-backed workflows do
    not depend on those legacy files.
 2. **TTY tests:** 4 tests in
-   `python/aisimulate/tests/unit/cli/test_plain_output.py` may fail because the
+   `python/aisim/tests/unit/cli/test_plain_output.py` may fail because the
    agent runs in a non-TTY environment.
 3. **Rust tests:**
-   `python/aisimulate/tests/unit/sdk/test_rust_engine_step.py` requires `cargo`
+   `python/aisim/tests/unit/sdk/test_rust_engine_step.py` requires `cargo`
    with network access to `crates.io`. It will fail if that domain is blocked.
 4. **macOS pytest-timeout crash dialogs:** The `timeout = 120` setting in
-   `python/aisimulate/pytest.ini` uses SIGALRM by default, which triggers
+   `python/aisim/pytest.ini` uses SIGALRM by default, which triggers
    "Python unexpectedly quit" crash reporter popups on macOS. Pass
    `-p no:timeout` to disable it locally.
 5. **torch-dependent tests:**
-   `python/aisimulate/tests/unit/sdk/database/test_moe_dispatch.py` requires
+   `python/aisim/tests/unit/sdk/database/test_moe_dispatch.py` requires
    `torch` (not installed in the default dev venv). Ignore it with
-   `--ignore=python/aisimulate/tests/unit/sdk/database/test_moe_dispatch.py`.
+   `--ignore=python/aisim/tests/unit/sdk/database/test_moe_dispatch.py`.
 
 ## CODEOWNERS
 

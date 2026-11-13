@@ -1,0 +1,483 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import pandas as pd
+import pytest
+from tools.support_matrix import support_matrix as support_matrix_module
+from tools.support_matrix.support_matrix import (
+    STATUS_FAIL,
+    STATUS_FRAMEWORK_INCOMPATIBLE,
+    STATUS_HW_INCOMPATIBLE,
+    STATUS_HYBRID_PASS,
+    SupportMatrix,
+    TestConstraints,
+)
+
+from aisim.sdk.errors import PerfDataNotAvailableError
+from aisim.sdk.operations.util_empirical import note_provenance
+
+pytestmark = pytest.mark.unit
+
+
+_SYSTEM_SM_VERSIONS = {
+    "b200_sxm": 100,
+    "gb200": 100,
+    "b300_sxm": 103,
+    "gb300": 103,
+    "h200_sxm": 90,
+    "l40s": 89,
+    "rtx_pro_6000_server": 120,
+}
+
+
+def _system_spec(system: str) -> dict:
+    sm_version = _SYSTEM_SM_VERSIONS[system]
+    gpu = {"sm_version": sm_version, "fp8_tc_flops": 1}
+    if sm_version >= 100:
+        gpu["fp4_tc_flops"] = 1
+    return {"gpu": gpu}
+
+
+def _b200_system_spec() -> dict:
+    return _system_spec("b200_sxm")
+
+
+def _l40s_system_spec() -> dict:
+    return _system_spec("l40s")
+
+
+def _patch_large_constraints(monkeypatch) -> None:
+    monkeypatch.setattr(
+        support_matrix_module,
+        "_get_test_constraints",
+        lambda _model: TestConstraints(total_gpus=128, isl=256, osl=256, prefix=128, ttft=2_000_000, tpot=50_000),
+    )
+
+
+def test_w4a16_nvfp4_moe_silicon_gap_is_rescued_by_hybrid_with_image_workload(monkeypatch):
+    calls: list[str] = []
+
+    def fake_run_mode(**kwargs):
+        calls.append(kwargs["database_mode"])
+        if kwargs["database_mode"] == "SILICON":
+            raise ValueError(
+                "Unsupported moe quant mode 'w4a16_nvfp4' for system='b200_sxm', backend='vllm', version='0.22.0'."
+            )
+        note_provenance("xprofile")
+        # Qwen3.6 implements its encoder (nested vision_config), so the rescue
+        # must carry the canonical image workload and positive encoder evidence.
+        assert kwargs["image_workload"] is not None
+        return pd.DataFrame({"encoder_latency": [1.25], "encoder_memory": [0.5]})
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    monkeypatch.setattr(support_matrix_module, "_encoder_perf_data_available", lambda *_args: True)
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors, commands, provenance = SupportMatrix.run_single_test(
+        model="nvidia/Qwen3.6-35B-A3B-NVFP4",
+        system="b200_sxm",
+        backend="vllm",
+        version="0.22.0",
+        system_spec=_b200_system_spec(),
+        modes_to_test=["agg"],
+        include_commands=True,
+    )
+
+    assert statuses == {"agg": STATUS_HYBRID_PASS}
+    assert errors == {"agg": None}
+    assert provenance == {"agg": "xprofile"}
+    assert calls == ["SILICON", "HYBRID"]
+    assert "--database-mode HYBRID" in commands["agg"]
+    assert "--image-height 1024 --image-width 1024 --num-images 1" in commands["agg"]
+
+
+def test_dsv4_vllm_019_unsupported_mxfp8_quant_is_framework_incompatible(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise ValueError(
+            "Unsupported moe quant mode 'w4a8_mxfp4_mxfp8' for system='b200_sxm', backend='vllm', version='0.19.0'."
+        )
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        system="b300_sxm",
+        backend="vllm",
+        version="0.19.0",
+        system_spec=_system_spec("b300_sxm"),
+    )
+
+    assert statuses == {"agg": STATUS_FRAMEWORK_INCOMPATIBLE, "disagg": STATUS_FRAMEWORK_INCOMPATIBLE}
+    assert "Unsupported moe quant mode" in errors["agg"]
+
+
+@pytest.mark.parametrize(
+    "error_message",
+    [
+        "DeepSeek-V4 mHC module data not loaded for system='b200_sxm', backend='vllm', version='0.19.0'.",
+        "no MHC module rows loaded from 1 source(s) (first: systems/data/b200_sxm/vllm/0.19.0/mhc_module_perf.parquet)",
+    ],
+)
+def test_dsv4_vllm_019_missing_mhc_data_is_framework_incompatible(monkeypatch, error_message):
+    def fake_run_mode(**_kwargs):
+        raise PerfDataNotAvailableError(
+            "No results found for any parallel configuration. Showing last exception: " + error_message
+        )
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="sgl-project/DeepSeek-V4-Pro-FP8",
+        system="b200_sxm",
+        backend="vllm",
+        version="0.19.0",
+        system_spec=_b200_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_FRAMEWORK_INCOMPATIBLE, "disagg": STATUS_FRAMEWORK_INCOMPATIBLE}
+    assert error_message in errors["disagg"]
+
+
+@pytest.mark.parametrize("system", ["b200_sxm", "b300_sxm", "gb200", "gb300"])
+@pytest.mark.parametrize("version", ["0.24.0", "0.25.0"])
+@pytest.mark.parametrize(
+    ("error_message", "error_type"),
+    [
+        ("Unsupported moe quant mode 'w4a8_mxfp4_mxfp8'", ValueError),
+        ("DeepSeek-V4 mHC module data not loaded", PerfDataNotAvailableError),
+    ],
+)
+def test_dsv4_vllm_024_plus_native_blackwell_gap_is_fail(monkeypatch, system, version, error_message, error_type):
+    attempts = 0
+
+    def fake_run_mode(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise error_type(error_message)
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        system=system,
+        backend="vllm",
+        version=version,
+        system_spec=_system_spec(system),
+    )
+
+    assert statuses == {"agg": STATUS_FAIL, "disagg": STATUS_FAIL}
+    assert error_message in errors["agg"]
+    if error_type is PerfDataNotAvailableError:
+        assert attempts == 4
+
+
+def test_dsv4_vllm_024_hopper_is_hardware_incompatible(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        pytest.fail("hardware preflight should reject the native FP4 model")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, _errors = SupportMatrix.run_single_test(
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        system="h200_sxm",
+        backend="vllm",
+        version="0.24.0",
+        system_spec=_system_spec("h200_sxm"),
+    )
+
+    assert statuses == {"agg": STATUS_HW_INCOMPATIBLE, "disagg": STATUS_HW_INCOMPATIBLE}
+
+
+def test_dsv4_vllm_024_non_native_sm120_gap_remains_framework_incompatible(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise ValueError("Unsupported moe quant mode 'w4a8_mxfp4_mxfp8'")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, _errors = SupportMatrix.run_single_test(
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        system="rtx_pro_6000_server",
+        backend="vllm",
+        version="0.24.0",
+        system_spec=_system_spec("rtx_pro_6000_server"),
+    )
+
+    assert statuses == {"agg": STATUS_FRAMEWORK_INCOMPATIBLE, "disagg": STATUS_FRAMEWORK_INCOMPATIBLE}
+
+
+def test_non_dsv4_vllm_019_error_remains_fail(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise ValueError("Unsupported moe quant mode 'w4a8_mxfp4_mxfp8'")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, _errors = SupportMatrix.run_single_test(
+        model="Qwen/Qwen3-30B-A3B",
+        system="b200_sxm",
+        backend="vllm",
+        version="0.19.0",
+        system_spec=_b200_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_FAIL, "disagg": STATUS_FAIL}
+
+
+@pytest.mark.parametrize("backend,version", [("sglang", "0.5.10"), ("vllm", "0.14.0")])
+def test_l40s_sm89_fp8_block_gemm_gap_is_hardware_incompatible(monkeypatch, backend, version):
+    def fake_run_mode(**_kwargs):
+        raise ValueError(
+            f"Unsupported gemm quant mode 'fp8_block' for system='l40s', backend='{backend}', version='{version}'."
+        )
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="Qwen/Qwen3-32B-FP8",
+        system="l40s",
+        backend=backend,
+        version=version,
+        system_spec=_l40s_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_HW_INCOMPATIBLE, "disagg": STATUS_HW_INCOMPATIBLE}
+    assert "Unsupported gemm quant mode 'fp8_block'" in errors["agg"]
+
+
+def test_l40s_trtllm_fp8_block_moe_gap_is_hardware_incompatible(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise ValueError("Unsupported moe quant mode 'fp8_block' for system='l40s', backend='trtllm', version='1.0.0'.")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="Qwen/Qwen3-30B-A3B-FP8",
+        system="l40s",
+        backend="trtllm",
+        version="1.0.0",
+        system_spec=_l40s_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_HW_INCOMPATIBLE, "disagg": STATUS_HW_INCOMPATIBLE}
+    assert "Unsupported moe quant mode 'fp8_block'" in errors["disagg"]
+
+
+def test_l40s_fp8_block_other_backend_error_is_hardware_incompatible(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise ValueError("Unsupported gemm quant mode 'fp8_block'")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="Qwen/Qwen3-32B-FP8",
+        system="l40s",
+        backend="trtllm",
+        version="1.0.0",
+        system_spec=_l40s_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_HW_INCOMPATIBLE, "disagg": STATUS_HW_INCOMPATIBLE}
+    assert "Unsupported gemm quant mode 'fp8_block'" in errors["agg"]
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-oss-20b", "openai/gpt-oss-120b"])
+def test_l40s_gpt_oss_mxfp4_moe_gap_is_hardware_incompatible(monkeypatch, model):
+    def fake_run_mode(**_kwargs):
+        raise ValueError(
+            "Unsupported moe quant mode 'w4a16_mxfp4' for system='l40s', backend='sglang', version='0.5.10'."
+        )
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model=model,
+        system="l40s",
+        backend="sglang",
+        version="0.5.10",
+        system_spec=_l40s_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_HW_INCOMPATIBLE, "disagg": STATUS_HW_INCOMPATIBLE}
+    assert "Unsupported moe quant mode 'w4a16_mxfp4'" in errors["agg"]
+
+
+def test_l40s_sglang_fp8_attention_gap_is_hardware_incompatible(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise ValueError(
+            "Unsupported context_attention quant mode 'fp8' for system='l40s', backend='sglang', version='0.5.10'."
+        )
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="Qwen/Qwen3-32B-FP8-Static-PerTensor",
+        system="l40s",
+        backend="sglang",
+        version="0.5.10",
+        system_spec=_l40s_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_HW_INCOMPATIBLE, "disagg": STATUS_HW_INCOMPATIBLE}
+    assert "Unsupported context_attention quant mode 'fp8'" in errors["agg"]
+
+
+def test_l40s_sglang_dsa_missing_data_gap_is_hardware_incompatible(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise RuntimeError(
+            "File does not exist at src/aisim_core/systems/data/l40s/sglang/0.5.10/dsa_context_module_perf.parquet"
+        )
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="zai-org/GLM-5",
+        system="l40s",
+        backend="sglang",
+        version="0.5.10",
+        system_spec=_l40s_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_HW_INCOMPATIBLE, "disagg": STATUS_HW_INCOMPATIBLE}
+    assert "SGLang DSA/NSA module collectors require SM90+" in errors["agg"]
+
+
+def test_kimi_moonshot_trtllm_b200_is_encoder_unsupported_before_text_framework_gap(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise ValueError(
+            "Unsupported moe quant mode 'int4_wo' for system='b200_sxm', backend='trtllm', version='1.3.0rc10'."
+        )
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors = SupportMatrix.run_single_test(
+        model="moonshotai/Kimi-K2.5",
+        system="b200_sxm",
+        backend="trtllm",
+        version="1.3.0rc10",
+        system_spec=_b200_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_FAIL, "disagg": STATUS_FAIL}
+    assert errors["agg"].startswith("ENCODER_UNSUPPORTED:")
+
+
+def test_kimi_encoder_unsupported_cannot_be_hybrid_rescued_by_text_backbone(monkeypatch):
+    calls: list[str] = []
+
+    def fake_run_mode(**kwargs):
+        calls.append(kwargs["database_mode"])
+        if kwargs["database_mode"] == "SILICON":
+            raise ValueError(
+                "Unsupported moe quant mode 'int4_wo' for system='b200_sxm', backend='trtllm', version='1.3.0rc10'."
+            )
+        return pd.DataFrame({"x": [1.0]})
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, errors, commands, sources = SupportMatrix.run_single_test(
+        model="moonshotai/Kimi-K2.5",
+        system="b200_sxm",
+        backend="trtllm",
+        version="1.3.0rc10",
+        system_spec=_b200_system_spec(),
+        modes_to_test=["agg"],
+        include_commands=True,
+    )
+
+    assert statuses == {"agg": STATUS_FAIL}
+    assert errors["agg"].startswith("ENCODER_UNSUPPORTED:")
+    assert sources == {"agg": ""}
+    assert "tools/support_matrix/generate_support_matrix.py" in commands["agg"]
+    assert "--expect-error-prefix ENCODER_UNSUPPORTED:" in commands["agg"]
+    assert calls == []
+
+
+def test_kimi_moonshot_trtllm_int4_wo_other_system_remains_fail(monkeypatch):
+    def fake_run_mode(**_kwargs):
+        raise ValueError("Unsupported moe quant mode 'int4_wo'")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, _errors = SupportMatrix.run_single_test(
+        model="moonshotai/Kimi-K2.5",
+        system="b300_sxm",
+        backend="trtllm",
+        version="1.3.0rc10",
+        system_spec=_b200_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_FAIL, "disagg": STATUS_FAIL}
+
+
+@pytest.mark.parametrize("system,version", [("b200_sxm", "1.3.0rc10"), ("h200_sxm", "1.2.0rc5")])
+def test_mimo_v2_flash_trtllm_headdim192_is_framework_incompatible(monkeypatch, system, version):
+    # head_dim=192 attention is unsupported by the TRT-LLM kernel (SM90 and SM100).
+    def fake_run_mode(**_kwargs):
+        raise RuntimeError("Failed to query context attention data for b=1")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, _errors = SupportMatrix.run_single_test(
+        model="XiaomiMiMo/MiMo-V2-Flash",
+        system=system,
+        backend="trtllm",
+        version=version,
+        system_spec=_b200_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_FRAMEWORK_INCOMPATIBLE, "disagg": STATUS_FRAMEWORK_INCOMPATIBLE}
+
+
+def test_mimo_v2_flash_sglang_failure_remains_fail(monkeypatch):
+    # The MiMo exception is TRT-LLM-only; a genuine sglang failure must stay FAIL.
+    def fake_run_mode(**_kwargs):
+        raise RuntimeError("Failed to query context attention data for b=1")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, _errors = SupportMatrix.run_single_test(
+        model="XiaomiMiMo/MiMo-V2-Flash",
+        system="b200_sxm",
+        backend="sglang",
+        version="0.5.10",
+        system_spec=_b200_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_FAIL, "disagg": STATUS_FAIL}
+
+
+@pytest.mark.parametrize("system", ["l40s", "a100_sxm"])
+def test_mimo_v2_flash_trtllm_excluded_systems_stay_fail(monkeypatch, system):
+    # l40s (Ada/SM89) collects head_dim=192 fine; a100 is Ampere/hardware-limited.
+    # Neither should be relabeled framework-incompatible by the MiMo+trtllm rule.
+    def fake_run_mode(**_kwargs):
+        raise RuntimeError("Failed to query context attention data for b=1")
+
+    monkeypatch.setattr(SupportMatrix, "_run_mode", staticmethod(fake_run_mode))
+    _patch_large_constraints(monkeypatch)
+
+    statuses, _errors = SupportMatrix.run_single_test(
+        model="XiaomiMiMo/MiMo-V2-Flash",
+        system=system,
+        backend="trtllm",
+        version="1.3.0rc10",
+        system_spec=_b200_system_spec(),
+    )
+
+    assert statuses == {"agg": STATUS_FAIL, "disagg": STATUS_FAIL}

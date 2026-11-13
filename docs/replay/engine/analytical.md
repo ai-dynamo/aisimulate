@@ -260,7 +260,7 @@ engine:
 ```
 
 ```bash
-aisimulate predict --stack engine --config examples/cli/epd-predict-aggregated.yaml \
+aisim predict --stack engine --config examples/cli/epd-predict-aggregated.yaml \
   --output-dir ./epd-prediction
 ```
 

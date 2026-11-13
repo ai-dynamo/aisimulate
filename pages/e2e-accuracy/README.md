@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISim E2E Accuracy
 
-View the [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/).
+View the [E2E Accuracy Overview](https://ai-dynamo.org/aisim/e2e-accuracy/).
 It compares **AISim** and **AIC (legacy CLI)** against measured silicon
 so users can assess whether the new CLI is comparable during migration. The AIC
 comparison series is temporary and will be removed when the AIC (legacy CLI) is deprecated.
@@ -146,7 +146,13 @@ local preview directory rather than replacing a checked-in qualified snapshot.
 When refreshing a preview with a branch catalog, update both `summary.json`
 and the selected catalog entry's summary path so the browser loads the new data.
 
-Main's dashboard currently consumes public summary v1 (`aisimulate` series fields). Pages readers also accept release summary v2 (`aisim` fields), converting only the public field names in memory before validation and generating the v1 representation for this UI. Original release artifacts and qualification checksums remain unchanged; checksums are verified before conversion. Unknown versions and mixed v1/v2 field names are rejected. This does not change AgentX schemas or raw InfX predictions.
+## Public summary versions
+
+New InfX dashboard summaries use `schema_version: 2`, with `aisim` as the predictor series key at every aggregate and operating point. Snapshot metadata uses `aisim_completed_at`, `aisim_method`, `aisim_packages`, and `aisim_sot_sha256`. Recorded distribution names inside `aisim_packages`, measurement values, evaluated revisions, URLs, and evidence hashes keep their original identities.
+
+Historical v1 summaries retain their `aisimulate` series and `aisimulate_*` snapshot fields. The updated dashboard, Pages validators, and accuracy notifications accept both versions and normalize v1 to the canonical representation in memory. Source documents are not modified, and qualification checks verify the hash of the original summary bytes before normalization. Unknown versions and mixed v1/v2 field names are rejected. A generated site may contain normalized representations; its bytes are not the checksum-bound original campaign artifact.
+
+This migration changes only the public dashboard summary. Raw InfX prediction rows and metadata, the v1 campaign qualification envelope, AgentX schemas, and the branch catalog remain unchanged. Older consumers that only accept summary v1 must be upgraded before reading v2; dual-read support in the new readers does not make old readers accept a new schema.
 
 ## Branch selection
 
@@ -194,7 +200,7 @@ than displaying another branch's results. A missing catalog permits direct
 source preview, whose label is derived from the loaded summary itself.
 
 The refreshed `summary.json` evaluates AISim main at
-[`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisimulate/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
+[`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisim/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
 against the public [InferenceX db-dump/2026-09-14 release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-09-14).
 Its legacy AIC baseline uses the `aiconfigurator` CLI bundled in the **same
 AISim wheel and revision**. The page records the baseline's AISim
@@ -249,7 +255,7 @@ Manual execution uses the workflow on **main**, with an explicit evaluated
 branch and full source SHA:
 
 ```bash
-gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref main \
+gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisim --ref main \
   -f branch=release/0.12.0 \
   -f expected_sha=FULL_40_CHARACTER_COMMIT_SHA
 ```
@@ -269,7 +275,7 @@ revision's wheel and runs the same measurement, source-resolution, estimate,
 and replay pipeline. It does not publish to Pages.
 
 ```bash
-gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref pull-request/372 \
+gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisim --ref pull-request/372 \
   -f branch=simonec/fix-inferencex-ep-gpu-count \
   -f expected_sha=FULL_40_CHARACTER_PR_HEAD_SHA -f preview=true
 ```
@@ -372,7 +378,7 @@ Completed bundles are retained for seven days as
 `e2e-accuracy-results-<branch-key>-shard-<index>`. Retry within that window:
 
 ```bash
-gh run rerun RUN_ID --repo ai-dynamo/aisimulate --failed
+gh run rerun RUN_ID --repo ai-dynamo/aisim --failed
 ```
 
 GitHub reruns failed jobs and their dependent qualification job, reusing successful
@@ -459,8 +465,8 @@ metadata, and a coverage report. For a branch-qualified snapshot, both
 
 All three producer documents must also carry the same completed `aic_run`.
 Its `runtime.source_checkout` records the same branch, full commit SHA, and
-`clean: true`, plus `repository: "https://github.com/ai-dynamo/aisimulate"`.
-Its `runtime.cli_entry_point` is `"aisimulate.legacy_cli.entrypoint:main"` or
+`clean: true`, plus `repository: "https://github.com/ai-dynamo/aisim"`.
+Its `runtime.cli_entry_point` is `"aisim.legacy_cli.entrypoint:main"` or
 `"aiconfigurator.main:main"` for 0.12 wheels. New producer records include the
 matching `baseline_api` and `config_adapter`; the public `aic_source` retains
 `cli_entry_point`. Both the site builder and browser validate the supported
@@ -484,7 +490,7 @@ Commit the generated summary on the evaluated branch. Use `--branch main` for
 main. The builder rejects missing, dirty, mismatched, or mixed incremental run
 provenance. Omitting `--branch` preserves the legacy unqualified export path;
 it cannot assert branch accuracy. Both export paths include sanitized topology
-details. The existing aggregate schema stays compatible.
+details. New exports use the v2 public summary contract; updated readers also accept historical v1 summaries.
 
 ## Validate and preview
 
@@ -512,7 +518,7 @@ a successful main-only campaign does not establish release compatibility.
 ## Adapter parity audit (2026-10-02)
 
 The adapter and public CI are **not equivalent to recipe-resolved e2e-gym**.
-This audit compared AISimulate PR #372 (`b78fb6bdadf87e013fc0a89f5277024ac888a294`)
+This audit compared AISim PR #372 (`b78fb6bdadf87e013fc0a89f5277024ac888a294`)
 with e2e-gym main at `2ad1ec4287ad9fb5857680901eb65b4ff0cb4098`.
 The local September 28 dump contains 2,564 configs, 85,309 benchmark rows, and
 1,238 workflow runs. This is a mapping/selection audit, not a latency rerun.
@@ -531,7 +537,7 @@ four physical GPUs. All 85,309 inputs now equal selected points plus exclusions:
 33,140 incomplete runs, 6,104 multinode, 2,261 nonstandard/error, 28,024 stale,
 and 10,942 superseded. Adding valid recent EP evidence also moves some families'
 freshness cutoff; the difference is not simply a union of the old cohort and EP rows.
-The [October 2 accuracy run](https://github.com/ai-dynamo/aisimulate/actions/runs/36995581041)
+The [October 2 accuracy run](https://github.com/ai-dynamo/aisim/actions/runs/36995581041)
 independently confirms the old 4,130-point selection and the same filter counts.
 Its main artifact publishes 1,137 baseline-success points, with 2,468 adapter
 exclusions, 218 recipe-required exclusions, and 307 baseline failures. It evaluates
@@ -540,10 +546,10 @@ exclusions, 218 recipe-required exclusions, and 307 baseline failures. It evalua
 A differential check against gym's older `mapping.py` helper used its 180-day
 window and 2,209 retained points. Of those, 209 were rejected by that helper.
 Before these fixes, 507 accepted mappings differed and seven Kimi-K2.6 points
-were rejected only by AISimulate. Afterward, those seven adapt and 306 attention-DP
+were rejected only by AISim. Afterward, those seven adapt and 306 attention-DP
 mismatches disappear. The remaining 201 differences are non-vLLM single-node EP
 rows for which the older helper still trusts TP × EP. They must not be copied
-back into AISimulate. Gym's production `predict.py` instead requires
+back into AISim. Gym's production `predict.py` instead requires
 `deployment.py::resolve_deployment` and immutable recipe evidence.
 
 ### Source-resolved policy follow-up
@@ -604,7 +610,7 @@ both row labels and numeric cells, including grouped serving rows.
 
 New campaigns declare `metric_contract: serving-metrics-v1` in both the summary
 and qualification record. Each operating point contains `measured`, `aic`, and
-`aisimulate` series with:
+`aisim` series with:
 
 - `ttft_ms`, `tpot_ms`, and `e2e_ms`: mean request latencies in milliseconds.
 - `interactivity_tok_s`: `1000 / tpot_ms`, in tokens/s/user.
@@ -707,7 +713,7 @@ or satisfy the complete twelve-replay publication gate.
 
 The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
 It does not change InfX snapshots or calculate shape errors. The beta notice links
-to the [AgentX support matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/#agentx).
+to the [AgentX support matrix](https://ai-dynamo.org/aisim/feature-support-matrix/#agentx).
 
 Initial coverage is explicitly selected in the reviewed private HF catalog
 `catalog/e2e/agentx.json`:

@@ -55,7 +55,7 @@ class FpeBrowserTest(unittest.IsolatedAsyncioTestCase):
         page = cls.site / "fpe-support-matrix/index.html"
         page.parent.mkdir()
         shutil.copyfile(ROOT / "pages/fpe-support-matrix/index.html", page)
-        template_path = ROOT / "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/b200_sxm.csv"
+        template_path = ROOT / "python/aisim/src/aisim_core/systems/fpe_support_matrix/b200_sxm.csv"
         with template_path.open() as handle:
             template = next(csv.DictReader(handle))
         cls.csvs = {}
@@ -73,7 +73,7 @@ class FpeBrowserTest(unittest.IsolatedAsyncioTestCase):
                 "branch": branch,
                 "source_sha": "a" * 40,
                 "generated_at": "2026-09-15T00:00:00Z",
-                "run_url": "https://github.com/ai-dynamo/aisimulate/actions/runs/1",
+                "run_url": "https://github.com/ai-dynamo/aisim/actions/runs/1",
             }
             (data / "index.json").write_text(json.dumps({"files": ["b200_sxm.csv"], "snapshot": snapshot}))
             output = io.StringIO()
@@ -130,7 +130,7 @@ class FpeBrowserTest(unittest.IsolatedAsyncioTestCase):
         await expect(self.page.get_by_text("Results not available yet", exact=True)).to_be_visible()
         await expect(self.page.locator("tbody tr")).to_have_count(0)
         await expect(self.page.get_by_role("link", name="View coverage runs")).to_have_attribute(
-            "href", "https://github.com/ai-dynamo/aisimulate/actions/workflows/release-nightly-ci.yml"
+            "href", "https://github.com/ai-dynamo/aisim/actions/workflows/release-nightly-ci.yml"
         )
         self.catalog["branches"][-1].update(status="available", path="branches/release/0.15.0")
         await self.page.get_by_role("button", name="Check again", exact=True).click()

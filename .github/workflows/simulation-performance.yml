@@ -82,7 +82,7 @@ jobs:
             base_sha="${PR_HEAD_SHA}"
           fi
 
-          gate_path="python/aisimulate/tools/simulation_perf_gate"
+          gate_path="python/aisim/tools/simulation_perf_gate"
           skip_reason=""
           invalid_reason=""
           for revision_label in head base; do
@@ -182,7 +182,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -237,10 +237,10 @@ jobs:
           test "$(git -C source rev-parse HEAD)" = "${SOURCE_SHA}"
           export CARGO_TARGET_DIR="${RUNNER_TEMP}/simulation-perf-target"
           (
-            cd source/python/aisimulate
+            cd source/python/aisim
             python -m maturin build --release --locked --out "${RUNNER_TEMP}/wheel"
           )
-          uv export --project source/python/aisimulate --frozen --no-dev --no-emit-project \
+          uv export --project source/python/aisim --frozen --no-dev --no-emit-project \
             --format requirements-txt --output-file "${RUNNER_TEMP}/wheel/requirements.txt"
           python scripts/performance/build_simulation_dynamo.py source dynamo "${RUNNER_TEMP}/wheel"
           # Exercise the complete patched callback with this revision's Python SDK.
@@ -283,7 +283,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: ${{ github.workspace }}
         USER: runner
     env:
       BASE_SHA: ${{ needs.select.outputs.base_sha }}
@@ -378,7 +378,7 @@ jobs:
             cp "${dist}/dynamo-requirements.txt" "${RESULTS_DIR}/provenance/${side}-dynamo-requirements.txt"
             cp "${dist}/dynamo-build.patch" "${RESULTS_DIR}/provenance/${side}-dynamo-build.patch"
             cp "${dist}/provenance.json" "${RESULTS_DIR}/provenance/${side}-build.json"
-            "${venv}/bin/python" -c 'import aisimulate._runtime, dynamo._core, dynamo.replay.simulation; print(aisimulate._runtime.__file__); print(dynamo._core.__file__); print(dynamo.replay.simulation.__file__)' \
+            "${venv}/bin/python" -c 'import aisim._runtime, dynamo._core, dynamo.replay.simulation; print(aisim._runtime.__file__); print(dynamo._core.__file__); print(dynamo.replay.simulation.__file__)' \
               > "${RESULTS_DIR}/provenance/${side}-imports.txt"
             "${venv}/bin/python" -m pip freeze > "${RESULTS_DIR}/provenance/${side}-packages.txt"
           done
@@ -402,12 +402,12 @@ jobs:
               destination="${RESULTS_DIR}/qualification-${attempt}"
             fi
             "${BASE_VENV}/bin/python" \
-              "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" \
+              "${BASE_SRC}/python/aisim/tools/simulation_perf_gate/run.py" \
               --base-python "${BASE_VENV}/bin/python" \
-              --base-worker "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+              --base-worker "${BASE_SRC}/python/aisim/tools/simulation_perf_gate/worker.py" \
               --base-revision "${BASE_SHA}" \
               --head-python "${HEAD_VENV}/bin/python" \
-              --head-worker "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+              --head-worker "${HEAD_SRC}/python/aisim/tools/simulation_perf_gate/worker.py" \
               --head-revision "${HEAD_SHA}" \
               --output-dir "${destination}" "${qualification_args[@]}" || status=1
           done
@@ -418,12 +418,12 @@ jobs:
         run: |
           set -euo pipefail
           "${HEAD_VENV}/bin/python" \
-            "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" \
+            "${HEAD_SRC}/python/aisim/tools/simulation_perf_gate/run.py" \
             --base-python "${BASE_VENV}/bin/python" \
-            --base-worker "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+            --base-worker "${BASE_SRC}/python/aisim/tools/simulation_perf_gate/worker.py" \
             --base-revision "${BASE_SHA}" \
             --head-python "${HEAD_VENV}/bin/python" \
-            --head-worker "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+            --head-worker "${HEAD_SRC}/python/aisim/tools/simulation_perf_gate/worker.py" \
             --head-revision "${HEAD_SHA}" \
             --output-dir "${RESULTS_DIR}/head-controller"
 

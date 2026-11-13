@@ -16,7 +16,7 @@ on the target hardware, not a proof of serving accuracy or global optimality.
 
 ## Choose an interface
 
-- Start with [`aisimulate recommend`](quickstart.md) for a runnable search.
+- Start with [`aisim recommend`](quickstart.md) for a runnable search.
 - Use the [Python SDK](sdk.md) for direct `Sweeper` calls and `SmartSearchConfig`.
   Its YAML has `search_space`, `workload`, `goal` and `sweep`; it is different
   from the public CLI's `engine`, `traffic`, `optimization` and `optimizer`.
@@ -63,7 +63,7 @@ optimizer spends trials on them. Runner implementations validate finer stack-spe
 when they execute a replay.
 
 When all configured backend/topology pairs are rejected during this preflight,
-`aisimulate.sweeper.RunnerIncompatibleError` is raised with the deployment modes and rejected
+`aisim.sweeper.RunnerIncompatibleError` is raised with the deployment modes and rejected
 backends. It subclasses `NoViableParallelConfig`, so callers that already handle that base error
 remain compatible. Mixed runner incompatibility and model, KV-capacity, or performance-data failure
 continues to raise `NoViableParallelConfig`, with the known runner-incompatible backends appended to

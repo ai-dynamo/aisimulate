@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.summary_contract import normalize_summary
 from scripts.pages.build_pages_site import _accuracy_summary, committed_accuracy
 
-REPO = "ai-dynamo/aisimulate"
+REPO = "ai-dynamo/aisim"
 WORKFLOW = ".github/workflows/e2e-accuracy.yml"
 CAMPAIGN_KEYS = {
     "schema_version",
@@ -93,7 +93,7 @@ def completion_time(value):
 
 def public_contract(summary):
     """Apply a recursive allowlist before the existing semantic validator."""
-    summary = normalize_summary(summary, target_version=1)
+    summary = normalize_summary(summary)
     keys(summary, {"schema_version", "title", "snapshot", "scope", "totals", "models"})
     snapshot = summary["snapshot"]
     keys(
@@ -106,10 +106,10 @@ def public_contract(summary):
             "prediction_generated_at",
             "predictions_sha256",
             "aic_commit_sha",
-            "aisimulate_completed_at",
-            "aisimulate_method",
-            "aisimulate_packages",
-            "aisimulate_sot_sha256",
+            "aisim_completed_at",
+            "aisim_method",
+            "aisim_packages",
+            "aisim_sot_sha256",
             "corrections",
             "evaluated_revision",
             "aic_source",
@@ -120,10 +120,13 @@ def public_contract(summary):
     keys(snapshot["aic_source"], {"repository", "branch", "commit_sha", "cli_entry_point"})
     if "cli_entry_point" in snapshot["aic_source"] and snapshot["aic_source"]["cli_entry_point"] not in {
         "aiconfigurator.main:main",
+        "aisim.legacy_cli.entrypoint:main",
         "aisimulate.legacy_cli.entrypoint:main",
     }:
         raise ValueError("unsupported baseline entry point")
-    keys(snapshot["aisimulate_packages"], {"aisimulate"})
+    keys(snapshot["aisim_packages"], {"aisim", "aisimulate"})
+    if len(snapshot["aisim_packages"]) != 1:
+        raise ValueError("campaign must identify exactly one application distribution")
     if snapshot["corrections"] != []:
         raise ValueError("nightly campaign cannot contain unreviewed corrections")
     keys(snapshot["campaign"], CAMPAIGN_KEYS | OPTIONAL_CAMPAIGN_KEYS)
@@ -146,13 +149,13 @@ def public_contract(summary):
     )
 
     def aggregate(item, extra):
-        keys(item, {"rows", "aic", "aisimulate"} | extra)
+        keys(item, {"rows", "aic", "aisim"} | extra)
         keys(item["aic"], METRICS | {"status_counts", "coverage_pct"})
         if "status_counts" in item["aic"]:
             keys(item["aic"]["status_counts"], {"success", "failed", "unsupported", "unknown"})
-        keys(item["aisimulate"], METRICS | {"status_counts", "coverage_pct"})
+        keys(item["aisim"], METRICS | {"status_counts", "coverage_pct"})
         keys(
-            item["aisimulate"]["status_counts"],
+            item["aisim"]["status_counts"],
             {"success", "failed", "unsupported", "unknown"},
         )
 
@@ -162,8 +165,8 @@ def public_contract(summary):
         groups = summary["totals"]["by_configuration_quality"]
         keys(groups, {"verified", "estimated", "not_recorded"})
         for group in groups.values():
-            keys(group, {"rows", "aic", "aisimulate"})
-            keys(group["aisimulate"], METRICS)
+            keys(group, {"rows", "aic", "aisim"})
+            keys(group["aisim"], METRICS)
             keys(group["aic"], METRICS | {"status_counts", "coverage_pct"})
             keys(group["aic"]["status_counts"], {"success", "failed", "unsupported", "unknown"})
     for model in summary["models"]:
@@ -208,7 +211,7 @@ def public_contract(summary):
                                 "infx_run_id",
                                 "measured",
                                 "aic",
-                                "aisimulate",
+                                "aisim",
                                 "configuration",
                                 "aisim_error",
                             },
@@ -244,7 +247,7 @@ def public_contract(summary):
                             not isinstance(run_id, str) or re.fullmatch(r"[1-9][0-9]*", run_id) is None
                         ):
                             raise ValueError("invalid InferenceX GitHub run ID")
-                        for name in ("measured", "aic", "aisimulate"):
+                        for name in ("measured", "aic", "aisim"):
                             keys(
                                 point[name],
                                 {
@@ -282,6 +285,7 @@ def unpack_artifact(archive: bytes) -> dict:
         raise ValueError("incomplete qualification")
     if qualification.pop("summary_sha256") != hashlib.sha256(data).hexdigest():
         raise ValueError("summary checksum mismatch")
+    # Bind the original bytes before adapting either public summary version.
     summary = public_contract(strict_json(data))
     if qualification != summary["snapshot"]["campaign"]:
         raise ValueError("summary and qualification disagree")
@@ -362,7 +366,7 @@ def unpack_artifact(archive: bytes) -> dict:
         or outcomes.get("evaluated") != summary["scope"]["raw_rows"]
         or type(q["published"]) is not int
         or q["published"] != summary["totals"]["rows"]
-        or summary["totals"]["aisimulate"]["points"] <= 0
+        or summary["totals"]["aisim"]["points"] <= 0
     ):
         raise ValueError("incomplete campaign coverage")
     return summary
@@ -602,12 +606,9 @@ def prepare(repo: Path, output: Path) -> None:
                     repo, current["commit_sha"], revision["commit_sha"]
                 ):
                     continue
-                if (
-                    current["commit_sha"] == revision["commit_sha"]
-                    and previous.get("aisimulate_completed_at") is not None
-                ):
+                if current["commit_sha"] == revision["commit_sha"] and previous.get("aisim_completed_at") is not None:
                     try:
-                        previous_time = completion_time(previous["aisimulate_completed_at"])
+                        previous_time = completion_time(previous["aisim_completed_at"])
                     except ValueError as exc:
                         print(f"Keeping committed accuracy snapshot for {branch}: {exc}")
                         continue

@@ -1,4 +1,4 @@
-# AISimulate webpages
+# AISim webpages
 
 This directory owns webpage HTML and its assets. The public build is explicitly
 allowlisted by `scripts/pages/build_pages_site.py`; a new directory is not published
@@ -24,7 +24,7 @@ FPE qualification uploads the `fpe-nightly-web` data bundle produced by
 `scripts/fpe/run_release_fpe.py`. Pages combines its qualified data with the HTML
 and assets in `pages/fpe-support-matrix/`.
 Retained qualified bundles may use the former `aiconfigurator_core` package
-path or the current `aisimulate_core` path. Pages requires exactly one indexed
+path or the current `aisim_core` path. Pages requires exactly one indexed
 layout and validates its qualification and CSV identities before serving the
 same public URLs. It never combines files from both layouts.
 
@@ -46,3 +46,8 @@ Build an empty output directory and serve it locally:
 python scripts/pages/build_pages_site.py --output-dir /tmp/aisim-pages
 python -m http.server --directory /tmp/aisim-pages 8000
 ```
+
+
+## Publication URL after the repository rename
+
+The canonical site is `https://ai-dynamo.org/aisim/`. Navigation uses relative links so dashboards and their assets remain under the project prefix. GitHub does not redirect the former project Pages path when the repository is renamed. Preserve old `/aisimulate/` links through the organization site's hosting layer, preserving nested paths and query strings; do not recreate a repository with the old name. The [repository rename checklist](../docs/ci/README.md#repository-rename-to-aisim) covers GitHub settings, Pages redeployment, redirects, runners, and external integrations.

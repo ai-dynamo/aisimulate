@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! JSON-only PyO3 boundary for one materialized AISimulate replay execution.
+//! JSON-only PyO3 boundary for one materialized AISim replay execution.
 
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -702,13 +702,11 @@ struct IterationPricing {
     /// How a mixed operation-graph rank's operations split into prefill and
     /// decode evidence, per operation-name list the model reports.
     mixed_splits: Mutex<Vec<Arc<MixedSplit>>>,
-    /// Each working operation-graph rank's evidence before correction, by
-    /// its query and whether diagnostics are captured.
-    rank_evidence: quick_cache::sync::Cache<(RankQuery, bool), Arc<RankEvidence>>,
 }
 
 /// One working rank's operation evidence before correction, each part with
 /// whether it is prefill: one part for a pure rank, up to two for a mixed one.
+/// The rank's memo entry keeps it ([`AicTimingModel::native_rank_evidence`]).
 type RankEvidence = Vec<(Arc<ValidatedTimingPhase>, bool)>;
 
 /// The prefill and decode parts of a mixed operation-graph rank with the
@@ -813,7 +811,6 @@ impl IterationPricing {
                 .is_none()
                 .then(|| quick_cache::sync::Cache::new(256)),
             mixed_splits: Mutex::default(),
-            rank_evidence: quick_cache::sync::Cache::new(1024),
         }))
     }
 
@@ -1071,7 +1068,6 @@ impl AicTimingModel {
             cache: (!detail).then(|| quick_cache::sync::Cache::new(256)),
             // Fitted estimators report no operation evidence.
             mixed_splits: Mutex::default(),
-            rank_evidence: quick_cache::sync::Cache::new(1),
         };
         Ok(Self {
             engine: Python::with_gil(|py| py.None()),
@@ -1816,7 +1812,8 @@ impl AicTimingModel {
     /// operations and values form the same phase evidence; values form it
     /// under name lists that every rank with the same operations shares, a
     /// pure rank's or each part of a mixed rank's. A rank's evidence before
-    /// correction depends only on its query, so it is built once per query.
+    /// correction depends only on its pricing and query, so it is built once
+    /// per rank-memo entry and returned with every hit.
     fn native_rank_evidence(
         &self,
         pricing: &IterationPricing,
@@ -1834,19 +1831,14 @@ impl AicTimingModel {
             let Some(kind) = IterationKind::of(query) else {
                 continue;
             };
-            let key = (*query, capture);
-            let parts = match pricing.rank_evidence.get(&key) {
-                Some(parts) => parts,
-                None => {
-                    let parts = Arc::new(if capture {
-                        self.rank_diagnostics_parts(pricing, index, kind, query, rank)?
-                    } else {
-                        Self::rank_value_parts(pricing, index, kind, query, rank)?
-                    });
-                    pricing.rank_evidence.insert(key, Arc::clone(&parts));
-                    parts
+            // The memo keys `rank` by this query and the detail `capture` selects.
+            let parts = rank.derived(|rank| -> Result<RankEvidence> {
+                if capture {
+                    self.rank_diagnostics_parts(pricing, index, kind, query, rank)
+                } else {
+                    Self::rank_value_parts(pricing, index, kind, query, rank)
                 }
-            };
+            })?;
             for (phase, prefill) in parts.iter() {
                 evidence.push((
                     Self::corrected_phase(Arc::clone(phase), correction)?,
@@ -2790,7 +2782,7 @@ fn aic_capacity_kwargs<'py>(
 
 fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<usize> {
     Python::with_gil(|py| -> PyResult<usize> {
-        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisim_core.sdk.memory")?;
         let kwargs = aic_capacity_kwargs(py, config, role)?;
         memory
             .getattr("estimate_num_gpu_blocks")?
@@ -2812,7 +2804,7 @@ fn estimate_aic_grouped_budget(
     role: &ReplayRoleConfig,
 ) -> Result<crate::perfmodel::fpm::FpmCacheBudget> {
     let serialized = Python::with_gil(|py| -> PyResult<String> {
-        let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
+        let memory = PyModule::import(py, "aisim_core.sdk.memory")?;
         let kwargs = aic_capacity_kwargs(py, config, role)?;
         kwargs.del_item("scheduler_block_size")?;
         kwargs.set_item("context_length", role.rank.max_model_len)?;
@@ -3059,7 +3051,7 @@ fn resolve_encoder_timing(
     ensure!(
         provider == "aic",
         "native timing provider {provider:?} is not installed; only \"aic\" is \
-         available in the AISimulate runtime"
+         available in the AISim runtime"
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid encoder AIC timing configuration")?;
@@ -3376,7 +3368,7 @@ fn resolve_role_timing(
     ensure!(
         provider == "aic",
         "native timing provider {provider:?} is not installed; only \"aic\" and \"afd\" are \
-         available in the AISimulate runtime"
+         available in the AISim runtime"
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
@@ -3485,7 +3477,7 @@ fn check_afd_memory_fit_and_kv_budget_py(
         ForwardPassWorkerType::Aggregated => "both",
     };
     Python::with_gil(|py| {
-        let module = py.import("aisimulate.sdk.afd_memory")?;
+        let module = py.import("aisim.sdk.afd_memory")?;
         let common = PyDict::new(py);
         common.set_item("model_path", &config.model)?;
         common.set_item("backend_name", config.backend.as_str())?;
@@ -4709,7 +4701,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         determinism,
         serving_path,
         telemetry_sample_interval_ms,
-    ) = match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
+    ) = match serde_json::from_str(payload).context("invalid AISim execution ReplaySpec")? {
         ExecutionPayload::Configured {
             spec,
             traffic,
@@ -5064,7 +5056,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         }
         .map_err(Into::into)
     })()
-    .context("AISimulate replay failed");
+    .context("AISim replay failed");
     let (mut report, artifacts, resolved_weka_timestamp_basis) = match replay_result {
         Ok(result) => result,
         Err(error) => {
@@ -5098,7 +5090,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     // Keep large capture arrays out of the intermediate summary Value tree.
     let telemetry = report.telemetry.take();
     let mut report_json =
-        serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+        serde_json::to_value(&report).context("serializing AISim replay report summary")?;
     if telemetry.is_some() {
         report_json["telemetry"] = serde_json::Value::Null;
     }
@@ -5133,7 +5125,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             .context("agentic execution did not declare its configured target model")?;
         let object = report_json
             .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?;
+            .context("AISim replay report did not serialize as an object")?;
         object.insert(
             "agentic_qualification".to_string(),
             serde_json::Value::String("functional_only".to_string()),
@@ -5167,7 +5159,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         // serialization, one `Value` at a time.
         report_json
             .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?
+            .context("AISim replay report did not serialize as an object")?
             .insert("per_request".to_string(), serde_json::Value::Null);
     }
     let report_json = ReportWithRecords {
@@ -5180,9 +5172,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             "report": report_json,
             "artifacts": artifacts,
         });
-        return serde_json::to_string(&output).context("serializing AISimulate replay output");
+        return serde_json::to_string(&output).context("serializing AISim replay output");
     }
-    serde_json::to_string(&report_json).context("serializing AISimulate replay output")
+    serde_json::to_string(&report_json).context("serializing AISim replay output")
 }
 
 /// The report object with its `per_request` placeholder serialized as the
@@ -5363,7 +5355,7 @@ fn _build_source_files_json() -> &'static str {
     include_str!(concat!(env!("OUT_DIR"), "/build-source-files.json"))
 }
 
-/// AISimulate native runtime module.
+/// AISim native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_build_source_files_json, module)?)?;
@@ -5391,16 +5383,16 @@ mod tests {
 
     #[test]
     fn replay_coverage_errors_preserve_the_original_chain() {
-        let original = || anyhow::anyhow!("original failure").context("AISimulate replay failed");
+        let original = || anyhow::anyhow!("original failure").context("AISim replay failed");
         let wrapped = replay_failure(original(), Ok(Some(serde_json::json!({}))));
         assert_eq!(
             format!("{wrapped:#}"),
-            "AISimulate replay failed: original failure"
+            "AISim replay failed: original failure"
         );
         let missing = replay_failure(original(), Err(anyhow::anyhow!("coverage unavailable")));
         assert_eq!(
             format!("{missing:#}"),
-            "FPM coverage diagnostics failed: coverage unavailable: AISimulate replay failed: original failure"
+            "FPM coverage diagnostics failed: coverage unavailable: AISim replay failed: original failure"
         );
     }
 
@@ -5645,7 +5637,7 @@ mod tests {
             "create exact report sample file: No space left on device".to_string(),
         ))
         .context("collecting replay report")
-        .context("AISimulate replay failed");
+        .context("AISim replay failed");
         let expected_message = format!("{error:#}");
 
         Python::with_gil(|py| {
@@ -5658,7 +5650,7 @@ mod tests {
     #[test]
     fn replay_python_error_keeps_other_failures_as_runtime_errors() {
         pyo3::prepare_freethreaded_python();
-        let error = anyhow::anyhow!("invalid replay input").context("AISimulate replay failed");
+        let error = anyhow::anyhow!("invalid replay input").context("AISim replay failed");
         let expected_message = format!("{error:#}");
 
         Python::with_gil(|py| {
@@ -5673,7 +5665,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         let error =
             anyhow::Error::new(crate::AfdRoutingLocation::F.ensure_supported().unwrap_err())
-                .context("AISimulate replay failed");
+                .context("AISim replay failed");
         let expected_message = format!("{error:#}");
         Python::with_gil(|py| {
             let mapped = replay_python_error(error);
@@ -6718,19 +6710,17 @@ mod tests {
         use crate::perfmodel::engine::spec::EngineSpec;
 
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
-        if let Err(error) =
-            Python::with_gil(|py| py.import("aisimulate_core.sdk.engine").map(|_| ()))
-        {
+        if let Err(error) = Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ())) {
             assert!(
                 !required,
                 "native_phase_evidence_matches_python_bridge: \
                  AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but \
-                 `aisimulate_core.sdk.engine` is not importable: {error}. \
+                 `aisim_core.sdk.engine` is not importable: {error}. \
                  Install the Python SDK and set PYTHONPATH for the embedded interpreter."
             );
             eprintln!(
                 "native_phase_evidence_matches_python_bridge: SKIP — \
-                 `aisimulate_core.sdk.engine` is not importable: {error}. \
+                 `aisim_core.sdk.engine` is not importable: {error}. \
                  Set AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 + PYTHONPATH to enforce."
             );
             return;
@@ -6746,7 +6736,7 @@ mod tests {
         config.moe_ep_size = Some(4);
         config.systems_paths = vec![
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
         ];
         let mut native =
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap();
@@ -9922,15 +9912,13 @@ mod tests {
     /// TensorRT-LLM 1.3.0rc20 model, whose GEMM and attention tables do.
     fn packaged_op_level_timing(test: &str, power: bool) -> Option<AicTimingModel> {
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
-        if let Err(error) =
-            Python::with_gil(|py| py.import("aisimulate_core.sdk.engine").map(|_| ()))
-        {
+        if let Err(error) = Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ())) {
             assert!(
                 !required,
-                "{test}: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but `aisimulate_core.sdk.engine` \
+                "{test}: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but `aisim_core.sdk.engine` \
                  is not importable: {error}"
             );
-            eprintln!("{test}: SKIP — `aisimulate_core.sdk.engine` is not importable: {error}");
+            eprintln!("{test}: SKIP — `aisim_core.sdk.engine` is not importable: {error}");
             return None;
         }
         let mut config = aic_config();
@@ -9946,7 +9934,7 @@ mod tests {
         config.kv_block_size = Some(16);
         config.systems_paths = vec![
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
         ];
         let mut timing =
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap();
@@ -10453,7 +10441,9 @@ mod tests {
             )
         };
         // DP=3 passes mixing pure, mixed and idle ranks, each priced twice so
-        // that cached iterations and rank evidence are recorded too.
+        // that cached iterations are recorded too. The last pass moves the
+        // first pass's work to other DP ranks, so its rank evidence comes
+        // from the rank memo's entries.
         let groups = [
             vec![
                 prefill_work(0, 4, 4096, 1024),
@@ -10474,6 +10464,11 @@ mod tests {
                 decode_work(0, 16, 16 * 513, 1 << 20),
                 mixed(1, 1, 128, 1, 1025),
                 decode_work(2, 2, 2 * 700, 1 << 20),
+            ],
+            vec![
+                mixed(0, 1, 512, 8, 1025),
+                prefill_work(1, 4, 4096, 1024),
+                decode_work(2, 32, 32 * 1025, 1 << 20),
             ],
         ];
         for capture in [false, true] {
@@ -10556,6 +10551,53 @@ mod tests {
             assert!(prefill_layouts >= 2, "{prefill_layouts}");
             assert!(decode_layouts >= 2, "{decode_layouts}");
         }
+    }
+
+    #[test]
+    fn rank_memo_entries_keep_their_rank_evidence() {
+        pyo3::prepare_freethreaded_python();
+        let Some(mut timing) =
+            packaged_op_level_timing("rank_memo_entries_keep_their_rank_evidence", true)
+        else {
+            return;
+        };
+        let model = Arc::clone(&timing.iteration.as_ref().unwrap().model);
+        let ranks = [
+            prefill_work(0, 1, 512, 0),
+            decode_work(1, 8, 8 * 1025, 1 << 20),
+        ];
+        let mut kept = Vec::new();
+        for (capture, detail) in [(false, RankDetail::Values), (true, RankDetail::Diagnostics)] {
+            timing.diagnostic_model = capture.then(|| Arc::clone(&model));
+            let pricing = timing.iteration.as_ref().unwrap();
+            let IterationQuery::Native(dispatch) = pricing.query else {
+                panic!("a packaged operation graph prices natively");
+            };
+            let queries: Vec<_> = ranks
+                .iter()
+                .map(|rank| AicTimingModel::rank_query(dispatch, rank).unwrap().unwrap())
+                .collect();
+            let evidence = timing
+                .price_iteration(pricing, &queries, &ranks, capture)
+                .unwrap()
+                .evidence;
+            // One part per pure rank, in rank order; each rank's memo entry
+            // keeps the part its pricing recorded.
+            assert_eq!(evidence.len(), ranks.len());
+            for (query, (phase, _)) in queries.iter().zip(&evidence) {
+                let entry = model
+                    .estimate_native_iteration(&[AicTimingModel::rank_metrics(query)], detail)
+                    .unwrap()
+                    .unwrap();
+                let parts = entry.ranks[0]
+                    .derived(|_| -> Result<RankEvidence> { bail!("the entry keeps no evidence") })
+                    .unwrap();
+                assert!(Arc::ptr_eq(&parts[0].0, phase));
+            }
+            kept.push(Arc::clone(&evidence[0].0));
+        }
+        // Values and diagnostics are kept on separate entries.
+        assert!(!Arc::ptr_eq(&kept[0], &kept[1]));
     }
 
     #[test]
@@ -10752,7 +10794,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         let db = crate::perf_database::PerfDatabase::load(
             &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+                .join("../../python/aisim/src/aisim_core/systems"),
             "h200_sxm",
             "sglang",
             "0.5.6.post2",
