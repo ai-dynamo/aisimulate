@@ -98,10 +98,10 @@ engine-only environment, remove the old distribution first, then install the
 selected new wheel (or `aisim==<published-version>`):
 
 ```bash
-python -m pip uninstall -y aisimulate
-python -m pip install /absolute/path/to/aisim-VERSION-PLATFORM.whl
-python -m pip check
-aisim --help
+python -m pip uninstall -y aisimulate && \
+python -m pip install /absolute/path/to/aisim-VERSION-PLATFORM.whl && \
+python -m pip check && \
+aisim --help && \
 aisimulate --help
 ```
 
@@ -110,8 +110,8 @@ AISim checks distribution metadata during import and CLI startup. If both `aisim
 Use that same ordering for upgrades. To repair an environment where both distributions were installed, remove the old distribution and reinstall the exact selected wheel. Preserve the existing dependency set during this repair and validate it afterward:
 
 ```bash
-python -m pip uninstall -y aisimulate
-python -m pip install --force-reinstall --no-deps /absolute/path/to/aisim-VERSION-PLATFORM.whl
+python -m pip uninstall -y aisimulate && \
+python -m pip install --force-reinstall --no-deps /absolute/path/to/aisim-VERSION-PLATFORM.whl && \
 python -m pip check
 ```
 
@@ -142,8 +142,8 @@ aisim --help
 To repair an existing source-checkout environment after installing a legacy distribution, run these commands from that same checkout:
 
 ```bash
-uv pip uninstall --python python/aisim/.venv/bin/python aisimulate
-uv sync --project python/aisim --extra dev --frozen --inexact --reinstall-package aisim
+uv pip uninstall --python python/aisim/.venv/bin/python aisimulate && \
+uv sync --project python/aisim --extra dev --frozen --inexact --reinstall-package aisim && \
 uv pip check --python python/aisim/.venv/bin/python
 ```
 
