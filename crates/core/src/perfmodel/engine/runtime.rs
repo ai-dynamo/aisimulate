@@ -5,7 +5,7 @@
 
 //! `Engine`: the compiled-spec execution core.
 //!
-//! Mirrors `aisimulate.sdk.backends.base_backend`'s static orchestration
+//! Mirrors `aisim.sdk.backends.base_backend`'s static orchestration
 //! (`run_static` / `run_static_latency_only` / `_run_static_breakdown` /
 //! `_run_context_phase` / `_run_generation_phase`) but executes a precompiled
 //! [`EngineSpec`] — Python no longer walks the op list per call. The per-phase
@@ -435,6 +435,29 @@ pub(crate) struct RankPricing {
     /// The least-confident empirical tier the rank's lookups fired, noted
     /// again whenever the memo answers in their place.
     provenance: ProvenanceTier,
+    /// What a caller derives from this pricing ([`Self::derived`]).
+    derived: OnceLock<Box<dyn std::any::Any + Send + Sync>>,
+}
+
+impl RankPricing {
+    /// The `T` that `build` derives from this pricing, built on first use and
+    /// kept with it, so that every rank the memo answers with this entry
+    /// reuses it. `build` may depend only on the pricing and on what its memo
+    /// key determines. A pricing keeps one derived type.
+    pub(crate) fn derived<T: Send + Sync + 'static, E>(
+        &self,
+        build: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<&T, E> {
+        if self.derived.get().is_none() {
+            // A concurrent first use keeps one of the equal values.
+            let _ = self.derived.set(Box::new(build(self)?));
+        }
+        Ok(self
+            .derived
+            .get()
+            .and_then(|kept| kept.downcast_ref())
+            .expect("a rank pricing keeps one derived type"))
+    }
 }
 
 /// [`Engine::forward_pass_estimate`] keeping each rank's pricing: the rank
@@ -1396,7 +1419,7 @@ impl Engine {
     /// matching `PerfDatabase` from its identity, then [`Engine::build`].
     ///
     /// Runs the `Engine::from_spec_bytes(bytes) + PerfDatabase::load`
-    /// flow. `systems_root` points at `python/aisimulate/src/aisimulate_core/systems` and is used
+    /// flow. `systems_root` points at `python/aisim/src/aisim_core/systems` and is used
     /// only as a fallback: when the decoded `spec.engine.systems_path` is
     /// `Some`, that path is authoritative and overrides the `systems_root`
     /// argument.
@@ -3485,6 +3508,7 @@ impl Engine {
             operations: values,
             diagnostics,
             provenance: self.db.worst_provenance(),
+            derived: OnceLock::new(),
         })
     }
 
@@ -3949,8 +3973,7 @@ pub(crate) mod tests {
     use crate::{BackendKind, ParallelMapping, QuantizationConfig};
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
     }
 
     const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
@@ -5506,6 +5529,27 @@ pub(crate) mod tests {
             .unwrap();
         assert!(iteration.ranks[0].operations.is_none());
         assert_eq!(iteration.latency_ms, covered);
+    }
+
+    #[test]
+    fn rank_pricing_keeps_what_a_caller_derives_from_it() {
+        let rank = RankPricing {
+            latency_ms: 2.0,
+            operations: None,
+            diagnostics: None,
+            provenance: ProvenanceTier::Silicon,
+            derived: OnceLock::new(),
+        };
+        let builds = std::cell::Cell::new(0);
+        let build = |rank: &RankPricing| -> Result<Vec<f64>, String> {
+            builds.set(builds.get() + 1);
+            Ok(vec![rank.latency_ms])
+        };
+        // A failed build keeps nothing.
+        assert!(rank.derived(|_| Err::<Vec<f64>, _>("no")).is_err());
+        let first = rank.derived(build).unwrap();
+        assert!(std::ptr::eq(rank.derived(build).unwrap(), first));
+        assert_eq!((first, builds.get()), (&vec![2.0], 1));
     }
 
     #[test]

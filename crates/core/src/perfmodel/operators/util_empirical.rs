@@ -3,7 +3,7 @@
 
 //! Data-calibrated empirical estimation via SOL-utilization.
 //!
-//! Mirrors `aisimulate.sdk.operations.util_empirical`: each op's
+//! Mirrors `aisim.sdk.operations.util_empirical`: each op's
 //! empirical estimate is `latency = SOL(query) / util` where
 //! `util = SOL / measured > 0` is read best-effort from collected samples in
 //! per-axis normalised log space. `util` is an effective calibration factor,

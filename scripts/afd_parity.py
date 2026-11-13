@@ -163,7 +163,7 @@ def _native_source_inputs() -> set[str]:
 
 def _verify_native_build(files: dict[str, str]) -> str:
     """Compare current source with hashes embedded when the extension was built."""
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     identity = getattr(_runtime, "_build_source_files_json", None)
     if identity is None:
@@ -177,7 +177,7 @@ def _verify_native_build(files: dict[str, str]) -> str:
 
 def _source_inputs() -> set[str]:
     """Build/runtime inputs, including new files before they are tracked."""
-    roots = ["crates/core/src", "python/aisimulate/src"]
+    roots = ["crates/core/src", "python/aisim/src"]
     inputs = {
         name
         for name in subprocess.check_output(
@@ -190,8 +190,8 @@ def _source_inputs() -> set[str]:
                 "Cargo.toml",
                 "crates/core/Cargo.toml",
                 "Cargo.lock",
-                "python/aisimulate/pyproject.toml",
-                "python/aisimulate/uv.lock",
+                "python/aisim/pyproject.toml",
+                "python/aisim/uv.lock",
             ],
             cwd=ROOT,
         )
@@ -210,7 +210,7 @@ def _source_inputs() -> set[str]:
 
 def _write_build_snapshot(output: Path) -> dict:
     """Bind a built binary to a complete immutable copy of its source inputs."""
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     files = {name: _sha256(ROOT / name) for name in sorted(_source_inputs())}
     native_inventory = _verify_native_build(files)
@@ -242,7 +242,7 @@ def _write_build_snapshot(output: Path) -> dict:
         "binary_sha256": _sha256(Path(_runtime.__file__)),
         "native_source_inventory_sha256": native_inventory,
         "data_tree": subprocess.check_output(
-            ["git", "rev-parse", "HEAD:python/aisimulate/src/aisimulate_core/systems/data"], cwd=ROOT, text=True
+            ["git", "rev-parse", "HEAD:python/aisim/src/aisim_core/systems/data"], cwd=ROOT, text=True
         ).strip(),
     }
     output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -272,7 +272,7 @@ def _verify_snapshot(manifest: dict, manifest_path: Path) -> None:
 
 def _verified_build(manifest_path: Path) -> dict:
     """Refuse stale binaries or unrecorded source changes before generation."""
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     manifest = _load(manifest_path)
     for field in ("source_commit", "source_tree", "binary_sha256", "source_files", "data_tree"):
@@ -306,7 +306,7 @@ def _verified_build(manifest_path: Path) -> dict:
                 raise ValueError(f"source differs from immutable commit: {relative}")
     if _source_inputs() - manifest["source_files"].keys():
         raise ValueError("build manifest does not cover all runtime source inputs")
-    data_path = "python/aisimulate/src/aisimulate_core/systems/data"
+    data_path = "python/aisim/src/aisim_core/systems/data"
     if subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "--", data_path], cwd=ROOT):
         raise ValueError("performance data has unrecorded files")
     if subprocess.check_output(["git", "diff", "HEAD", "--", data_path], cwd=ROOT):
@@ -344,7 +344,7 @@ def _refresh_e2e(
             command = [
                 sys.executable,
                 "-m",
-                "aisimulate",
+                "aisim",
                 "predict",
                 "--stack",
                 "engine",
@@ -380,7 +380,7 @@ def _refresh_e2e(
             **provenance,
             "config_sha256": config_digest,
             "command": [
-                "aisimulate",
+                "aisim",
                 "predict",
                 "--stack",
                 "engine",
@@ -466,7 +466,7 @@ def _refresh_layouts(cases: list[str], reason: str, build_manifest: Path) -> Non
                 [
                     sys.executable,
                     "-m",
-                    "aisimulate",
+                    "aisim",
                     "predict",
                     "--stack",
                     "engine",
@@ -504,7 +504,7 @@ def _refresh_layouts(cases: list[str], reason: str, build_manifest: Path) -> Non
             "config_sha256": hashlib.sha256(json.dumps(record["config"], sort_keys=True).encode()).hexdigest(),
             "trace_sha256": trace_hash,
             "command": [
-                "aisimulate",
+                "aisim",
                 "predict",
                 "--stack",
                 "engine",

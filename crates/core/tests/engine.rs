@@ -9,14 +9,14 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
-use aisimulate_core::engine::{
+use aisim_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
+use aisim_core::engine::{
     Backend, Command, EncoderShape, Engine, EngineConfig, EngineFactory, FrontendConfig,
     FrontendStage, ImageSpec, IterationMs, NativeHostOffloadConfig, PassCompletionEffects,
     RankWork, Request, SglangConfig, SglangHiCacheConfig, SglangHiCacheWritePolicy, TimingModel,
     TimingModelConfig, VisionShape,
 };
-use aisimulate_core::replay::{
+use aisim_core::replay::{
     AggregatedRoundRobinPlacement, EncoderSpec, NoEngineEvents, NoReplayMetadata,
     PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition,
     ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayError, ReplayReport,
@@ -1615,7 +1615,7 @@ fn scaling_composition_changes_round_robin_capacity_before_arrival() {
     };
     let report = Replayer::with_composition(
         replay,
-        aisimulate_core::replay::ReplayEngineFactory::new(),
+        aisim_core::replay::ReplayEngineFactory::new(),
         composition,
     )
     .unwrap()
@@ -3078,7 +3078,7 @@ fn sglang_host_loop_launches_the_group_priced_forward_after_observing_the_last()
             .lifecycle_events
             .iter()
             .filter_map(|event| match event {
-                aisimulate_core::engine::LifecycleEvent::TtftMilestone {
+                aisim_core::engine::LifecycleEvent::TtftMilestone {
                     request_id: id,
                     stage,
                     at_ms,
@@ -3094,7 +3094,7 @@ fn sglang_host_loop_launches_the_group_priced_forward_after_observing_the_last()
         ));
         now_ms = started.end_ms;
     }
-    use aisimulate_core::engine::TtftMilestone::{PrefillComplete, Received, Selected};
+    use aisim_core::engine::TtftMilestone::{PrefillComplete, Received, Selected};
     // Hand oracle: the 4 ms prefill launches at 0 and its loop returns at
     // once; the next iteration observes it at 4 ms and launches a 3 ms
     // decode, observed at 7 ms. The queued result finishes by length, so its

@@ -29,7 +29,7 @@ INVENTORY = Path("scripts/ci/bundled_configs.json")
 BASELINE = Path(__file__).with_name("bundled_config_legacy.json")
 # Changes to this frozen exception set require an explicit checker/policy review.
 BASELINE_SHA256 = "5d88f361eba4d2e6a33a9fc5f5f6e1e2c1e45dca8fd4d39a7d0d69b412e3eafe"
-CONFIG_PREFIX = "aisimulate_core/model_configs/"
+CONFIG_PREFIX = "aisim_core/model_configs/"
 CONFIG_SUFFIXES = {".json", ".yaml", ".yml", ".toml"}
 FIELDS = ("dependency_type", "name", "version", "spdx_license")
 
@@ -88,7 +88,8 @@ def legacy_baseline() -> dict[str, str]:
     data = BASELINE.read_bytes()
     if digest(data) != BASELINE_SHA256:
         raise InventoryError("frozen unresolved baseline changed; policy review is required")
-    return load_json(data)["files"]
+    # The package moved; retain every frozen byte hash and exception unchanged.
+    return {path.replace("aisimulate_core/", "aisim_core/", 1): sha for path, sha in load_json(data)["files"].items()}
 
 
 def inventory_entries(path: Path) -> dict[str, dict]:
@@ -199,7 +200,7 @@ def read_wheel(wheel_path: Path, declared: dict[str, dict]) -> WheelContents:
 def source_configs(root: Path, declared: dict[str, dict]) -> dict[str, bytes]:
     result = {}
     # These directories contribute Python/package data to the unified wheel.
-    roots = (("python/aisimulate/src", ""), ("python/aisimulate/collector/fpm_forward", "collector/fpm_forward/"))
+    roots = (("python/aisim/src", ""), ("python/aisim/collector/fpm_forward", "collector/fpm_forward/"))
     for source, prefix in roots:
         directory = root / source
         for path in directory.rglob("*"):

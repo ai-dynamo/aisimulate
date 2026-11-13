@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import aisimulate.sweeper.search as search_module
-from aisimulate.sweeper import (
+import aisim.sweeper.search as search_module
+from aisim.sweeper import (
     RESULT_SCHEMA_VERSION,
     BackendDeploymentSpec,
     CandidateProvenance,
@@ -35,10 +35,10 @@ from aisimulate.sweeper import (
     SweepResult,
     SweepRunProvenance,
 )
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.result import make_candidate_provenance
-from aisimulate.sweeper.sampler import Suggestion
-from aisimulate.sweeper.search_space import BranchSpace
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.result import make_candidate_provenance
+from aisim.sweeper.sampler import Suggestion
+from aisim.sweeper.search_space import BranchSpace
 
 
 def _config(*, target: str = "throughput") -> SmartSearchConfig:
@@ -786,7 +786,7 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
 
 @pytest.fixture(autouse=True)
 def _isolate_estimator_data_for_result_orchestration(monkeypatch):
-    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
 
@@ -816,7 +816,7 @@ def test_previous_result_version_remains_readable():
 
 
 def test_sweep_keeps_feasible_result_when_another_candidate_exceeds_resources(monkeypatch):
-    from aisimulate.resource_scheduler import InterruptedEvaluation
+    from aisim.resource_scheduler import InterruptedEvaluation
 
     parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
     branch = BranchSpace(
@@ -836,7 +836,7 @@ def test_sweep_keeps_feasible_result_when_another_candidate_exceeds_resources(mo
         yield 0, search_module._run_replay_detailed(specs[0], _Runner())
         yield 1, InterruptedEvaluation("too large", True, {"required_bytes": 10**12})
 
-    monkeypatch.setattr("aisimulate.resource_scheduler.evaluate_waves", partial)
+    monkeypatch.setattr("aisim.resource_scheduler.evaluate_waves", partial)
     result = Sweeper(runner_factory=ResourceFactory(), sampler_factory=_Sampler, show_progress=False).run(_config())
     assert result.counts.feasible == 1
     assert result.counts.resource_limited == 1

@@ -9,7 +9,7 @@
 
 //! Scheduler-facing facade over the native vLLM-style G1 manager.
 //!
-//! AISimulate owns a single native G1 implementation. External tiers and
+//! AISim owns a single native G1 implementation. External tiers and
 //! provider selection are deliberately absent here.
 
 use uuid::Uuid;
