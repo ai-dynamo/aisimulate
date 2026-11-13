@@ -19,7 +19,7 @@ generator SDK.
 
 Use Python 3.11–3.13. This branch builds the renamed `aisim` distribution;
 these commands require its publication on your selected index. Until then, use
-a historical `aisim` release in a separate environment or build from source:
+a historical `aisimulate` release in a separate environment or build from source:
 
 ```bash
 python3 -m pip install aisim
@@ -164,5 +164,5 @@ so that AISim owns the installed files:
 
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
-python3 -m pip install --upgrade aisim
+python3 -m pip install --force-reinstall --no-deps aisim==0.14.0
 ```
