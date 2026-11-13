@@ -130,9 +130,9 @@ In an engine-only environment, remove the former distributions before upgrading:
 
 <!-- readme-check: release-upgrade -->
 ```bash
-python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
-python3 -m pip install aisim==0.14.0
-python3 -m pip install --force-reinstall --no-deps aisim==0.14.0
+python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate &&
+python3 -m pip install aisim==0.14.0 &&
+python3 -m pip install --force-reinstall --no-deps aisim==0.14.0 &&
 python3 -m pip check
 ```
 

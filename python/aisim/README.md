@@ -42,14 +42,14 @@ The distributions share their Python files and CLI, so uninstall `aisimulate`
 **before** installing or upgrading to `aisim`.
 
 The commands below repair package files in an environment that already has
-AISim 0.14.0's dependencies. When upgrading from an older release, run
-`python3 -m pip install aisim==0.14.0` after the uninstall step and before the
-force-reinstall step. This installs missing or newly required dependencies;
-the following `--no-deps` repair leaves those dependencies in place.
+AISim 0.14.0's dependencies. When upgrading from an older release, insert
+`python3 -m pip install aisim==0.14.0 &&` after the uninstall line and before the
+force-reinstall line. This dependency installation must succeed before the
+following `--no-deps` repair, which leaves those dependencies in place.
 
 ```bash
-python3 -m pip uninstall -y aisimulate
-python3 -m pip install --force-reinstall --no-deps aisim==0.14.0
+python3 -m pip uninstall -y aisimulate &&
+python3 -m pip install --force-reinstall --no-deps aisim==0.14.0 &&
 python3 -m pip check
 ```
 
@@ -171,6 +171,7 @@ install step in [Migrate from the `aisimulate` distribution](#migrate-from-the-a
 also apply here:
 
 ```bash
-python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
-python3 -m pip install --force-reinstall --no-deps aisim==0.14.0
+python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate &&
+python3 -m pip install --force-reinstall --no-deps aisim==0.14.0 &&
+python3 -m pip check
 ```
