@@ -10,7 +10,9 @@ installs the two lists at import time inside the engine process:
 
 - SGLang (``_sglang.py``): wraps ``SchedulerMetricsReporter._build_scheduled_request_metrics`` and
   swaps ``ScheduledRequestMetrics`` for a subclass carrying the two lists
-  (values from the schedule-time ``batch.extend_lens`` / ``batch.prefix_lens``).
+  (values from the schedule-time ``batch.extend_lens`` / ``batch.prefix_lens``),
+  plus step diagnostics: speculative configuration and accepted tokens, device
+  time per DeviceTimer category, and host timestamps (``_struct.STEP_FIELDS``).
 - Dynamo vLLM (``_dynamo_vllm.py``): wraps ``InstrumentedScheduler._extract_scheduled`` the same way
   (values from ``SchedulerOutput.num_scheduled_tokens`` / ``num_computed_tokens``).
 
