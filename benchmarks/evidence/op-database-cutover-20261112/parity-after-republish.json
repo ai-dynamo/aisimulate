@@ -32,11 +32,11 @@
       "configuration_id": "cfg-280bde1f755ba638aa8fd4e022e6c4318da0b690d163cc075e0e52bb3e7d98de",
       "ok": true,
       "systems_paths": [
-        "/tmp/op-parity-25n0ietc/offline/cache/materialized/local-fd951759306073a6/cfg-280bde1f755ba638aa8fd4e022e6c4318da0b690d163cc075e0e52bb3e7d98de/systems"
+        "<tmp>/offline/cache/materialized/local-fd951759306073a6/cfg-280bde1f755ba638aa8fd4e022e6c4318da0b690d163cc075e0e52bb3e7d98de/systems"
       ]
     },
     "local_pin_without_family": {
-      "detail": "DataConflictError: 12 op-latency entries match system=h200_sxm, backend=vllm, backend_version=0.24.0 in /tmp/claude-1776682970/-home-simone",
+      "detail": "DataConflictError: 12 op-latency entries match system=h200_sxm, backend=vllm, backend_version=0.24.0 in <scratch>",
       "ok": true
     },
     "ok": true
@@ -205,7 +205,7 @@
       }
     ],
     "tree_run_selected_roots": [
-      "/tmp/op-parity-25n0ietc/loaded-systems"
+      "<tmp>/loaded-systems"
     ],
     "tree_run_used_loaded_root_only": true,
     "usable_scenarios": 11
