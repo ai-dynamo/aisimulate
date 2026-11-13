@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Prefetch op-latency data
+description: >-
+  Download the pinned ai-dynamo/aisim-data op-latency revision once into the data cache, so parallel
+  test workers and later steps start from a warm cache instead of racing to fetch it.
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch the pinned op-latency dataset
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -m pip install --quiet pydantic pyarrow pyyaml
+        python scripts/ci/compose_systems_root.py

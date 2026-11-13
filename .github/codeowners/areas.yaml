@@ -374,6 +374,8 @@ shared:
     owners: [mocker, replay, forward-pass-engine, maintainers]
   - glob: crates/core/src/lib.rs
     owners: [mocker, replay, forward-pass-engine, maintainers]
+  - glob: crates/core/src/test_systems.rs
+    owners: [mocker, replay, forward-pass-engine, maintainers]
   - glob: crates/core/tests/
     owners: [mocker, replay, maintainers]
   - glob: crates/core/tests/perfmodel/

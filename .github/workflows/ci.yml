@@ -701,6 +701,7 @@ jobs:
           python -m pip install uv
           python -m uv pip install --system "${wheels[0]}[dev,learned]"
           echo "AISIM_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
+      - uses: ./.github/actions/prefetch-op-latency-data
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
@@ -832,6 +833,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install AISim and development dependencies
         run: python -m pip install './python/aisim[dev]'
+      - uses: ./.github/actions/prefetch-op-latency-data
       - name: Verify interpreter and dependency compatibility
         run: |
           python -m pip check
@@ -862,6 +864,7 @@ jobs:
           python-version: "3.13"
       - name: Install AISim and development dependencies
         run: python -m pip install './python/aisim[dev]'
+      - uses: ./.github/actions/prefetch-op-latency-data
       - name: Run engine-step golden regression suite
         run: >-
           python -m pytest -q -rx -n 4
