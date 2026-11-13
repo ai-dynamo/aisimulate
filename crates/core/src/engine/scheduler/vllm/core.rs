@@ -733,6 +733,8 @@ struct ForwardWork {
 struct DecodeBatch {
     /// Context length of each request priced as decode work.
     lengths: Vec<usize>,
+    /// Tokens each of those requests verifies: one plus its scheduled drafts.
+    widths: Vec<usize>,
 }
 
 impl DecodeBatch {
@@ -744,14 +746,16 @@ impl DecodeBatch {
         self.lengths.iter().sum()
     }
 
-    /// Add one request's context length. The first push reserves `max`, the
-    /// most the pass can add, so a pass allocates once, or not at all without
-    /// decode work.
-    fn push(&mut self, length: usize, max: usize) {
+    /// Add one request's context length and verification width. The first
+    /// push reserves `max`, the most the pass can add, so a pass allocates
+    /// once, or not at all without decode work.
+    fn push(&mut self, length: usize, width: usize, max: usize) {
         if self.lengths.capacity() == 0 {
             self.lengths.reserve_exact(max);
+            self.widths.reserve_exact(max);
         }
         self.lengths.push(length);
+        self.widths.push(width);
     }
 }
 
@@ -2651,10 +2655,6 @@ impl VllmCore {
             }
         }
 
-        let compute_start_ms = self
-            .native_host_offload
-            .as_ref()
-            .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         let prefill = priced_prefill(
             batch_count,
             batch_total_isl,
@@ -2683,6 +2683,12 @@ impl VllmCore {
         // that computes prefill and decode together may be one forward.
         let (decode, mut output_signals) =
             self.emit_ready_tokens(now_ms, &scheduled, &mut decode_acceptance)?;
+        // Read after emission: accepted drafts that take a block a store still
+        // reads, and a preemption they force, delay this pass's forward.
+        let compute_start_ms = self
+            .native_host_offload
+            .as_ref()
+            .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         // Emit the terminal signals for the requests the gate rejected above
         // (see the gate comment for why this can't be done inline).
         for uuid in rejected_uuids {
@@ -2759,6 +2765,7 @@ impl VllmCore {
                 mean_context_length: forward.total_length / forward.decode_count,
                 kv_bound_tokens: self.decode_kv_context_bound(forward.total_length),
                 lengths: decode.lengths,
+                widths: decode.widths,
                 verify_width,
             }),
         };
@@ -3521,7 +3528,7 @@ impl VllmCore {
             }
             ready.push(uuid);
             if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
-                decode.push(request.sequence.len(), self.state.running.len());
+                decode.push(request.sequence.len(), 1, self.state.running.len());
             }
         }
 
@@ -3772,8 +3779,11 @@ impl VllmCore {
         };
 
         let mut decode = DecodeBatch::default();
-        for length in bursts.iter().filter_map(|burst| burst.decode_length) {
-            decode.push(length, bursts.len());
+        // A burst's limit is the round's verification width.
+        for burst in &bursts {
+            if let Some(length) = burst.decode_length {
+                decode.push(length, burst.limit, bursts.len());
+            }
         }
 
         let sampler = self
@@ -3849,8 +3859,9 @@ impl VllmCore {
                         );
                         // A reserved block may still be the source of an in-flight G2
                         // store. vLLM flushes the pending stores of every block a step
-                        // allocates, lookahead slots included, before its forward. Replay
-                        // reserves these blocks after the pass, so the next pass waits.
+                        // allocates, lookahead slots included, before its forward, so
+                        // this pass's forward waits. A store prepared in this pass has
+                        // its deadline at the pass boundary: the next pass waits for it.
                         let NativeAllocation::Ready { dependencies, .. } = allocation else {
                             panic!("speculative decode reservation must cover its blocks");
                         };

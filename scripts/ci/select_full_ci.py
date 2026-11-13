@@ -86,13 +86,13 @@ PACKAGE_CONTENT_FILES = {
     ".gitattributes",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
-    "python/aisimulate/.dockerignore",
-    "python/aisimulate/.gitattributes",
-    "python/aisimulate/THIRD_PARTY_NOTICES.md",
+    "python/aisim/.dockerignore",
+    "python/aisim/.gitattributes",
+    "python/aisim/THIRD_PARTY_NOTICES.md",
 }
 PYTHON_DEPENDENCY_FILES = {
-    "python/aisimulate/pyproject.toml",
-    "python/aisimulate/uv.lock",
+    "python/aisim/pyproject.toml",
+    "python/aisim/uv.lock",
 }
 RUST_DEPENDENCY_FILES = {
     "Cargo.lock",
@@ -139,16 +139,16 @@ def _is_prediction_path(path: str) -> bool:
             "crates/core/src/engine/",
             "crates/core/src/perfmodel/",
             "crates/core/tests/perfmodel/",
-            "python/aisimulate/src/aisimulate/sdk/",
-            "python/aisimulate/src/aisimulate/generator/",
-            "python/aisimulate/src/aisimulate/legacy_cli/",
-            "python/aisimulate/src/aisimulate/fpm_contract.py",
-            "python/aisimulate/src/aisimulate/logging_utils.py",
-            "python/aisimulate/src/aisimulate_core/",
-            "python/aisimulate/src/aisimulate/capacity.py",
-            "python/aisimulate/tools/accuracy_regression_testing/",
-            "python/aisimulate/tools/accuracy_tracking/",
-            "python/aisimulate/tools/prediction_regression_gate/",
+            "python/aisim/src/aisim/sdk/",
+            "python/aisim/src/aisim/generator/",
+            "python/aisim/src/aisim/legacy_cli/",
+            "python/aisim/src/aisim/fpm_contract.py",
+            "python/aisim/src/aisim/logging_utils.py",
+            "python/aisim/src/aisim_core/",
+            "python/aisim/src/aisim/capacity.py",
+            "python/aisim/tools/accuracy_regression_testing/",
+            "python/aisim/tools/accuracy_tracking/",
+            "python/aisim/tools/prediction_regression_gate/",
             "tests/test_aic.py",
         )
     )
@@ -157,12 +157,12 @@ def _is_prediction_path(path: str) -> bool:
 def _is_collector_path(path: str) -> bool:
     return path.startswith(
         (
-            "python/aisimulate/collector/",
-            "python/aisimulate/tools/perf_database/",
-            "python/aisimulate/tests/unit/collector/",
-            "python/aisimulate/docs/perf_database/",
+            "python/aisim/collector/",
+            "python/aisim/tools/perf_database/",
+            "python/aisim/tests/unit/collector/",
+            "python/aisim/docs/perf_database/",
         )
-    ) or path.startswith("python/aisimulate/src/aisimulate_core/systems/data/")
+    ) or path.startswith("python/aisim/src/aisim_core/systems/data/")
 
 
 def _all(reason: str, paths: list[str]) -> dict[str, object]:
@@ -208,10 +208,10 @@ def select_components(paths: Iterable[str], *, force_all: bool = False) -> dict[
         if path in PYTHON_DEPENDENCY_FILES:
             return _all(f"Python dependency contract changed: {path!r}", changed)
 
-        if path == "python/aisimulate/pytest.ini":
+        if path == "python/aisim/pytest.ini":
             return _all(f"shared test configuration changed: {path!r}", changed)
 
-        if path in PACKAGE_CONTENT_FILES or path.startswith("python/aisimulate/docker/"):
+        if path in PACKAGE_CONTENT_FILES or path.startswith("python/aisim/docker/"):
             selected.update(PYTHON_PACKAGE_COMPONENTS)
             reasons.add("package or distribution metadata")
             continue
@@ -227,7 +227,7 @@ def select_components(paths: Iterable[str], *, force_all: bool = False) -> dict[
             reasons.add("Rust implementation or tests")
             continue
 
-        if path.startswith("python/aisimulate/"):
+        if path.startswith("python/aisim/"):
             selected.update(PYTHON_PACKAGE_COMPONENTS)
             reasons.add("Python package implementation or tests")
             if _is_prediction_path(path):

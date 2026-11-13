@@ -3,7 +3,7 @@
 # Native SGLang VL prediction on a disaggregated deployment: the prefill worker hosts the
 # scheduler loop, the frontend stages and the vision encoder; the decode worker is a plain
 # PD decode rank. Measure the frontend stages on the prefill serving host with
-#   python -m aisimulate.vl.collect --config vl-predict-disaggregated.yaml --sglang-python <serving venv python>
+#   python -m aisim.vl.collect --config vl-predict-disaggregated.yaml --sglang-python <serving venv python>
 traffic:
   source:
     type: synthetic

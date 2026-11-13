@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build the explicitly allowlisted public AISimulate GitHub Pages artifact."""
+"""Build the explicitly allowlisted public AISim GitHub Pages artifact."""
 
 from __future__ import annotations
 
@@ -21,13 +21,14 @@ from pathlib import Path
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.build_e2e_accuracy_overview import measurement_source_url
+from scripts.e2e_accuracy.summary_contract import normalize_summary
 from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
 from scripts.fpm_accuracy.scenario_contract import validate_scenarios
 from scripts.pages import feature_support_matrix as feature_matrix
 
 ROOT = Path(__file__).resolve().parents[2]
 PAGES_ROOT = Path("pages")
-SYSTEMS_ROOT = Path("python/aisimulate/src/aisimulate_core/systems")
+SYSTEMS_ROOT = Path("python/aisim/src/aisim_core/systems")
 
 # Directories are opt-in so adding internal documentation under docs/ never
 # publishes it accidentally. Every listed page is now part of the required
@@ -215,13 +216,13 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
 
     def aggregate(item: dict) -> None:
         require(isinstance(item, dict) and type(item.get("rows")) is int and item["rows"] > 0, "rows")
-        for name in ("aic", "aisimulate"):
+        for name in ("aic", "aisim"):
             metrics = item.get(name)
             require(isinstance(metrics, dict), name)
             require(type(metrics.get("points")) is int and 0 <= metrics["points"] <= item["rows"], f"{name}.points")
             for metric in ("ttft_mape_pct", "tpot_mape_pct", "ttft_shape_error_pct", "tpot_shape_error_pct"):
                 require(metric in metrics and (metrics[metric] is None or number(metrics[metric])), f"{name}.{metric}")
-        counts = item["aisimulate"].get("status_counts")
+        counts = item["aisim"].get("status_counts")
         require(isinstance(counts, dict), "status_counts")
         require(
             all(
@@ -231,7 +232,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             "status counts",
         )
         require(
-            sum(counts.values()) == item["rows"] and counts["success"] == item["aisimulate"]["points"],
+            sum(counts.values()) == item["rows"] and counts["success"] == item["aisim"]["points"],
             "coverage totals",
         )
 
@@ -278,10 +279,10 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             require(aic_status in ("success", "unsupported", "failed"), "AIC point status")
             aic_successes += aic_status == "success"
             counts[status] += 1
-            for name in ("measured", "aic", "aisimulate"):
+            for name in ("measured", "aic", "aisim"):
                 series = point.get(name)
                 require(isinstance(series, dict), "point series")
-                missing = (name == "aisimulate" and status != "success") or (name == "aic" and aic_status != "success")
+                missing = (name == "aisim" and status != "success") or (name == "aic" and aic_status != "success")
                 fields = {
                     "ttft_ms",
                     "tpot_ms",
@@ -361,14 +362,14 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                         ),
                         "point metric",
                     )
-        require(counts == item["aisimulate"]["status_counts"], "topology status counts")
+        require(counts == item["aisim"]["status_counts"], "topology status counts")
         require(aic_successes == item["aic"]["points"], "AIC topology coverage (AIC point count)")
 
     try:
-        summary = json.loads(text)
+        summary = normalize_summary(json.loads(text))
         metric_contract = summary.get("snapshot", {}).get("campaign", {}).get("metric_contract")
         require(metric_contract in (None, "serving-metrics-v1"), "metric contract")
-        require(isinstance(summary, dict) and summary.get("schema_version") == 1, "summary schema")
+        require(isinstance(summary, dict) and summary.get("schema_version") == 2, "summary schema")
         preview = isinstance(summary.get("scope"), dict) and summary["scope"].get("preview") is True
         require(not preview or allow_preview, "preview is not publishable")
         snapshot = summary.get("snapshot")
@@ -379,8 +380,12 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             snapshot.get("measurement_source_url") == measurement_source_url(snapshot["release_tag"]),
             "measurement source URL",
         )
-        require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISimulate packages")
-        for date in ("measurement_date_through", "aisimulate_completed_at"):
+        require(isinstance(snapshot.get("aisim_packages"), dict), "AISim packages")
+        require(
+            len({"aisim", "aisimulate"}.intersection(snapshot["aisim_packages"])) == 1,
+            "AISim package identity (expected exactly one)",
+        )
+        for date in ("measurement_date_through", "aisim_completed_at"):
             require(snapshot.get(date) is None or isinstance(snapshot[date], str), date)
         revision = snapshot.get("evaluated_revision")
         require(not preview or revision is not None, "preview revision")
@@ -396,7 +401,8 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
             aic_source = snapshot.get("aic_source")
             require(
                 isinstance(aic_source, dict)
-                and aic_source.get("repository") == "https://github.com/ai-dynamo/aisimulate"
+                and aic_source.get("repository")
+                in {"https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"}
                 and isinstance(aic_source.get("branch"), str)
                 and isinstance(aic_source.get("commit_sha"), str)
                 and bool(re.fullmatch(r"[0-9a-f]{40}", aic_source["commit_sha"]))
@@ -404,7 +410,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                 and (
                     "cli_entry_point" not in aic_source
                     or aic_source["cli_entry_point"]
-                    in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main")
+                    in (
+                        "aiconfigurator.main:main",
+                        "aisim.legacy_cli.entrypoint:main",
+                        "aisimulate.legacy_cli.entrypoint:main",
+                    )
                 )
                 and (revision is None or all(aic_source[key] == revision[key] for key in ("branch", "commit_sha"))),
                 "legacy AIC CLI source",
@@ -426,7 +436,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                     isinstance(group, dict) and type(group.get("rows")) is int and group["rows"] > 0,
                     "configuration quality rows",
                 )
-                for name in ("aic", "aisimulate"):
+                for name in ("aic", "aisim"):
                     metrics = group.get(name)
                     require(
                         isinstance(metrics, dict)
@@ -440,7 +450,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
                             "configuration quality metrics",
                         )
             require(sum(group["rows"] for group in groups.values()) == totals["rows"], "configuration quality coverage")
-            for name in ("aic", "aisimulate"):
+            for name in ("aic", "aisim"):
                 require(
                     sum(group[name]["points"] for group in groups.values()) == totals[name]["points"],
                     "configuration quality successes",
@@ -511,7 +521,11 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
 
 def committed_accuracy(repo_root: Path, commit: str) -> tuple[str, str] | None:
     """Read current or pre-migration release data, never branch executable assets."""
-    for path in ("pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"):
+    for path in (
+        "pages/e2e-accuracy/summary.json",
+        "python/aisim/docs/e2e-accuracy/summary.json",
+        "python/aisimulate/docs/e2e-accuracy/summary.json",
+    ):
         entry = _git(repo_root, "ls-tree", commit, "--", path)
         if not entry:
             continue
@@ -553,8 +567,6 @@ def _build_accuracy_catalog(
                 raise PagesBuildError("qualified accuracy artifact belongs to another branch")
             # The artifact was produced by a campaign, not read from a Git blob.
             # Its evaluated revision is recorded separately below.
-            if branch == "main":
-                (output_dir / "e2e-accuracy" / "summary.json").write_text(content)
         elif ref is None:
             source = repo_root / relative_path
             if source.is_symlink():
@@ -592,6 +604,8 @@ def _build_accuracy_catalog(
         destination = output_dir / "e2e-accuracy" / entry["summary_path"]
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        if branch == "main":
+            (output_dir / "e2e-accuracy" / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         entries.append(entry)
     status_path = artifacts / "status/updates.json" if artifacts else None
     if status_path is not None and status_path.exists():

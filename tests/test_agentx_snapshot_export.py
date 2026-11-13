@@ -180,7 +180,7 @@ def test_unknown_clock_format_fails_closed():
 def test_exported_cuts_reach_real_weka_loader_without_rejection_or_silent_frontier_shift(
     tmp_path, last_seconds, absolute_cut, expected_history
 ):
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     # Original fixture: in the long case, passing 21s straight to the normalized
     # [0,30]s graph is legal but wrongly makes the 30s source turn historical.

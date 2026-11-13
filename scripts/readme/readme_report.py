@@ -74,7 +74,7 @@ def transition(previous: dict, failures: list[str], healthy: bool, run: dict) ->
         payload = {
             "event": "recovery",
             "incident_id": incident["id"],
-            "message": "✅ AISimulate README validation recovered",
+            "message": "✅ AISim README validation recovered",
             "details": (
                 "All README profiles and full Rust/Python suites passed.\n"
                 f"Commit: {run['head_sha']}\nRun: {url}\nOriginal failure: {incident['url']}"
@@ -97,7 +97,7 @@ def transition(previous: dict, failures: list[str], healthy: bool, run: dict) ->
     payload = {
         "event": event,
         "incident_id": incident["id"],
-        "message": f"❌ AISimulate README validation: {len(failures)} failing checks",
+        "message": f"❌ AISim README validation: {len(failures)} failing checks",
         "details": f"Commit: {run['head_sha']}\nRun: {url}\n" + "\n".join(f"• {failure}" for failure in failures),
     }
     return payload, state

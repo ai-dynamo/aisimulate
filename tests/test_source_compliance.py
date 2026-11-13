@@ -11,7 +11,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = ROOT / "python" / "aisimulate"
+PACKAGE_ROOT = ROOT / "python" / "aisim"
 CHECK_COPYRIGHT = ROOT / "scripts/ci/check_copyright.py"
 
 ROOT_ONLY_GOVERNANCE_FILES = (
@@ -118,7 +118,7 @@ def test_wheel_local_legal_file_matches_root(name):
 def test_packaged_readme_links_root_governance_to_github(name):
     readme = (PACKAGE_ROOT / "README.md").read_text()
 
-    assert f"https://github.com/ai-dynamo/aisimulate/blob/main/{name}" in readme
+    assert f"https://github.com/ai-dynamo/aisim/blob/main/{name}" in readme
 
 
 def test_pinned_vendor_files_keep_upstream_license(checker):

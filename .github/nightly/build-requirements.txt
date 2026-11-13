@@ -3,7 +3,7 @@
 #
 # Hash-pinned build toolchain for the nightly artifact workflow
 # (.github/workflows/nightly-ci.yml). maturin satisfies the manifest
-# constraint "maturin>=1.12,<2" in python/aisimulate/pyproject.toml.
+# constraint "maturin>=1.12,<2" in python/aisim/pyproject.toml.
 # Hashes cover the x86_64 wheel, the aarch64 wheel, and the sdist.
 maturin==1.15.0 \
     --hash=sha256:653020a63525bb224e5ab0adf02e17a2e08bc86dbea7fc1399c9a56d7529b99e \
