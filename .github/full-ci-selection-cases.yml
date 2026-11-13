@@ -18,7 +18,7 @@ cases:
     selected: [readme_commands]
 
   - id: python-application
-    paths: [python/aisimulate/src/aisimulate/traffic.py]
+    paths: [python/aisim/src/aisim/traffic.py]
     run_all: false
     selected:
       - readme_commands
@@ -29,7 +29,7 @@ cases:
       - release_artifact_contract
 
   - id: prediction
-    paths: [python/aisimulate/src/aisimulate/generator/base.py]
+    paths: [python/aisim/src/aisim/generator/base.py]
     run_all: false
     selected:
       - readme_commands
@@ -42,7 +42,7 @@ cases:
       - release_artifact_contract
 
   - id: collector-data
-    paths: [python/aisimulate/src/aisimulate_core/systems/data/b200/op.parquet]
+    paths: [python/aisim/src/aisim_core/systems/data/b200/op.parquet]
     run_all: false
     selected:
       - readme_commands
@@ -129,7 +129,7 @@ cases:
       - release_artifact_contract
 
   - id: python-test-configuration
-    paths: [python/aisimulate/pytest.ini]
+    paths: [python/aisim/pytest.ini]
     run_all: true
 
   - id: ci-contract

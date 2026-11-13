@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate.output_adapter import (
+from aisim.output_adapter import (
     OUTPUT_ADAPTER_API_VERSION,
     OutputAdapterExecutionError,
     OutputAdapterResolutionError,
@@ -17,8 +17,8 @@ from aisimulate.output_adapter import (
     resolve_output_callbacks,
     write_output_adapters,
 )
-from aisimulate.sweeper.config import Candidate
-from aisimulate.sweeper.result import CandidateProvenance, CandidateRecord, CandidateStatus
+from aisim.sweeper.config import Candidate
+from aisim.sweeper.result import CandidateProvenance, CandidateRecord, CandidateStatus
 
 
 class _Adapter:

@@ -3,7 +3,7 @@
 
 //! Vision encoder operators.
 //!
-//! Mirrors `aisimulate.sdk.models.blocks.vit.build_encoder_ops`. The
+//! Mirrors `aisim.sdk.models.blocks.vit.build_encoder_ops`. The
 //! encoder runs once before the LLM context phase and is composed from
 //! standard transformer ops (QKV GEMM + encoder attention + out-proj GEMM
 //! + FFN GEMMs + ElementWise norms). This module exposes a single

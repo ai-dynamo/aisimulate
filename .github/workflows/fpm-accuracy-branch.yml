@@ -96,7 +96,7 @@ jobs:
           if os.environ['NIGHTLY_RUN']:
               provenance = json.loads((directory / 'provenance.json').read_text())
               if (provenance['commit'] != os.environ['EXPECTED_SHA'] or
-                  provenance['repository'] != 'ai-dynamo/aisimulate' or
+                  provenance['repository'] != 'ai-dynamo/aisim' or
                   provenance['event'] != 'schedule' or provenance['ref'] != 'refs/heads/main' or
                   provenance['arch'] != 'amd64' or provenance['artifacts'][wheel.name] != digest):
                   raise SystemExit('nightly wheel provenance mismatch')

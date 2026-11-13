@@ -265,7 +265,7 @@ def main():
     cadence.add_argument("--every-events", type=int, help="feedback on each Nth input event, after predicting it")
     parser.add_argument("--training-input", type=Path, help="disjoint training wrapper JSONL for fitted fixed bounds")
     args = parser.parse_args()
-    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+    from aisim_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
     model_bytes = args.model.read_bytes()
     artifact = json.loads(model_bytes)
