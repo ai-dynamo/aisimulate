@@ -43,7 +43,7 @@ The distributions share their Python files and CLI, so uninstall `aisimulate`
 
 ```bash
 python3 -m pip uninstall -y aisimulate
-python3 -m pip install --upgrade aisim
+python3 -m pip install --force-reinstall --no-deps aisim==0.14.0
 python3 -m pip check
 ```
 
@@ -163,6 +163,6 @@ When upgrading from standalone AIConfigurator, remove the old distributions firs
 so that AISim owns the installed files:
 
 ```bash
-python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisim
+python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
 python3 -m pip install --upgrade aisim
 ```
