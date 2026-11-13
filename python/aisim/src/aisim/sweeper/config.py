@@ -1483,9 +1483,10 @@ class SmartSearchConfig(BaseModel):
         """Load + validate one YAML file into the nested config.
 
         Relative paths inside ``search_space.ais_perf_model`` start at the
-        folder of the file, and a key written twice inside it is an error.
-        Old estimator fields in the file give one deprecation warning, raised
-        only after the file validated.
+        folder of the file. The key written twice, or a key written twice
+        inside it, is an error (see ``reject_repeated_keys``). Old estimator
+        fields in the file give one deprecation warning, raised only after
+        the file validated.
         """
         text = Path(path).read_text()
         data = yaml.safe_load(text)

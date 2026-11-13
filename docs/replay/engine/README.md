@@ -347,9 +347,12 @@ engine:
 - **Repeated keys.** A key written twice inside `engine.ais_perf_model`, at
   any depth, is an error in a configuration file:
   `engine.ais_perf_model in predict.yaml: the key 'estimation_mode' is written twice (lines 9 and 11); write it once`.
+  So is `ais_perf_model` written twice in the `engine` section, and an
+  `engine` section written twice when one of them writes `ais_perf_model`;
+  the error then names `the key 'ais_perf_model'` or `the key 'engine'`.
   `predict` and `recommend` exit with code `2` before they touch the output
-  directory. A value given with `--set` is not checked, and a key repeated
-  anywhere else in the file keeps its last value.
+  directory. A value given with `--set` is not checked, and any other
+  repeated key in the file keeps its last value.
 
 In this release the key is another spelling of the estimator fields. Entries
 that agree are the engine-level spelling, entries that differ the per-worker

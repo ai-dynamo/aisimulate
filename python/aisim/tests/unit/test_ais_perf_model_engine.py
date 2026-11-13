@@ -1200,6 +1200,59 @@ def test_recommend_entry_key_that_is_not_a_perf_model_field_is_reported_as_one_r
     )
 
 
+# A Dynamo planner config can hold a mapping of another shape under the same name: its roles and
+# the dataset profile of each. Here it reads as one entry with two keys that are not its own.
+ROLES_AND_PROFILES = {"roles": {"decode": {"model": MODEL}}, "dataset_profiles": {"decode": "profile"}}
+
+
+@pytest.mark.parametrize(
+    ("kind", "mode", "problem"),
+    [
+        (
+            "predict",
+            "aggregated",
+            "entry for aggregated: roles: not a perf model field; dataset_profiles: not a perf model field. "
+            f"{UNKNOWN_KEY_ADVICE}",
+        ),
+        (
+            "predict",
+            "disaggregated",
+            "entry for prefill: roles: not a perf model field; dataset_profiles: not a perf model field. "
+            f"{UNKNOWN_KEY_ADVICE}",
+        ),
+        (
+            "recommend",
+            "aggregated",
+            "entry for aggregated: roles, dataset_profiles cannot be checked in a recommend config. "
+            "The recommend engine section does not state them (recommend chooses tp and similar values "
+            "for each candidate). Drop these keys from the entry, or from the template file when "
+            "'from: <file>' brings them in.",
+        ),
+        (
+            "recommend",
+            "both",
+            "entry for aggregated: roles, dataset_profiles cannot be checked in a recommend config. "
+            "The recommend engine section does not state them (recommend chooses tp and similar values "
+            "for each candidate). Drop these keys from the entry, or from the template file when "
+            "'from: <file>' brings them in.",
+        ),
+    ],
+)
+def test_mapping_of_roles_and_dataset_profiles_is_rejected_as_an_entry_with_two_keys_that_are_not_its_own(
+    kind, mode, problem
+):
+    assert loader.load(ROLES_AND_PROFILES).to_data() == ROLES_AND_PROFILES
+    engine = _engine(mode, ais_perf_model=ROLES_AND_PROFILES)
+    message = f"engine.ais_perf_model {problem}"
+
+    with pytest.raises(ValidationError) as rejected:
+        VALIDATE[kind](engine)
+    assert [error["msg"] for error in rejected.value.errors()] == [f"Value error, {message}"]
+    with pytest.raises(AisPerfModelError) as failure:
+        rules.lower_engine(engine, kind)
+    assert str(failure.value) == message
+
+
 # The two perf model fields that describe an AFD pool.
 AFD_FIELDS = {"afd_routing_location": "a", "afd_pool_role": "f"}
 
@@ -1516,6 +1569,24 @@ def test_key_written_twice_is_looked_for_in_the_section_of_the_kind_of_config(ki
         "a0: &a0 {}\n"
         + "".join(f"a{i}: &a{i} {{<<: [*a{i - 1}, *a{i - 1}]}}\n" for i in range(1, 41))
         + "engine: {<<: *a40}\n",
+        "ais_perf_model: {tp: 1}\nais_perf_model: {tp: 2}\nengine: {}\n",
+        "engine:\n  workers:\n    ais_perf_model: {tp: 1}\n    ais_perf_model: {tp: 2}\n",
+        "other:\n  engine: {ais_perf_model: {tp: 1}}\n  engine: {ais_perf_model: {tp: 2}}\n",
+        "search_space:\n  ais_perf_model: {tp: 1}\n  ais_perf_model: {tp: 2}\nsearch_space: {}\n",
+        "engine: [ais_perf_model: {tp: 1}, ais_perf_model: {tp: 2}]\nengine: [ais_perf_model: {tp: 1}]\n",
+        "engine:\n  ais_perf_model: {tp: 1}\n  ais_perf_model: {tp: 2\n",
+        "engine: {}\n---\nengine:\n  ais_perf_model: {tp: 1}\n  ais_perf_model: {tp: 2}\nengine: {}\n",
+        "engine:\n  ais_perf_model: {tp: 1}\n  ais_perf_model: " + "[" * 100_000 + "\n",
+        "a0: &a0 {}\n"
+        + "".join(f"a{i}: &a{i} {{<<: *a{i - 1}}}\n" for i in range(1, 3000))
+        + "engine: {<<: *a2999}\nengine: {<<: *a2999}\n",
+        "a0: &a0 {}\n"
+        + "".join(f"a{i}: &a{i} {{<<: [*a{i - 1}, *a{i - 1}]}}\n" for i in range(1, 41))
+        + "engine: {<<: *a40, ais_perf_model: {tp: 1}}\n",
+        "engine: {model: a}\n" * 2000,
+        # A key of another type is another key for the reader, also when its text is the same.
+        "engine:\n  ais_perf_model: {tp: 1}\n  !!binary ais_perf_model: x\n",
+        "engine:\n  ais_perf_model: {tp: 1}\n!!null engine:\n  ais_perf_model: {tp: 2}\n",
     ],
     ids=[
         "an empty file",
@@ -1540,63 +1611,260 @@ def test_key_written_twice_is_looked_for_in_the_section_of_the_kind_of_config(ki
         "text nested too deep to read",
         "a chain of merges too long to follow",
         "one mapping merged along many paths",
+        "the key twice outside a section",
+        "the key twice below the section",
+        "the section twice inside another mapping",
+        "the key and the section twice for another kind of config",
+        "the key twice in sections that are lists",
+        "the key twice in text that is not YAML",
+        "the key and the section twice in a second document",
+        "the key twice, the last nested too deep to read",
+        "a chain of merges too long to follow in a section written twice",
+        "one mapping merged along many paths next to the key",
+        "a section written many times without the key",
+        "the key next to a key of another type with the same text",
+        "the section next to a key of another type with the same text",
     ],
 )
 def test_text_without_a_repeat_inside_the_value_is_left_to_the_reader(text):
     assert rules.reject_repeated_keys(text, "predict", "predict.yaml") is None
 
 
+def test_mapping_that_an_alias_writes_as_the_section_many_times_is_read_once(monkeypatch):
+    looked_for = []
+    written = rules._written
+
+    def counted(node, name):
+        looked_for.append(name)
+        return written(node, name)
+
+    monkeypatch.setattr(rules, "_written", counted)
+    text = "base: &base {model: a}\n" + "engine: *base\n" * 500
+
+    assert rules.reject_repeated_keys(text, "predict", "predict.yaml") is None
+    # Once for the sections of the file and once for the one mapping that all of them are.
+    assert looked_for == ["engine", "ais_perf_model"]
+
+
 REPEAT, ONCE = "{estimation_mode: op_level, estimation_mode: auto}", "{estimation_mode: op_level}"
+# What the reader makes of each value: the one written with a repeat reads as ``auto``.
+READ_AS = {REPEAT: {"estimation_mode": "auto"}, ONCE: {"estimation_mode": "op_level"}, None: None}
 
 
 @pytest.mark.parametrize(
-    ("text", "repeated"),
+    ("text", "kept"),
     [
-        (f"engine:\n  ais_perf_model: {REPEAT}\nengine:\n  ais_perf_model: {ONCE}\n", False),
-        (f"engine:\n  ais_perf_model: {ONCE}\nengine:\n  ais_perf_model: {REPEAT}\n", True),
-        (f"engine:\n  ais_perf_model: {REPEAT}\n  ais_perf_model: {ONCE}\n", False),
-        (f"engine:\n  ais_perf_model: {ONCE}\n  ais_perf_model: {REPEAT}\n", True),
-        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\n  model: a\n", True),
-        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\n  ais_perf_model: {ONCE}\n", False),
-        (f"base: &base\n  engine:\n    ais_perf_model: {REPEAT}\n<<: *base\n", True),
-        (f"a: &a\n  ais_perf_model: {REPEAT}\nb: &b\n  <<: *a\nengine:\n  <<: *b\n", True),
-        (f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: [*a, *b]\n", False),
-        (f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: [*b, *a]\n", True),
+        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\n  model: a\n", REPEAT),
+        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\n  ais_perf_model: {ONCE}\n", ONCE),
+        (f"base: &base\n  ais_perf_model: {ONCE}\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\n", REPEAT),
+        (f"base: &base\n  ais_perf_model: {REPEAT}\n  ais_perf_model: {ONCE}\nengine:\n  <<: *base\n", ONCE),
+        (f"base: &base\n  engine:\n    ais_perf_model: {REPEAT}\n<<: *base\n", REPEAT),
+        (f"base: &base\n  engine:\n    ais_perf_model: {REPEAT}\n<<: *base\nengine:\n  ais_perf_model: {ONCE}\n", ONCE),
+        (f"base: &base\n  engine:\n    ais_perf_model: {REPEAT}\n<<: *base\nengine:\n  model: a\n", None),
+        (
+            f"base: &base\n  engine:\n    ais_perf_model: {REPEAT}\n  engine:\n    ais_perf_model: {ONCE}\n<<: *base\n",
+            ONCE,
+        ),
+        (f"a: &a\n  ais_perf_model: {REPEAT}\nb: &b\n  <<: *a\nengine:\n  <<: *b\n", REPEAT),
+        (f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: [*a, *b]\n", ONCE),
+        (f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: [*b, *a]\n", REPEAT),
         (
             f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *b\n  <<: *a\n",
-            False,
+            ONCE,
         ),
         (
             f"a: &a\n  ais_perf_model: {ONCE}\nb: &b\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *a\n  <<: *b\n",
-            True,
+            REPEAT,
         ),
+        ("engine:\n  model: a\nengine:\n  model: b\n", None),
+        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  model: a\nengine:\n  <<: *base\n", REPEAT),
+        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\nengine:\n  model: a\n", None),
+        (f"base: &base\n  ais_perf_model: {REPEAT}\nengine:\n  <<: *base\nengine:\n  <<: *base\n", REPEAT),
     ],
     ids=[
-        "the section twice, the repeat in the first",
-        "the section twice, the repeat in the last",
-        "the key itself twice, the repeat in the first",
-        "the key itself twice, the repeat in the last",
         "the value merged into the section",
         "a merged value and the key written",
+        "the key twice in the merged mapping, the repeat in the last",
+        "the key twice in the merged mapping, the repeat in the first",
         "the section merged into the file",
+        "a merged section and the section written",
+        "a merged section and the section written without the key",
+        "the section twice in the merged mapping",
         "a merge inside a merge",
         "a list of merges, the repeat in the second",
         "a list of merges, the repeat in the first",
         "two merges, the repeat in the first",
         "two merges, the repeat in the last",
+        "the section twice, without the key",
+        "the section twice, the value merged into the last",
+        "the section twice, the value merged into the first",
+        "the section twice, the value merged into both",
     ],
 )
-def test_the_value_that_is_checked_is_the_one_the_yaml_reader_keeps(text, repeated):
-    # Outside the value a repeated key keeps its last value. Which value of ``ais_perf_model`` that leaves
-    # is shown here by the reader itself: the value written with a repeat reads as ``auto``.
-    kept = yaml.safe_load(text)["engine"]["ais_perf_model"]
-    assert kept == {"estimation_mode": "auto" if repeated else "op_level"}
+def test_the_value_that_is_checked_is_the_one_the_yaml_reader_keeps(text, kept):
+    # No section in these files writes ``ais_perf_model`` twice, and none that writes it is written twice.
+    # A merge brings in what the file does not write, and a repeated section that never writes the key
+    # keeps its last value. Which value that leaves is shown here by the reader itself.
+    assert yaml.safe_load(text)["engine"].get("ais_perf_model") == READ_AS[kept]
 
-    if repeated:
+    if kept == REPEAT:
         with pytest.raises(AisPerfModelError, match="the key 'estimation_mode' is written twice"):
             rules.reject_repeated_keys(text, "predict", "predict.yaml")
     else:
-        rules.reject_repeated_keys(text, "predict", "predict.yaml")
+        assert rules.reject_repeated_keys(text, "predict", "predict.yaml") is None
+
+
+# --- The key itself, or its section, written twice --------------------------------------------
+
+AUTO = "{estimation_mode: auto}"
+# Written for a predict config. The other kinds of config read the same text with their own section name.
+WRITTEN_TWICE = [
+    pytest.param(
+        f"engine:\n  model: a\n  ais_perf_model: {ONCE}\n  backend: vllm\n  ais_perf_model: {AUTO}\n",
+        "the key 'ais_perf_model' is written twice (lines 3 and 5)",
+        id="the key twice",
+    ),
+    pytest.param(
+        f"engine: {{model: a, ais_perf_model: {ONCE}, ais_perf_model: {AUTO}}}\n",
+        "the key 'ais_perf_model' is written twice (line 1)",
+        id="the key twice on one line",
+    ),
+    pytest.param(
+        f"engine: {{\n  ais_perf_model: {ONCE},\n  model: a,\n  ais_perf_model: {AUTO},\n}}\n",
+        "the key 'ais_perf_model' is written twice (lines 2 and 4)",
+        id="the key twice between braces",
+    ),
+    pytest.param(
+        f'engine:\n  ais_perf_model: {ONCE}\n  "ais_perf_model": {AUTO}\n',
+        "the key 'ais_perf_model' is written twice (lines 2 and 3)",
+        id="the key in a plain and a quoted spelling",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: {ONCE}\n  ais_perf_model: {ONCE}\n  model: a\n  ais_perf_model: {AUTO}\n",
+        "the key 'ais_perf_model' is written twice (lines 2 and 5)",
+        id="the key three times: the first and the last line are named",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model:\n  ais_perf_model: {ONCE}\n",
+        "the key 'ais_perf_model' is written twice (lines 2 and 3)",
+        id="the key twice, the first without a value",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: &value {ONCE}\n  ais_perf_model: *value\n",
+        "the key 'ais_perf_model' is written twice (lines 2 and 3)",
+        id="the key twice with one value",
+    ),
+    pytest.param(
+        f"base: &base\n  ais_perf_model: {ONCE}\n  ais_perf_model: {AUTO}\nengine: *base\n",
+        "the key 'ais_perf_model' is written twice (lines 2 and 3)",
+        id="the key twice in a section named by an alias",
+    ),
+    pytest.param(
+        f"a: &a\n  ais_perf_model: {AUTO}\nengine:\n  <<: *a\n  ais_perf_model: {ONCE}\n  ais_perf_model: {AUTO}\n",
+        "the key 'ais_perf_model' is written twice (lines 5 and 6)",
+        id="the key twice next to a merge that brings it in",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: {ONCE}\ntraffic: {{}}\nengine:\n  model: a\n",
+        "the key 'engine' is written twice (lines 1 and 4)",
+        id="the section twice, the key in the first",
+    ),
+    pytest.param(
+        f"engine:\n  model: a\ntraffic: {{}}\nengine:\n  ais_perf_model: {ONCE}\n",
+        "the key 'engine' is written twice (lines 1 and 4)",
+        id="the section twice, the key in the last",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: {ONCE}\ntraffic: {{}}\nengine:\n  ais_perf_model: {AUTO}\n",
+        "the key 'engine' is written twice (lines 1 and 4)",
+        id="the section twice, the key in both",
+    ),
+    pytest.param(
+        f"engine:\n  model: a\nengine:\n  ais_perf_model: {ONCE}\nengine:\n  model: b\n",
+        "the key 'engine' is written twice (lines 1 and 5)",
+        id="the section three times, the key in the second: the first and the last line are named",
+    ),
+    pytest.param(
+        f"{{engine: {{ais_perf_model: {ONCE}}}, engine: {{model: a}}}}\n",
+        "the key 'engine' is written twice (line 1)",
+        id="the section twice on one line",
+    ),
+    pytest.param(
+        f"engine:\nengine:\n  ais_perf_model: {ONCE}\n",
+        "the key 'engine' is written twice (lines 1 and 2)",
+        id="the section twice, the first without a value",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: {ONCE}\nengine: 7\n",
+        "the key 'engine' is written twice (lines 1 and 3)",
+        id="the section twice, the last not a mapping",
+    ),
+    pytest.param(
+        f"base: &base\n  ais_perf_model: {ONCE}\nengine: *base\nengine: *base\n",
+        "the key 'engine' is written twice (lines 3 and 4)",
+        id="the section twice, named by one alias",
+    ),
+    pytest.param(
+        f"base: &base\n  engine: {{model: a}}\n<<: *base\nengine:\n  ais_perf_model: {ONCE}\nengine:\n  model: b\n",
+        "the key 'engine' is written twice (lines 4 and 6)",
+        id="the section twice next to a merge that brings it in",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: {ONCE}\n  ais_perf_model: {AUTO}\nengine:\n  model: a\n",
+        "the key 'engine' is written twice (lines 1 and 4)",
+        id="the section twice and the key twice: the section is named",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: {REPEAT}\n  ais_perf_model: {ONCE}\n",
+        "the key 'ais_perf_model' is written twice (lines 2 and 3)",
+        id="the key twice and a repeat in its first value: the key is named",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: {ONCE}\n  ais_perf_model: {REPEAT}\n",
+        "the key 'ais_perf_model' is written twice (lines 2 and 3)",
+        id="the key twice and a repeat in its last value: the key is named",
+    ),
+    pytest.param(
+        f"engine:\n  ais_perf_model: {REPEAT}\nengine:\n  ais_perf_model: {REPEAT}\n",
+        "the key 'engine' is written twice (lines 1 and 3)",
+        id="the section twice and a repeat in each value: the section is named",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("kind", "section"), [("predict", "engine"), ("recommend", "engine"), ("search", "search_space")]
+)
+@pytest.mark.parametrize(("text", "problem"), WRITTEN_TWICE)
+def test_key_or_its_section_written_twice_is_an_error(text, problem, kind, section):
+    text, problem = text.replace("engine", section), problem.replace("engine", section)
+    # The YAML reader takes the text and keeps one value, so the mapping does not show the other.
+    assert isinstance(yaml.safe_load(text), dict)
+
+    with pytest.raises(AisPerfModelError) as failure:
+        rules.reject_repeated_keys(text, kind, Path("configs") / "config.yaml")
+
+    assert str(failure.value) == f"{section}.ais_perf_model in configs/config.yaml: {problem}; write it once"
+
+
+def test_repeat_inside_the_value_is_reported_once_the_key_and_its_section_are_written_once():
+    # The repeats are looked for from the outside in, so mending the one that is named shows the next one.
+    inside = "the key 'estimation_mode' is written twice (line 2)"
+    texts = {
+        f"engine:\n  ais_perf_model: {REPEAT}\n  ais_perf_model: {REPEAT}\nengine:\n  model: a\n": (
+            "the key 'engine' is written twice (lines 1 and 4)"
+        ),
+        f"engine:\n  ais_perf_model: {REPEAT}\n  ais_perf_model: {REPEAT}\n": (
+            "the key 'ais_perf_model' is written twice (lines 2 and 3)"
+        ),
+        f"engine:\n  ais_perf_model: {REPEAT}\n": inside,
+    }
+
+    for text, problem in texts.items():
+        with pytest.raises(AisPerfModelError) as failure:
+            rules.reject_repeated_keys(text, "predict", "predict.yaml")
+        assert str(failure.value) == f"engine.ais_perf_model in predict.yaml: {problem}; write it once"
+    assert rules.reject_repeated_keys(f"engine:\n  ais_perf_model: {ONCE}\n", "predict", "predict.yaml") is None
 
 
 # --- Paths written in a config file -----------------------------------------------------------

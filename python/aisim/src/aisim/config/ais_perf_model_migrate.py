@@ -52,6 +52,8 @@ _MODE_BY_FORWARD_MODEL = {"op_level": "op_level", "fpm": "fpm_interpolation"}
 # The search space calls the aggregated worker ``agg`` in its field names.
 _SEARCH_ROLES = {"aggregated": "agg", "prefill": "prefill", "decode": "decode"}
 _PARQUET_TARGET = "estimator_config.fpm_interpolation.fpm_parquet_path"
+# A config holds far fewer values. The limit stops YAML aliases of aliases, which a copy writes out at every use.
+_MAX_VALUES = 1_000_000
 
 
 class CannotConvert(ValueError):
@@ -245,30 +247,58 @@ def _is_list(value: Any) -> bool:
     return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
 
 
-def _plain_copy(value: Any, _path: tuple[Any, ...] = (), _inside: frozenset[int] = frozenset()) -> Any:
+class _Budget:
+    """Counts the values of one copy: every mapping, list, scalar and set member, each time the copy reaches it."""
+
+    def __init__(self) -> None:
+        self.left = _MAX_VALUES
+
+    def spend(self) -> None:
+        self.left -= 1
+        if self.left < 0:
+            raise ValueError(
+                f"the config has more than {_MAX_VALUES} values; a value that a YAML alias names counts "
+                "every time it is used. Write the values out and do not nest YAML aliases"
+            )
+
+
+def _plain_copy(value: Any) -> Any:
     """Copy mappings and lists into dicts and lists that share nothing.
 
     A YAML file can name one mapping in two places (an anchor and an alias).
     The copy has two separate mappings, so a field can be removed from each,
     and a dump of the copy needs no anchors.
 
+    Aliases of aliases multiply: a few lines can name more values than a
+    copy can hold. The copy counts its values and stops at ``_MAX_VALUES``
+    with a ``ValueError``.
+
     An alias can also name the mapping or list it is written in. Such a value
     contains itself and has no copy; it is a ``ValueError`` that names the
-    place. ``_path`` holds the keys that lead to ``value`` and ``_inside`` the
-    mappings and lists around it.
+    place.
     """
+    return _copied(value, _Budget(), (), frozenset())
+
+
+def _copied(value: Any, budget: _Budget, path: tuple[Any, ...], inside: frozenset[int]) -> Any:
+    """Copy ``value``; ``path`` holds the keys that lead to it and ``inside`` the mappings and lists around it."""
+    budget.spend()
     if not isinstance(value, Mapping) and not _is_list(value):
+        if isinstance(value, (set, frozenset)):
+            # A YAML set is copied whole, so each of its members counts.
+            for _ in value:
+                budget.spend()
         return copy.deepcopy(value)
-    if id(value) in _inside:
-        where = ".".join(str(key) for key in _path)
+    if id(value) in inside:
+        where = ".".join(str(key) for key in path)
         raise ValueError(
             f"{where} contains itself: the value is the mapping or list it is written in, as a YAML alias can say. "
             "A config cannot be circular; write the value out"
         )
-    inside = _inside | {id(value)}
+    inside = inside | {id(value)}
     if isinstance(value, Mapping):
-        return {key: _plain_copy(item, (*_path, key), inside) for key, item in value.items()}
-    return [_plain_copy(item, (*_path, index), inside) for index, item in enumerate(value)]
+        return {key: _copied(item, budget, (*path, key), inside) for key, item in value.items()}
+    return [_copied(item, budget, (*path, index), inside) for index, item in enumerate(value)]
 
 
 def _mapping_at(section: Mapping[str, Any], location: Sequence[str]) -> Mapping[str, Any]:
@@ -636,11 +666,13 @@ def migrate_mapping(
 
     Raises ``CannotConvert`` when a field cannot be moved, when the key cannot
     hold a value of an old field or cannot describe the config, ``ValueError``
-    when the config cannot be read or contains itself, and
+    when the config cannot be read, contains itself or has more than a
+    million values once its YAML aliases are written out, and
     ``MigrationCheckError`` when the converted config would not mean the same.
     """
     layout = _layout(kind)
-    # Every step below reads this copy, so a config that contains itself is refused before a step can loop on it.
+    # Every step below reads this copy. A config that contains itself, or that YAML aliases make too large
+    # to write out, is refused here, before a step can loop on it.
     raw = _plain_copy(raw)
     section = _section_of(raw, layout)
     reason = layout.uncovered_reason(section)

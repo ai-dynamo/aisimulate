@@ -47,9 +47,11 @@ def config_folder(path: str | os.PathLike[str]) -> str:
 def _read_config_file(path: str | os.PathLike[str], kind: str) -> dict[str, Any]:
     """Read a config file and make the relative paths in ``ais_perf_model`` absolute.
 
-    The file then loads the same way from any working directory. A key written
-    twice inside ``ais_perf_model`` is an error. ``kind`` is ``predict`` or
-    ``recommend``.
+    The file then loads the same way from any working directory.
+    ``ais_perf_model`` written twice, its section written twice next to it,
+    or a key written twice inside it is an error (see
+    ``reject_repeated_keys``).
+    ``kind`` is ``predict`` or ``recommend``.
     """
     raw, text = load_yaml_with_text(path)
     reject_repeated_keys(text, kind, path)
@@ -82,9 +84,10 @@ class CorePredictionConfig(StrictModel):
         """Load a prediction config file.
 
         Relative paths inside ``engine.ais_perf_model`` start at the folder of
-        the file, and a key written twice inside it is an error. Old estimator
-        fields in the file give one deprecation warning, raised only after the
-        file validated.
+        the file. The key written twice, or a key written twice inside it, is
+        an error (see ``reject_repeated_keys``). Old estimator fields in the
+        file give one deprecation warning, raised only after the file
+        validated.
         """
         raw = _read_config_file(path, "predict")
         config = cls.model_validate(raw)
@@ -157,9 +160,10 @@ class CoreRecommendationConfig(StrictModel):
         """Load a recommendation config file.
 
         Relative paths inside ``engine.ais_perf_model`` start at the folder of
-        the file, and a key written twice inside it is an error. Old estimator
-        fields in the file give one deprecation warning, raised only after the
-        file validated.
+        the file. The key written twice, or a key written twice inside it, is
+        an error (see ``reject_repeated_keys``). Old estimator fields in the
+        file give one deprecation warning, raised only after the file
+        validated.
         """
         raw = _read_config_file(path, "recommend")
         config = cls.model_validate(raw)

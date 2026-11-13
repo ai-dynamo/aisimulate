@@ -162,7 +162,8 @@ def _read_prediction_config(path: Path) -> dict[str, Any]:
     Those paths start at the folder of the config file. The matched workload
     saves a copy of the config in another folder, where a relative path would
     name a different file. A config without the key is returned as it was read.
-    A key written twice inside ``engine.ais_perf_model`` is an error.
+    ``engine.ais_perf_model`` written twice, or a key written twice inside
+    it, is an error (see ``reject_repeated_keys``).
     """
     text = path.read_text(encoding="utf-8")
     raw = yaml.safe_load(text)

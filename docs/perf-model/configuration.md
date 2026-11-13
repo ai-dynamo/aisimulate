@@ -954,13 +954,27 @@ Each config is an entry.
   `aisim predict` and `aisim recommend` then exit with code `2`
   before they touch the output directory. A key that a YAML merge (`<<`)
   brings in does not repeat a key written next to it.
+- The same commands and loaders reject a configuration file that writes
+  `ais_perf_model` itself twice in its section. They also reject a file that
+  writes the section (`engine`, or `search_space` in a search file) twice
+  when one of these sections writes `ais_perf_model`. The YAML reader would
+  keep the last one and drop the others without a word. The error has the
+  same form and names the first and the last line:
+  `engine.ais_perf_model in predict.yaml: the key 'ais_perf_model' is written twice (lines 8 and 10); write it once`
+  or
+  `engine.ais_perf_model in predict.yaml: the key 'engine' is written twice (lines 1 and 14); write it once`.
+  A file with several of these repeats reports the section first, then
+  `ais_perf_model`, then a key inside the value.
+- `ais_perf_model`, or its section, that a YAML merge (`<<`) brings in next
+  to a written one is not a repeat: the written one is used. When only a
+  merge brings the value in, the value that the YAML reader keeps is the one
+  that is checked for a key written twice.
 - A key written twice is not checked in a value given with `--set`. The YAML
   reader keeps the last value there. It does the same for a key repeated
-  anywhere else in a configuration file, such as an old estimator field. When
-  `ais_perf_model` itself is written twice in its section, the value that is
-  kept is the one that is checked. `aisim perf-model migrate` reads a
-  configuration file without this check. Python data passed to
-  `model_validate` cannot hold a key twice.
+  anywhere else in a configuration file, such as an old estimator field, and
+  for a section written twice when none of them writes `ais_perf_model`.
+  `aisim perf-model migrate` makes the same checks when it reads a file.
+  Python data passed to `model_validate` cannot hold a key twice.
 - When a consumer needs a worker type the value does not have, the error lists
   the worker types the value does have.
 

@@ -6,9 +6,10 @@
 Three places read a prediction or recommendation config file: the parent
 CLI, the supervised child it starts, and the ``from_yaml`` loaders. Each one
 starts the relative paths inside ``engine.ais_perf_model`` at the folder of
-the file, and rejects a key the file writes twice inside it. The parent CLI
-and the loaders warn once when the config states old estimator fields; the
-child and plain validation never warn.
+the file, and rejects a file that writes the key, or a key inside it, twice.
+The parent CLI and the loaders warn once when the config states old
+estimator fields; the child and plain validation never warn. Serving
+validation reads a prediction config with the same check for repeated keys.
 """
 
 from __future__ import annotations
@@ -32,11 +33,16 @@ import aisim.main as cli
 from aisim import supervision
 from aisim.config.cli import CorePredictionConfig, CoreRecommendationConfig
 from aisim.supervision import main as supervised_main
+from aisim.support import serving_validation as serving
 from aisim.sweeper.replay import RunnerCapabilities
 from aisim_core.ais_perf_model import AisPerfModelDeprecationWarning, AisPerfModelError
 
 # Onboarding fixtures: a reviewed profile, the replay config onboarding writes from it, and serving preparation.
-from .test_support_serving_validation import materialized_workload, serving_case  # noqa: F401
+from .test_support_serving_validation import (  # noqa: F401
+    _prepare_without_a_replay,
+    materialized_workload,
+    serving_case,
+)
 from .test_support_validation import validation_case as _replay_validation_case  # noqa: F401
 
 pytestmark = pytest.mark.unit
@@ -686,12 +692,18 @@ def test_command_line_reports_a_bad_entry_without_a_traceback(config_dir, tmp_pa
 REPEATED_KEY = "the key 'estimation_mode' is written twice (lines 10 and 12); write it once"
 
 
+def _write_sections(path: Path, command: str, *sections: tuple[str, ...]) -> Path:
+    """Write a config file with one engine section for each tuple of extra lines, one below the other."""
+    rest = {name: value for name, value in _mapping(command, {}).items() if name != "engine"}
+    engine = yaml.safe_dump({"engine": ENGINE})
+    text = "".join(engine + "".join(f"  {line}\n" for line in lines) for lines in sections)
+    path.write_text(text + yaml.safe_dump(rest))
+    return path
+
+
 def _write_text(path: Path, command: str, *engine_lines: str) -> Path:
     """Write a config file with extra lines in its engine section. A dump cannot write a key twice."""
-    rest = {name: value for name, value in _mapping(command, {}).items() if name != "engine"}
-    engine = yaml.safe_dump({"engine": ENGINE}) + "".join(f"  {line}\n" for line in engine_lines)
-    path.write_text(engine + yaml.safe_dump(rest))
-    return path
+    return _write_sections(path, command, engine_lines)
 
 
 def _write_repeated_key(path: Path, command: str = "predict") -> Path:
@@ -761,6 +773,194 @@ def test_key_repeated_outside_the_key_keeps_its_last_value(config_dir, parent, c
     assert found == []
     assert (loaded.engine.estimation_mode, loaded.engine.context_length) == ("op_level", 512)
     assert parent.prepared_output()
+
+
+# --- The key itself, or the engine section, written twice ------------------------------------
+
+OP_LEVEL = "ais_perf_model: {estimation_mode: op_level}"
+INTERPOLATION = "ais_perf_model: {estimation_mode: fpm_interpolation, fallback_policy: allow}"
+OLD_LINES = ("estimation_mode: fpm_interpolation", "fallback_policy: allow")
+# The engine sections to write, the estimation mode of the one the YAML reader keeps, and the error.
+# Each section starts with the same eight lines, so the first extra line of a config is line 9.
+WRITTEN_TWICE = [
+    pytest.param(
+        ((OP_LEVEL, INTERPOLATION),),
+        "fpm_interpolation",
+        "the key 'ais_perf_model' is written twice (lines 9 and 10); write it once",
+        id="the key twice",
+    ),
+    pytest.param(
+        ((OP_LEVEL,), OLD_LINES),
+        "fpm_interpolation",
+        "the key 'engine' is written twice (lines 1 and 10); write it once",
+        id="the section twice, the key in the first",
+    ),
+    pytest.param(
+        (OLD_LINES, (OP_LEVEL,)),
+        "op_level",
+        "the key 'engine' is written twice (lines 1 and 11); write it once",
+        id="the section twice, the key in the last",
+    ),
+    pytest.param(
+        ((OP_LEVEL,), (INTERPOLATION,)),
+        "fpm_interpolation",
+        "the key 'engine' is written twice (lines 1 and 10); write it once",
+        id="the section twice, the key in both",
+    ),
+]
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize(("sections", "kept", "problem"), WRITTEN_TWICE)
+def test_from_yaml_rejects_the_key_or_its_section_written_twice(config_dir, command, sections, kept, problem):
+    path = _write_sections(config_dir / "twice.yaml", command, *sections)
+    # The YAML reader keeps the last one, which alone is a config, and the run would follow it without a word.
+    assert LOADERS[command].model_validate(yaml.safe_load(path.read_text())).engine.estimation_mode == kept
+
+    with _deprecations() as found, pytest.raises(AisPerfModelError) as failure:
+        LOADERS[command].from_yaml(path)
+
+    assert str(failure.value) == f"engine.ais_perf_model in {path}: {problem}"
+    assert found == []
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize(("sections", "kept", "problem"), WRITTEN_TWICE)
+def test_key_or_its_section_written_twice_is_reported_by_the_child(
+    config_dir, parent, capsys, command, sections, kept, problem
+):
+    del kept
+    path = _write_sections(config_dir / "twice.yaml", command, *sections)
+
+    # As for a key written twice inside the key: the parent prepares nothing and lets the child report.
+    with _deprecations() as found:
+        assert parent.run(command, path) == 0
+    assert found == []
+    assert len(parent.child_commands) == 1
+    assert not parent.output.exists()
+    error = _child_error(capsys, path, command=command)
+    assert f"error: {path}: engine.ais_perf_model in {path}: {problem}" in error
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize(("sections", "kept", "problem"), WRITTEN_TWICE[:2])
+def test_command_line_reports_the_key_or_its_section_written_twice_and_keeps_the_last_prediction(
+    config_dir, tmp_path, command, sections, kept, problem
+):
+    del kept
+    path = _write_sections(config_dir / "twice.yaml", command, *sections)
+    output = tmp_path / "output"
+    output.mkdir()
+    last_prediction = output / "prediction.json"
+    last_prediction.write_text('{"from": "the run before"}')
+
+    finished = subprocess.run(
+        [sys.executable, "-m", "aisim", *_argv(command, path, output, ()), "--overwrite"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert finished.returncode == 2
+    assert f"engine.ais_perf_model in {path}: {problem}" in finished.stderr
+    assert "Traceback" not in finished.stderr
+    # --overwrite removes what the run before left only once the config is accepted.
+    assert [entry.name for entry in output.iterdir()] == ["prediction.json"]
+    assert last_prediction.read_text() == '{"from": "the run before"}'
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_engine_section_written_twice_without_the_key_keeps_its_last_value(config_dir, parent, child, command):
+    # Neither section writes ais_perf_model, so the file reads as it did before the key existed:
+    # the first section is dropped, old field included, and no warning names it.
+    sections = (("estimation_mode: op_level",), ("context_length: 512",))
+    path = _write_sections(config_dir / "sections.yaml", command, *sections)
+    assert path.read_text().count("engine:\n") == 2
+    last_alone = _write(config_dir / "last.yaml", {"context_length": 512}, command)
+
+    with _deprecations() as found:
+        loaded = LOADERS[command].from_yaml(path)
+        assert parent.run(command, path) == 0
+
+    assert found == []
+    assert _dump(loaded) == _dump(LOADERS[command].from_yaml(last_alone))
+    assert parent.prepared_output()
+    if command == "predict":
+        assert child(path) == child(last_alone)
+
+
+STRICT_DIRECT_FPM = (
+    "{estimation_mode: fpm_interpolation, fallback_policy: deny, "
+    "estimator_config: {fpm_interpolation: {method: direct}}}"
+)
+PLAIN_WORKER = "workers: {aggregated: {}}"
+
+
+def _write_serving_config(folder: Path, *sections: tuple[str, ...]) -> tuple[Path, Path]:
+    """Write a prediction config for serving validation, and its trace.
+
+    The config has one engine section for each tuple of extra lines. Each section starts with the
+    same four lines, so the first extra line of a config is line 5.
+    """
+    trace = folder / "trace.json"
+    trace.write_text("{}\n")
+    engine = "engine:\n  model: example/model\n  hardware: h200_sxm\n  backend: sglang\n"
+    source = {"type": "trace", "format": "weka", "paths": [str(trace)]}
+    traffic = {"traffic": {"source": source, "load": {"type": "trace_timestamps", "agentic_lanes": 1}}}
+    config = folder / "predict.yaml"
+    text = "".join(engine + "".join(f"  {line}\n" for line in lines) for lines in sections)
+    config.write_text(text + yaml.safe_dump(traffic))
+    return config, trace
+
+
+@pytest.mark.parametrize(
+    ("sections", "problem"),
+    [
+        pytest.param(
+            (("ais_perf_model: {estimation_mode: auto}", f"ais_perf_model: {STRICT_DIRECT_FPM}", PLAIN_WORKER),),
+            "the key 'ais_perf_model' is written twice (lines 5 and 6); write it once",
+            id="the key twice",
+        ),
+        pytest.param(
+            (
+                ("ais_perf_model: {estimation_mode: auto}", PLAIN_WORKER),
+                (f"workers: {{aggregated: {{timing: {STRICT_DIRECT_FPM}}}}}",),
+            ),
+            "the key 'engine' is written twice (lines 1 and 7); write it once",
+            id="the section twice, the key in the first",
+        ),
+        pytest.param(
+            ((PLAIN_WORKER,), (f"ais_perf_model: {STRICT_DIRECT_FPM}", PLAIN_WORKER)),
+            "the key 'engine' is written twice (lines 1 and 6); write it once",
+            id="the section twice, the key in the last",
+        ),
+    ],
+)
+def test_serving_validation_rejects_the_key_or_its_section_written_twice(tmp_path, sections, problem):
+    config, trace = _write_serving_config(tmp_path, *sections)
+    # The YAML reader keeps the last one, which alone would be accepted.
+    assert serving._scope(yaml.safe_load(config.read_text()), trace)
+
+    with pytest.raises(AisPerfModelError) as from_the_reader:
+        serving._read_prediction_config(config)
+    with pytest.raises(AisPerfModelError) as from_preparation:
+        _prepare_without_a_replay(tmp_path, config, trace)
+
+    assert str(from_the_reader.value) == f"engine.ais_perf_model in {config}: {problem}"
+    assert str(from_preparation.value) == str(from_the_reader.value)
+    assert not (tmp_path / "serving").exists()
+
+
+def test_serving_validation_reads_an_engine_section_written_twice_without_the_key_as_before(tmp_path):
+    sections = ((PLAIN_WORKER,), (f"workers: {{aggregated: {{timing: {STRICT_DIRECT_FPM}}}}}",))
+    config, trace = _write_serving_config(tmp_path, *sections)
+
+    prediction = serving._read_prediction_config(config)
+
+    assert prediction == yaml.safe_load(config.read_text())
+    assert prediction["engine"]["workers"]["aggregated"]["timing"]["estimation_mode"] == "fpm_interpolation"
+    assert serving._scope(prediction, trace)
 
 
 # --- Configs that AISim writes itself ---------------------------------------------------

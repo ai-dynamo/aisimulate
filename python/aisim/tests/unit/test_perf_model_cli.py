@@ -1235,6 +1235,147 @@ def test_migrate_of_a_config_that_cannot_be_read_is_a_usage_error(tmp_path, caps
     assert not (tmp_path / "converted.yaml").exists()
 
 
+TOO_MANY_VALUES = (
+    "error: the config has more than {} values; a value that a YAML alias names counts every time it is used. "
+    "Write the values out and do not nest YAML aliases\n"
+)
+
+
+def _with_doubling_aliases(path: Path, levels: int, config: dict[str, Any]) -> Path:
+    """Write ``config`` below keys that each name the key before them twice, through a YAML alias."""
+    lines = ["a0: &a0 [x, x]"]
+    lines += [f"a{level}: &a{level} [*a{level - 1}, *a{level - 1}]" for level in range(1, levels + 1)]
+    path.write_text("\n".join(lines) + "\n" + yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("output", [None, "converted.yaml", "existing.yaml", "config.yaml"])
+@pytest.mark.parametrize("report_format", ["table", "json"])
+@pytest.mark.parametrize("fields", [OLD_FIELDS, {}], ids=["old fields", "no old fields"])
+def test_migrate_of_a_config_with_more_values_than_the_limit_is_a_usage_error_and_writes_nothing(
+    fields, report_format, output, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(migrate_module, "_MAX_VALUES", 1000)
+    # Thirteen lines of aliases name about thirty thousand values. Without the limit the command
+    # would write them out and exit 0.
+    config = _with_doubling_aliases(tmp_path / "config.yaml", 12, _predict(**fields))
+    existing = tmp_path / "existing.yaml"
+    existing.write_text("kept: true\n", encoding="utf-8")
+    before = {file: file.read_bytes() for file in tmp_path.iterdir()}
+    options = [] if output is None else ["--output", tmp_path / output, "--overwrite"]
+
+    assert _run("migrate", config, "--format", report_format, *options) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith(TOO_MANY_VALUES.format(1000))
+    assert "Traceback" not in captured.err
+    assert {file: file.read_bytes() for file in tmp_path.iterdir()} == before
+
+
+def _old_fields_text() -> str:
+    """A whole predict config with old fields, as text."""
+    return yaml.safe_dump(_predict(**OLD_FIELDS), sort_keys=False)
+
+
+@pytest.mark.parametrize(
+    ("text", "kind", "repeated"),
+    [
+        pytest.param(
+            "engine:\n  ais_perf_model: {estimation_mode: op_level}\n  ais_perf_model: {estimation_mode: auto}\n"
+            "traffic: {}\n",
+            "predict",
+            "engine.ais_perf_model in {}: the key 'ais_perf_model' is written twice (lines 2 and 3)",
+            id="the key twice",
+        ),
+        pytest.param(
+            # Converted without the check, the last section would be written and the first one lost.
+            "engine:\n  ais_perf_model: {estimation_mode: op_level}\n" + _old_fields_text(),
+            "predict",
+            "engine.ais_perf_model in {}: the key 'engine' is written twice (lines 1 and 3)",
+            id="the section twice, the first one holds the key and the last one old fields",
+        ),
+        pytest.param(
+            "engine:\n  ais_perf_model: {estimation_mode: op_level, estimation_mode: auto}\ntraffic: {}\n",
+            "predict",
+            "engine.ais_perf_model in {}: the key 'estimation_mode' is written twice (line 2)",
+            id="a key twice inside the value",
+        ),
+        pytest.param(
+            # Read first for old fields, this file would end as "cannot convert" with exit code 1.
+            "engine:\n  ais_perf_model: {tp: 1}\n  ais_perf_model: {tp: 2}\n  estimation_mode: op_level\ntraffic: {}\n",
+            "predict",
+            "engine.ais_perf_model in {}: the key 'ais_perf_model' is written twice (lines 2 and 3)",
+            id="the key twice next to an old field",
+        ),
+        pytest.param(
+            "search_space:\n  ais_perf_model: {estimation_mode: op_level}\n  ais_perf_model: {estimation_mode: auto}\n"
+            "workload: {}\n",
+            "search",
+            "search_space.ais_perf_model in {}: the key 'ais_perf_model' is written twice (lines 2 and 3)",
+            id="the key twice in a search file",
+        ),
+    ],
+)
+@pytest.mark.parametrize("names_the_kind", [True, False], ids=["--kind", "kind from the file"])
+@pytest.mark.parametrize("output", [None, "converted.yaml"])
+def test_migrate_refuses_a_file_that_writes_the_key_or_its_section_twice(
+    text, kind, repeated, names_the_kind, output, tmp_path, capsys
+):
+    # The mapping holds only the last one written. Converted, the file would lose the other without a word.
+    config = tmp_path / "config.yaml"
+    config.write_text(text, encoding="utf-8")
+    options = ["--kind", kind] if names_the_kind else []
+    options += [] if output is None else ["--output", tmp_path / output]
+
+    assert _run("migrate", config, *options) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith(f"aisim: error: {repeated.format(config)}; write it once\n")
+    assert "Traceback" not in captured.err
+    assert sorted(tmp_path.iterdir()) == [config]
+    assert config.read_text(encoding="utf-8") == text
+
+
+def test_migrate_asks_about_an_existing_output_file_before_it_reads_for_repeated_keys(tmp_path, capsys):
+    config = tmp_path / "config.yaml"
+    config.write_text("engine:\n  ais_perf_model: {tp: 1}\n  ais_perf_model: {tp: 2}\ntraffic: {}\n", encoding="utf-8")
+    existing = tmp_path / "existing.yaml"
+    existing.write_text("kept: true\n", encoding="utf-8")
+
+    assert _run("migrate", config, "--output", existing) == 2
+
+    assert capsys.readouterr().err.endswith(
+        f"aisim: error: output file {existing} exists; pass --overwrite to replace it\n"
+    )
+    assert existing.read_text(encoding="utf-8") == "kept: true\n"
+
+
+def test_migrate_converts_the_last_section_of_a_file_that_writes_it_twice_without_the_key(tmp_path, capsys):
+    # No section writes the key, so the file is read as before: the last section is the config.
+    config = tmp_path / "config.yaml"
+    first = yaml.safe_dump({"engine": _predict(estimation_mode="auto")["engine"]}, sort_keys=False)
+    config.write_text(first + yaml.safe_dump(_predict(**OLD_FIELDS), sort_keys=False), encoding="utf-8")
+
+    assert _run("migrate", config, "--format", "json") == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "converted"
+    assert report["ais_perf_model"] == OLD_FIELDS
+
+
+def test_migrate_stops_at_a_million_values(tmp_path, capsys):
+    # Eighteen lines of aliases name a little over a million values.
+    config = _with_doubling_aliases(tmp_path / "config.yaml", 17, _predict(**OLD_FIELDS))
+
+    assert _run("migrate", config) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith(TOO_MANY_VALUES.format(1000000))
+
+
 def test_migrate_reports_a_conversion_that_fails_its_own_check_and_writes_nothing(tmp_path, monkeypatch, capsys):
     def changes_the_meaning(*args, **kwargs):
         raise migrate_module.MigrationCheckError("the converted config does not read back as the original")

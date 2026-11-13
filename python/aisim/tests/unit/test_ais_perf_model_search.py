@@ -1235,10 +1235,17 @@ def test_from_yaml_reports_a_key_it_cannot_read(tmp_path):
         SmartSearchConfig.from_yaml(text)
 
 
+WORKLOAD_TEXT = "workload: {isl: 128, osl: 16, request_rate: 2, num_request_ratio: 3}\n"
+
+
+def _space_text(*space_lines: str) -> str:
+    """The text of a search space that is written line by line."""
+    return "search_space:\n" + "".join(f"  {line}\n" for line in space_lines)
+
+
 def _config_text(*space_lines: str) -> str:
     """The text of a search config file whose search space is written line by line."""
-    space = "".join(f"  {line}\n" for line in space_lines)
-    return f"search_space:\n{space}workload: {{isl: 128, osl: 16, request_rate: 2, num_request_ratio: 3}}\n"
+    return _space_text(*space_lines) + WORKLOAD_TEXT
 
 
 def test_from_yaml_rejects_a_key_written_twice_inside_the_key(tmp_path):
@@ -1293,6 +1300,102 @@ def test_from_yaml_reads_a_repeat_outside_the_key_and_a_merge_inside_it_as_befor
 
     old_spelling = _space("disagg", estimation_mode="op_level", fallback_policy="allow")
     assert _dump(config.search_space) == _dump(_validated(old_spelling))
+
+
+# The four lines every search space of the tests below starts with, so its first extra line is line 6.
+SPACE_LINES = (f"model_name: {MODEL}", f"hardware_sku: {SYSTEM}", "backend: [vllm]", "deployment_mode: [agg]")
+OP_LEVEL = "ais_perf_model: {estimation_mode: op_level}"
+REGRESSION = "ais_perf_model: {estimation_mode: fpm_regression, fallback_policy: allow}"
+OLD_LINES = ("estimation_mode: fpm_regression", "fallback_policy: allow")
+
+
+@pytest.mark.parametrize(
+    ("text", "kept", "problem"),
+    [
+        pytest.param(
+            _config_text(*SPACE_LINES, OP_LEVEL, REGRESSION),
+            "fpm_regression",
+            "the key 'ais_perf_model' is written twice (lines 6 and 7)",
+            id="the key twice",
+        ),
+        pytest.param(
+            f"search_space: {{model_name: {MODEL}, hardware_sku: {SYSTEM}, {OP_LEVEL}, {REGRESSION}}}\n{WORKLOAD_TEXT}",
+            "fpm_regression",
+            "the key 'ais_perf_model' is written twice (line 1)",
+            id="the key twice on one line",
+        ),
+        pytest.param(
+            _space_text(*SPACE_LINES, OP_LEVEL) + _space_text(*SPACE_LINES, *OLD_LINES) + WORKLOAD_TEXT,
+            "fpm_regression",
+            "the key 'search_space' is written twice (lines 1 and 7)",
+            id="the search space twice, the key in the first",
+        ),
+        pytest.param(
+            _space_text(*SPACE_LINES, *OLD_LINES) + _space_text(*SPACE_LINES, OP_LEVEL) + WORKLOAD_TEXT,
+            "op_level",
+            "the key 'search_space' is written twice (lines 1 and 8)",
+            id="the search space twice, the key in the last",
+        ),
+        pytest.param(
+            _space_text(*SPACE_LINES, OP_LEVEL) + _space_text(*SPACE_LINES, REGRESSION) + WORKLOAD_TEXT,
+            "fpm_regression",
+            "the key 'search_space' is written twice (lines 1 and 7)",
+            id="the search space twice, the key in both",
+        ),
+    ],
+)
+def test_from_yaml_rejects_the_key_or_the_search_space_written_twice(tmp_path, text, kept, problem):
+    path = tmp_path / "search.yaml"
+    path.write_text(text)
+    # The YAML reader keeps the last one, which alone is a config, and the search would follow it without a word.
+    assert SmartSearchConfig.model_validate(yaml.safe_load(text)).search_space.estimation_mode == kept
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(AisPerfModelError) as failure:
+            SmartSearchConfig.from_yaml(path)
+
+    assert str(failure.value) == f"search_space.ais_perf_model in {path}: {problem}; write it once"
+
+
+def test_from_yaml_reads_a_search_space_written_twice_without_the_key_as_before(tmp_path):
+    # Neither search space writes ais_perf_model, so the last one is the config and the first says nothing.
+    first = _space_text("model_name: another/model", "hardware_sku: h100_sxm", "estimation_mode: op_level")
+    path = tmp_path / "search.yaml"
+    path.write_text(first + _config_text(*SPACE_LINES))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config = SmartSearchConfig.from_yaml(path)
+
+    assert _dump(config.search_space) == _dump(_validated(_space("agg")))
+
+
+# A Dynamo planner config can hold a mapping of another shape under the same name: its roles and
+# the dataset profile of each. Here it reads as one entry with two keys the search cannot check.
+ROLES_AND_PROFILES = {"roles": {"decode": {"model": MODEL}}, "dataset_profiles": {"decode": "profile"}}
+
+
+@pytest.mark.parametrize(
+    ("mode", "worker_type"), [("agg", "aggregated"), ("disagg", "prefill"), ("both", "aggregated")]
+)
+def test_mapping_of_roles_and_dataset_profiles_is_rejected_as_an_entry_with_two_keys_the_search_cannot_check(
+    mode, worker_type
+):
+    raw = _space(mode, ais_perf_model=ROLES_AND_PROFILES)
+    message = (
+        f"search_space.ais_perf_model entry for {worker_type}: roles, dataset_profiles cannot be checked "
+        "in a search config. The search space does not state them (the search chooses tp and similar values "
+        "for each candidate). Drop these keys from the entry, or from the template file when "
+        "'from: <file>' brings them in."
+    )
+
+    with pytest.raises(ValidationError) as rejected:
+        SearchSpace.model_validate(raw)
+    assert [error["msg"] for error in rejected.value.errors()] == [f"Value error, {message}"]
+    with pytest.raises(AisPerfModelError) as failure:
+        lower_search_space(raw)
+    assert str(failure.value) == message
 
 
 # --- Module boundary --------------------------------------------------------------------------

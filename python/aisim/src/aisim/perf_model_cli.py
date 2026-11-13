@@ -350,12 +350,15 @@ def _config_kind(raw: Mapping[str, Any], path: str) -> str:
     )
 
 
-def _load_config(path: str) -> dict[str, Any]:
-    """Read the config file; a file that is not UTF-8 text is reported with its name."""
-    from .config.common import load_yaml
+def _load_config(path: str) -> tuple[dict[str, Any], str]:
+    """Read the config file and return its mapping and its text.
+
+    A file that is not UTF-8 text is reported with its name.
+    """
+    from .config.common import load_yaml_with_text
 
     try:
-        return load_yaml(path)
+        return load_yaml_with_text(path)
     except UnicodeDecodeError as exc:
         # load_yaml names the file for every other failure; this one would reach the user without it.
         raise ValueError(f"could not read configuration {path}: the file is not valid UTF-8 text ({exc})") from exc
@@ -522,11 +525,15 @@ def _indented(text: str) -> str:
 
 
 def _run_migrate(args: argparse.Namespace) -> int:
+    from .config.ais_perf_model import reject_repeated_keys
     from .config.ais_perf_model_migrate import CannotConvert, MigrationCheckError, migrate_mapping
 
-    raw = _load_config(args.config)
+    raw, text = _load_config(args.config)
     _refuse_to_replace_another_file(args)
     kind = args.kind or _config_kind(raw, args.config)
+    # The mapping holds the last value of a repeated key. Converting it would drop a second
+    # ais_perf_model, or a second section next to the one that holds it, without a word.
+    reject_repeated_keys(text, kind, args.config)
     key = f"{_SECTION_BY_KIND[kind]}.ais_perf_model"
     report: dict[str, Any] = {
         "config": args.config,

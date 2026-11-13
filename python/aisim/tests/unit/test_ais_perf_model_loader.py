@@ -326,6 +326,32 @@ def test_field_names_and_values_are_not_validated():
     assert resolve(config) == config
 
 
+def test_mapping_keyed_by_role_is_one_config_with_two_keys_the_loader_does_not_know(tmp_path):
+    # A Dynamo planner config gives a key of this name another shape: the perf models under ``roles``.
+    # The loader knows neither key, so the mapping is one config and nothing below the two keys is read.
+    by_role = {
+        "roles": {
+            "prefill": {"estimation_mode": "fpm_regression", "systems_paths": ["data"], "from": "base.yaml"},
+            "decode": {"estimation_mode": "op_level", "worker_type": "prefill", "transfer_policy": None},
+        },
+        "dataset_profiles": {"decode": "h200-tp1"},
+    }
+
+    document = load(by_role, base_dir=tmp_path)
+
+    assert document.bare
+    assert document.worker_types == ()
+    # A relative path, a ``from``, a worker type and a null below the two keys stay as written.
+    assert document.to_data() == by_role
+    # Every worker type gets the whole mapping, not the mapping written under its name.
+    for worker_type in apm.WORKER_TYPES:
+        entry = document.select(worker_type)
+        assert entry == {"worker_type": worker_type, **by_role}
+        assert resolve(entry) == entry
+        assert resolve(entry, fill={"model": "m"}, defaults={"tp": 1}) == {**entry, "model": "m", "tp": 1}
+    assert resolve(by_role) == by_role
+
+
 def _alias_bomb(levels: int, width: int = 9) -> str:
     """YAML in which every key repeats the key before it ``width`` times."""
     lines = ["a0: &a0 [" + ", ".join(["x"] * width) + "]"]

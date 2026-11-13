@@ -232,8 +232,9 @@ importing an installed plugin or inside an adapter occur after the known outputs
 
 For `engine.ais_perf_model`, an entry key that is not a perf-model field is a validation error, so
 existing artifacts stay. A key written twice inside `engine.ais_perf_model` in the configuration
-file is an error when the file is read, with exit code `2`, so existing artifacts stay too. In
-`predict`, an
+file is an error when the file is read, with exit code `2`, so existing artifacts stay too. The
+same holds for `ais_perf_model` written twice in the `engine` section, and for an `engine` section
+written twice when one of them writes `ais_perf_model`. In `predict`, an
 [identity key](../perf-model/configuration.md#identity-keys) whose value differs from the engine
 section is found later, when the run builds its workers. With `--overwrite`, the known outputs are
 already removed by then.
@@ -516,10 +517,24 @@ Without `--output`, `migrate` prints the plan and writes nothing: the new
 - **Circular values.** A YAML alias that makes a value contain itself is a
   usage error with exit code `2`:
   `engine.estimator_config.again contains itself: the value is the mapping or list it is written in, as a YAML alias can say. A config cannot be circular; write the value out`.
+- **Aliases of aliases.** `migrate` writes out every value that a YAML alias
+  names, once for each place that names it, so aliases of aliases multiply.
+  A file whose values then number more than 1,000,000 is a usage error with
+  exit code `2`, also when it has no old field:
+  `the config has more than 1000000 values; a value that a YAML alias names counts every time it is used. Write the values out and do not nest YAML aliases`.
+  A file that writes more values than that without an alias is refused the
+  same way.
 - **Not covered.** A configuration with AFD, an encoder pool, or `fixed` or
   `polynomial` timing keeps the old fields. `migrate` reports
   `cannot convert: <reason>` and exits `1`, also when the file has no old
   field.
+- **Repeated keys.** A file that writes `ais_perf_model` twice in its
+  section, writes that section twice while one of them holds
+  `ais_perf_model`, or writes a key twice inside the value is refused with
+  exit code `2`, before anything is converted, also when it has no old field:
+  `engine.ais_perf_model in prediction.yaml: the key 'ais_perf_model' is written twice (lines 8 and 10); write it once`.
+  The reader keeps only the last one written, so a conversion would drop the
+  other.
 - **Nothing to convert.** `migrate` says so and exits `0`.
 - **JSON report.** `--format json` prints `config`, `kind`,
   `working_directory`, `status` (`converted`, `nothing_to_convert` or

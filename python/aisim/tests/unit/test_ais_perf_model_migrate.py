@@ -30,7 +30,7 @@ from aisim.config.ais_perf_model import ESTIMATOR_KEYS, anchor_paths
 from aisim.config.ais_perf_model_migrate import CannotConvert, MigrationCheckError, migrate_mapping
 from aisim.config.cli import config_folder
 from aisim.support.schema import SupportRequest
-from aisim.sweeper.config import SearchSpace
+from aisim.sweeper.config import SearchSpace, SmartSearchConfig
 from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
 from .test_onboard_model_config import _args as _onboard_args
@@ -772,6 +772,12 @@ def test_search_relative_path_is_written_in_full_for_a_config_file_with_a_name_i
     absolute = str(cwd / "data" / "systems")
     assert converted["search_space"]["ais_perf_model"] == {"systems_paths": [absolute]}
     assert notes == [_absolute_note("data/systems", absolute, linked_from, folder)]
+    # Read by either name of its file, the search config names the folder the old field named.
+    file = _write(folder / "search.yaml", converted)
+    link = linked_from / "search.yaml"
+    link.symlink_to(file)
+    for name in (link, file):
+        assert SmartSearchConfig.from_yaml(name).search_space.systems_paths == [absolute]
 
 
 # --- Configs that cannot be converted ---------------------------------------------------------
@@ -1060,6 +1066,95 @@ def test_mapping_that_a_yaml_alias_names_a_second_time_is_converted_as_two_equal
     stated = converted["engine"]["ais_perf_model"]["estimator_config"]
     assert stated == {"correction": {"mode": "fixed"}, "fallback": {"mode": "fixed"}}
     assert stated["correction"] is not stated["fallback"]
+
+
+TOO_MANY_VALUES = (
+    "the config has more than {} values; a value that a YAML alias names counts every time it is used. "
+    "Write the values out and do not nest YAML aliases"
+)
+
+
+def _values(value: Any) -> int:
+    """How many values a copy of ``value`` holds: every mapping, list and scalar, each time it is used."""
+    if isinstance(value, dict):
+        return 1 + sum(_values(item) for item in value.values())
+    if isinstance(value, list):
+        return 1 + sum(_values(item) for item in value)
+    return 1
+
+
+class _CountsReads(list):
+    """A list that counts how many times it is read from its first item on."""
+
+    def __init__(self, items: list[Any]) -> None:
+        super().__init__(items)
+        self.reads = 0
+
+    def __iter__(self):
+        self.reads += 1
+        # A copy without a limit would read on for hours; the test stops it here.
+        assert self.reads <= 100_000, "the copy read this list far more often than the limit allows"
+        return super().__iter__()
+
+
+def test_limit_counts_every_value_of_the_whole_config_each_time_an_alias_names_it(monkeypatch):
+    aliases = "a0: &a0 [x, x]\na1: &a1 [*a0, *a0]\na2: [*a1, *a1]\n"
+    raw = yaml.safe_load(aliases + yaml.safe_dump(_config("predict", _engine("aggregated", **EST)), sort_keys=False))
+    converted, moved, notes = _migrate(raw)
+    # The file writes three lists; a copy holds a list for every place an alias names one.
+    assert [_values(raw[name]) for name in ("a0", "a1", "a2")] == [3, 7, 15]
+    count = _values(raw)
+
+    # A config that holds exactly as many values as the limit is converted as it is under the limit as shipped.
+    monkeypatch.setattr(migrate_module, "_MAX_VALUES", count)
+    assert _migrate(raw) == (converted, moved, notes)
+    assert converted["engine"]["ais_perf_model"] == EST
+    assert converted["a2"] == [[["x", "x"], ["x", "x"]], [["x", "x"], ["x", "x"]]]
+    assert converted["a2"][0] is not converted["a2"][1]
+
+    # No section holds that many values alone: the count runs over the whole config.
+    assert max(_values(section) for section in raw.values()) < count - 1
+    monkeypatch.setattr(migrate_module, "_MAX_VALUES", count - 1)
+    with pytest.raises(ValueError) as failure:
+        _migrate(raw)
+    assert not isinstance(failure.value, CannotConvert)
+    assert str(failure.value) == TOO_MANY_VALUES.format(count - 1)
+
+
+@pytest.mark.parametrize("old_fields", [{}, OP_LEVEL], ids=["no-old-fields", "old-fields"])
+def test_copy_stops_at_the_limit_however_many_values_the_aliases_name(old_fields, monkeypatch):
+    monkeypatch.setattr(migrate_module, "_MAX_VALUES", 1000)
+    raw = _config("predict", _engine("aggregated", **old_fields))
+    # A YAML alias is the object its anchor names. Each of forty keys names the key before it twice,
+    # so the last key names the first list 2**39 times.
+    first = value = _CountsReads(["x", "x"])
+    for level in range(40):
+        raw[f"a{level}"] = value
+        value = [value, value]
+
+    with pytest.raises(ValueError) as failure:
+        _migrate(raw)
+
+    assert not isinstance(failure.value, CannotConvert)
+    assert str(failure.value) == TOO_MANY_VALUES.format(1000)
+    assert 0 < first.reads <= 1000
+
+
+def test_members_of_a_yaml_set_count_toward_the_limit(monkeypatch):
+    monkeypatch.setattr(migrate_module, "_MAX_VALUES", 1000)
+    raw = _config("predict", _engine("aggregated", **OP_LEVEL))
+    # The copy takes a set whole, so a set of two thousand names is two thousand values and not one.
+    raw["names"] = yaml.safe_load("!!set {" + ", ".join(f"n{index}" for index in range(2000)) + "}")
+    assert isinstance(raw["names"], set)
+
+    with pytest.raises(ValueError) as failure:
+        _migrate(raw)
+    assert str(failure.value) == TOO_MANY_VALUES.format(1000)
+
+    raw["names"] = {"a", "b", "c"}
+    converted, _, _ = _migrate(raw)
+    assert converted["names"] == {"a", "b", "c"}
+    assert converted["names"] is not raw["names"]
 
 
 # YAML reads ``.nan`` as a number, which no path field takes.

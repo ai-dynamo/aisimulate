@@ -887,7 +887,7 @@ def _section(kind: str) -> str:
 
 
 def reject_repeated_keys(text: str, kind: str, source: str | os.PathLike[str]) -> None:
-    """Fail when the text of a config file writes a key twice inside ``ais_perf_model``.
+    """Fail when the text of a config file writes ``ais_perf_model``, or a key inside it, twice.
 
     ``text`` is the YAML text of a config file, ``kind`` is ``predict``,
     ``recommend`` or ``search`` and ``source`` is the path of the file, named
@@ -895,23 +895,41 @@ def reject_repeated_keys(text: str, kind: str, source: str | os.PathLike[str]) -
     last value of a repeated key, so the mapping it returns no longer shows
     that there was another one.
 
-    Only the value of ``ais_perf_model`` is checked, at every depth, by the
-    rule of a perf-model file: a key counts as it is written, so a key that a
-    merge (``<<``) brings in does not repeat a key written next to it. A
-    repeated key anywhere else in the file keeps its last value, as before;
-    when that key is ``ais_perf_model`` itself, the value that is kept is the
-    one checked. Text without the key has nothing to check, and text the YAML
-    reader cannot parse is left to the code that reads the file. A repeated
-    key is an ``AisPerfModelError`` that names the key and its lines.
+    Three repeats are errors. They are looked for in this order, and the
+    first one found is reported:
+
+    1. the section that holds the key (``engine`` or ``search_space``)
+       written twice in the file, when one of these sections writes
+       ``ais_perf_model``;
+    2. ``ais_perf_model`` written twice in its section;
+    3. a key written twice inside the value of ``ais_perf_model``, at every
+       depth, by the rule of a perf-model file. Of several, the one whose
+       second writing comes first in the file is reported.
+
+    A key counts as it is written. A key that a merge (``<<``) brings in does
+    not repeat a key written next to it: the written one is the value, as it
+    is for the reader. A file in which no written section writes
+    ``ais_perf_model`` is read as the reader reads it: a section written
+    twice keeps its last value, and a value that only a merge brings in is
+    the one checked. A repeated key anywhere else in the file keeps its last
+    value. Text without the key has nothing to check, and text the YAML
+    reader cannot parse is left to the code that reads the file.
+
+    A repeat is an ``AisPerfModelError`` that names the key and its lines:
+    the first and the last writing of the section or of ``ais_perf_model``,
+    the first two writings of a key inside the value.
     """
     import yaml
 
     section = _section(kind)
     try:
         root = yaml.compose(text, Loader=yaml.SafeLoader)
-        value = _kept_node(_kept_node(root, section, set()), KEY, set())
+        outer = _repeated_key_or_section(root, section)
+        value = None if outer else _kept_node(_kept_node(root, section, set()), KEY, set())
     except (yaml.YAMLError, RecursionError):
         return
+    if outer:
+        raise _written_twice(section, source, *outer)
     repeats = []
     # An alias names a node again, and can name the node it is written in, so each node is read once.
     pending, seen = [value], set()
@@ -934,10 +952,49 @@ def reject_repeated_keys(text: str, kind: str, source: str | os.PathLike[str]) -
                 first_lines.setdefault(key, line)
     if repeats:
         line, first_line, key = min(repeats)
-        lines = f"line {line}" if line == first_line else f"lines {first_line} and {line}"
-        raise AisPerfModelError(
-            f"{section}.{KEY} in {os.fsdecode(source)}: the key {key!r} is written twice ({lines}); write it once"
-        )
+        raise _written_twice(section, source, key, first_line, line)
+
+
+def _written_twice(section: str, source: str | os.PathLike[str], key: str, first_line: int, line: int) -> ValueError:
+    """Build the error for a key that a config file writes on ``first_line`` and again on ``line``."""
+    lines = f"line {line}" if line == first_line else f"lines {first_line} and {line}"
+    return AisPerfModelError(
+        f"{section}.{KEY} in {os.fsdecode(source)}: the key {key!r} is written twice ({lines}); write it once"
+    )
+
+
+def _repeated_key_or_section(root: Any, section: str) -> tuple[str, int, int] | None:
+    """Return ``(key, first line, last line)`` when a file writes ``ais_perf_model`` or its section twice, else None.
+
+    ``root`` is the YAML node of the file. The section is counted first: while
+    the file writes it twice there is no one mapping to count the key in.
+    Sections of which none writes the key are not counted at all.
+    """
+    sections = _written(root, section)
+    # An alias can write one mapping as the section many times. It is read once.
+    distinct = {id(node): node for _, node in sections}
+    keys = [written for node in distinct.values() if (written := _written(node, KEY))]
+    if not keys:
+        return None
+    name, written = (section, sections) if len(sections) > 1 else (KEY, keys[0])
+    return (name, written[0][0], written[-1][0]) if len(written) > 1 else None
+
+
+def _written(node: Any, name: str) -> list[tuple[int, Any]]:
+    """Return ``(line, value node)`` for each time a mapping node writes the key ``name``, in the order of the file.
+
+    A key that a merge (``<<``) brings in is not written, and a node that is
+    not a mapping writes nothing.
+    """
+    import yaml
+
+    if not isinstance(node, yaml.MappingNode):
+        return []
+    return [
+        (key_node.start_mark.line + 1, value_node)
+        for key_node, value_node in node.value
+        if isinstance(key_node, yaml.ScalarNode) and key_node.tag == _YAML_TEXT_TAG and key_node.value == name
+    ]
 
 
 def _kept_node(node: Any, name: str, searched: set[int]) -> Any:

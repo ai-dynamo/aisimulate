@@ -168,7 +168,10 @@ search_space:
 - **Repeated keys.** A key written twice inside `ais_perf_model`, at any
   depth, is an error in a file read by `SmartSearchConfig.from_yaml`:
   `search_space.ais_perf_model in search.yaml: the key 'estimation_mode' is written twice (lines 7 and 8); write it once`.
-  A key repeated anywhere else in the file keeps its last value.
+  So is `ais_perf_model` written twice in `search_space`, and `search_space`
+  written twice when one of them writes `ais_perf_model`; the error then
+  names `the key 'ais_perf_model'` or `the key 'search_space'`. Any other
+  repeated key in the file keeps its last value.
 - **Not supported in this release.** A search with `afd_roles`, an `encoder`
   search, and a role with `<role>_timing_model` set reject the field and keep
   the estimator fields. A dataset entry (`from: {dataset: ...}`) is rejected
