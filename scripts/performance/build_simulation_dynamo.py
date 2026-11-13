@@ -101,9 +101,7 @@ def patch_handoff_timing(core: Path, dynamo: Path) -> dict:
         anchor = b"        kv_bytes_per_token: timing.kv_bytes_per_token,\n"
         if original.count(anchor) != 1:
             raise ValueError("pinned handoff conversion anchor is not unique")
-        added = (
-            b"        // Modified by AISim CI: this legacy DTO models token KV only.\n        state_bytes: 0,\n"
-        )
+        added = b"        // Modified by AISim CI: this legacy DTO models token KV only.\n        state_bytes: 0,\n"
         if "pipeline_fill_ms" in fields:
             added += (
                 b"        // Modified by AISim CI: the pinned Dynamo has no pipeline-parallel prefill.\n"
