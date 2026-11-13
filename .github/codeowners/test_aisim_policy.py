@@ -424,6 +424,7 @@ def test_full_ci_exact_target_verification(tmp_path: Path) -> None:
 
     matching = {
         "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REF": "refs/heads/main",
         "EXPECTED_SHA": target_sha,
         "RUN_SHA": target_sha,
     }

@@ -54,6 +54,11 @@ jobs:
             echo "::error::manual Full CI requires a nonempty expected_sha"
             exit 1
           fi
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" &&
+                ! "${GITHUB_REF}" =~ ^refs/heads/(main|release/[A-Za-z0-9][A-Za-z0-9._-]*|pull-request/[1-9][0-9]*)$ ]]; then
+            echo "::error::manual Full CI requires main, release/<version>, or pull-request/<number>; use /ok to test <sha> for trusted PR CI"
+            exit 1
+          fi
           if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
             echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
             exit 1

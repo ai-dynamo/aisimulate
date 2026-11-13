@@ -489,3 +489,134 @@ def test_standalone_fpe_requires_explicit_matching_copied_pr_identity(tmp_path, 
     assert (result.returncode == 0) is allowed, result.stderr
     first_transfer = next(i for i, step in enumerate(job["steps"]) if step.get("uses", "").endswith("/wheel-storage"))
     assert job["steps"].index(guard) < first_transfer
+
+
+@pytest.mark.parametrize("missing", ["missing.json", "distant/missing.json"])
+def test_collect_rejects_missing_literal_companion_before_upload(handoff, missing):
+    wheel = handoff.source / "aisim.whl"
+    wheel.write_bytes(b"wheel")
+    handoff.monkeypatch.setenv("STORAGE_PATH", f"{wheel}\n{handoff.source.parent / missing}")
+    with pytest.raises(ValueError, match="path does not exist"):
+        transfer.main()
+    assert not handoff.requests
+    assert not handoff.manifest.exists()
+    # Without the invalid companion the wheel keeps its original archive root.
+    assert transfer.collect(str(wheel)) == {"aisim.whl": wheel}
+
+
+@pytest.mark.parametrize("code,reason", [(6, "DNS"), (60, "TLS peer certificate"), (28, "timed out")])
+def test_curl_transport_diagnostics_do_not_expose_private_stderr(tmp_path, monkeypatch, code, reason):
+    token = 'secret-"token\\value'
+    escaped = token.replace("\\", "\\\\").replace('"', '\\"')
+
+    def run(command, **kwargs):
+        config = command[command.index("--config") + 1]
+        return SimpleNamespace(
+            stdout="000",
+            returncode=code,
+            stderr=f"curl: ({code}) diagnostic {token} {escaped} {config} "
+            "Authorization: Bearer credentials https://user:password@example.invalid/path?secret=query",
+        )
+
+    monkeypatch.setattr(transfer.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match=reason) as error:
+        transfer.transfer("https://artifactory.invalid/wheel", token, tmp_path / "wheel")
+    message = str(error.value)
+    assert f"curl exit {code}" in message
+    for private in (token, escaped, "wheel-curl-", "credentials", "password", "query"):
+        assert private not in message
+
+
+@pytest.mark.parametrize("status", [404, 401, 403, 500])
+def test_curl_http_failure_preserves_status(tmp_path, monkeypatch, status):
+    monkeypatch.setattr(
+        transfer.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(stdout=str(status), returncode=22),
+    )
+    with pytest.raises(transfer.HTTPError) as error:
+        transfer.transfer("https://artifactory.invalid/wheel", "secret", tmp_path / "wheel")
+    assert error.value.status == status
+
+
+@pytest.mark.parametrize("package", ["aisim", "aisimulate"])
+@pytest.mark.parametrize("corrupt", ["aisim-wheel", "dynamo-build.patch"])
+def test_complete_simulation_handoff_reaches_final_consumer_and_detects_corruption(handoff, package, corrupt):
+    from scripts.performance.simulation_perf_artifact import sha256, verify
+
+    for side, revision in [("base", "a" * 40), ("head", "c" * 40)]:
+        source = handoff.source / side
+        source.mkdir()
+        wheel_name = f"{package}-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl"
+        files = {
+            wheel_name: b"product",
+            "ai_dynamo_runtime-1.6.0.whl": b"runtime",
+            "ai_dynamo-1.6.0-py3-none-any.whl": b"adapter",
+            "requirements.txt": b"numpy==2.2.0\n",
+            "dynamo-requirements.txt": b"numpy==2.2.0\n",
+            "dynamo-build.json": json.dumps({"aisimulate_sha": revision}).encode(),
+            "dynamo-build.patch": b"patch",
+            "dynamo-Cargo.lock": b"lock",
+        }
+        for name, data in files.items():
+            (source / name).write_bytes(data)
+        provenance = {
+            "side": side,
+            "source_sha": revision,
+            "dynamo": {"aisimulate_sha": revision},
+            "files": {name: sha256(source / name) for name in files},
+        }
+        (source / "provenance.json").write_text(json.dumps(provenance))
+        for key, value in {
+            "STORAGE_MODE": "upload",
+            "STORAGE_PATH": str(source),
+            "STORAGE_SOURCE_SHA": revision,
+            "STORAGE_NAME": f"simulation-wheel-{side}",
+            "STORAGE_TOKEN": "fixture-write-token",
+        }.items():
+            handoff.monkeypatch.setenv(key, value)
+        transfer.main()
+        handoff.output = source.parent / f"downloaded-{side}"
+        download(handoff)
+        assert verify(handoff.output, side, revision) == provenance
+        damaged = wheel_name if corrupt == "aisim-wheel" else corrupt
+        (handoff.output / damaged).write_bytes(b"corrupt after transfer")
+        with pytest.raises(ValueError, match="checksum mismatch"):
+            verify(handoff.output, side, revision)
+
+
+@pytest.mark.parametrize(
+    "ref,allowed",
+    [
+        ("refs/heads/main", True),
+        ("refs/heads/release/0.14.0", True),
+        ("refs/heads/pull-request/199", True),
+        ("refs/heads/feature", False),
+        ("refs/tags/v0.14.0", False),
+        ("refs/pull/199/head", False),
+        ("refs/heads/release/", False),
+        ("refs/heads/release/../main", False),
+        ("refs/heads/pull-request/0", False),
+        ("refs/heads/pull-request/0199", False),
+        ("refs/heads/pull-request/199/extra", False),
+    ],
+)
+def test_manual_full_ci_rejects_unadmitted_refs_early(ref, allowed):
+    # BaseLoader preserves GitHub's `on` and shell text without YAML 1.1 coercion.
+    workflow = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
+    script = workflow["jobs"]["verify-target"]["steps"][0]["run"]
+    result = subprocess.run(
+        ["bash", "-eu", "-c", script],
+        env={
+            **os.environ,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": ref,
+            "EXPECTED_SHA": "a" * 40,
+            "RUN_SHA": "a" * 40,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) == allowed, result.stdout + result.stderr
+    if not allowed:
+        assert "/ok to test <sha>" in result.stdout

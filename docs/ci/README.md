@@ -418,14 +418,11 @@ gh run list --repo ai-dynamo/aisim --workflow ci.yml --branch main --limit 10
 gh run view --repo ai-dynamo/aisim
 ```
 
-For a maintainer-admitted manual Full CI run, first ensure the checked-out
-branch is pushed to this repository and its current commit has the required
-review evidence. Launch standalone Fast CI, then Full CI; both verify the supplied
-commit. Full CI waits for the Fast result:
+Manual Full CI accepts only `main`, `release/<version>`, or a trusted `pull-request/<number>` branch. For a PR, use `/ok to test <sha>` to admit its reviewed current head to the trusted copy first. Ensure the selected branch is pushed and has the required review evidence, then launch standalone Fast CI followed by Full CI; both verify the supplied commit. Full CI waits for the Fast result:
 
 ```bash
-ci_branch="$(git branch --show-current)"
-ci_sha="$(git rev-parse HEAD)"
+ci_branch="main"  # Select main, release/0.14.0, or an admitted pull-request/<number> branch.
+ci_sha="$(gh api "repos/ai-dynamo/aisim/git/ref/heads/${ci_branch}" --jq .object.sha)"
 gh workflow run fast-ci.yml --repo ai-dynamo/aisim \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 gh workflow run ci.yml --repo ai-dynamo/aisim \

@@ -33,6 +33,8 @@ def collect(patterns: str) -> dict[str, Path]:
         # Match upload-artifact's least common ancestor layout. The directory
         # before the first wildcard is the root for glob uploads.
         wildcard = re.search(r"[*?\[]", pattern)
+        if not wildcard and not Path(pattern).exists():
+            raise ValueError(f"wheel handoff path does not exist: {pattern}")
         root = Path(os.path.dirname(pattern[: wildcard.start()])) if wildcard else Path(pattern)
         if not wildcard and not root.is_dir():
             root = root.parent
@@ -115,7 +117,27 @@ def transfer(url: str, token: str, destination: Path, *, upload: bool = False, c
         status = int(result.stdout or "0")
         if result.returncode == 22 or (result.returncode == 0 and not 200 <= status < 300):
             raise HTTPError(status)
-        result.check_returncode()
+        if result.returncode:
+            # Curl stderr may contain credentials, private config paths, response
+            # data or signed URLs. Use curl's stable exit codes for safe,
+            # actionable diagnostics rather than echoing arbitrary stderr.
+            reason = {
+                5: "could not resolve proxy",
+                6: "could not resolve host (DNS)",
+                7: "could not connect to host",
+                18: "incomplete transfer",
+                23: "could not write local file",
+                26: "could not read upload file",
+                28: "request timed out",
+                35: "TLS handshake failed",
+                58: "local TLS certificate problem",
+                60: "TLS peer certificate verification failed",
+                77: "could not read TLS CA certificate",
+            }.get(
+                result.returncode,
+                "transport failure; consult curl exit-code documentation",
+            )
+            raise RuntimeError(f"Artifactory transfer failed (curl exit {result.returncode}): {reason}")
 
 
 def main() -> None:
