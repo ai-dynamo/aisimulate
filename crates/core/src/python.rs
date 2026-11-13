@@ -3,7 +3,6 @@
 
 //! JSON-only PyO3 boundary for one materialized AISim replay execution.
 
-use std::hash::{Hash, Hasher};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -668,27 +667,7 @@ impl IterationKind {
 type RankQuery = [u32; 5];
 
 /// A group iteration: every rank's query in DP order.
-/// A group iteration: every rank's query in DP order, and whether operation
-/// diagnostics are captured.
-type IterationKey = (Vec<RankQuery>, bool);
-
-/// [`IterationKey`] borrowed, so a hit allocates nothing.
-#[derive(Clone, Copy)]
-struct IterationKeyRef<'a>(&'a [RankQuery], bool);
-
-impl Hash for IterationKeyRef<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Hashes as the owned tuple does: the slice, then the flag.
-        self.0.hash(state);
-        self.1.hash(state);
-    }
-}
-
-impl quick_cache::Equivalent<IterationKey> for IterationKeyRef<'_> {
-    fn equivalent(&self, key: &IterationKey) -> bool {
-        self.0 == key.0.as_slice() && self.1 == key.1
-    }
-}
+type IterationKey = Vec<RankQuery>;
 
 /// A recorded rank estimate's kind, the rank's query and the bits of the
 /// iteration's correction.
@@ -717,9 +696,11 @@ struct IterationPricing {
     /// when every name belongs to one pass. Attributes a mixed rank's
     /// operations to prefill and decode evidence.
     mix_step_passes: Option<std::collections::HashMap<String, MixedPass>>,
-    /// Priced iterations keyed by the complete ordered rank list. Absent while
-    /// the model collects lookup coverage, which counts every invocation, and
-    /// when the estimator reads per-request detail the key does not hold.
+    /// Priced iterations keyed by the complete ordered rank list. Diagnostics
+    /// capture is fixed when the model is built, so the key leaves it out, as
+    /// the phase memo's does. Absent while the model collects lookup coverage,
+    /// which counts every invocation, and when the estimator reads
+    /// per-request detail the key does not hold.
     memo: Option<Memo<IterationKey, Arc<PricedIteration>>>,
     /// How a mixed operation-graph rank's operations split into prefill and
     /// decode evidence, per operation-name list the model reports.
@@ -2271,12 +2252,9 @@ impl TimingModel for AicTimingModel {
                 .map(Arc::new)
         };
         let priced = match &pricing.memo {
-            Some(memo) => memo.get_or_price_by(
-                &OnThread,
-                &IterationKeyRef(&queries, capture),
-                |key| (key.0.to_vec(), key.1),
-                price,
-            )?,
+            Some(memo) => {
+                memo.get_or_price_by(&OnThread, queries.as_slice(), <[RankQuery]>::to_vec, price)?
+            }
             None => price()?,
         };
         self.record_iteration(&priced, &queries)?;
@@ -9578,6 +9556,10 @@ mod tests {
                 if capture {
                     phase.diagnostic_model = Some(Arc::clone(&model));
                     iteration.diagnostic_model = Some(Arc::clone(&model));
+                    // Replay fixes capture at construction, so the memo does
+                    // not key on it.
+                    let pricing = iteration.iteration.as_ref().unwrap();
+                    pricing.memo.as_ref().unwrap().clear();
                 }
                 let expected = phase.predict_prefill_totals_ms(batch, new, prefix).unwrap();
                 let actual = iteration_ms(&iteration, &[prefill_work(0, batch, new, prefix)]);

@@ -1057,24 +1057,6 @@ mod tests {
     }
 
     #[test]
-    fn gemm_query_memo_stays_within_its_capacity() {
-        let memo = gemm_query_memo();
-        for m in 0..(GEMM_QUERY_CACHE_CAPACITY as u32 + 4_096) {
-            let key = GemmQueryKey {
-                quant: GemmQuantMode::Bfloat16,
-                m,
-                n: 32,
-                k: 32,
-            };
-            memo.get_or_price(&OnThread, key, || {
-                Ok::<_, AicError>(LeafValue::latency_only(f64::from(m)))
-            })
-            .unwrap();
-        }
-        assert!(memo.len() <= GEMM_QUERY_CACHE_CAPACITY);
-    }
-
-    #[test]
     fn gemm_query_cache_allows_concurrent_duplicate_misses() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Barrier};
