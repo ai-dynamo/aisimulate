@@ -139,7 +139,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -195,7 +195,7 @@ jobs:
       # The runner executes as non-root; use its sudo-enabled CI image.
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     env:
       OPENBLAS_NUM_THREADS: '1'
@@ -317,7 +317,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -402,7 +402,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     env:
       OPENBLAS_NUM_THREADS: '1'
@@ -490,7 +490,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

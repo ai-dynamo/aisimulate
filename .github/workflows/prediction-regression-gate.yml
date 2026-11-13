@@ -65,7 +65,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: ${{ github.workspace }}
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - name: Checkout comparison revision
