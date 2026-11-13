@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Keep normal producers paused until this smoke matrix passes.
+name: Runner canary
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["pull-request/*"]
+    paths: [".github/workflows/runner-canary.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    if: github.repository == 'ai-dynamo/aisim'
+    name: Runner canary (${{ matrix.pool }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pool: amd64
+            runner: prod-aisim-default-amd64-v1
+            machine: x86_64
+            scratch: true
+          - pool: arm64
+            runner: prod-aisim-default-arm64-v1
+            machine: aarch64
+            scratch: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisim/aisim
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify source, job workspace, architecture and storage
+        shell: bash
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+          EXPECT_SCRATCH: ${{ matrix.scratch }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = ai-dynamo/aisim
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(pwd -P)" = /__w/aisim/aisim
+          test "${HOME}" = /__w/aisim/aisim
+          test -w "${HOME}"
+          test "$(uname -m)" = "${EXPECTED_MACHINE}"
+          probe=$(mktemp "${HOME}/.runner-canary.XXXXXX")
+          rm "${probe}"
+          if [[ "${EXPECT_SCRATCH}" == true ]]; then
+            test -w /scratch
+            probe=$(mktemp /scratch/runner-canary.XXXXXX)
+            rm "${probe}"
+          fi
+          printf 'Verified source %s on %s (%s) with writable HOME=%s\n' "${GITHUB_SHA}" "${RUNNER_NAME}" "${EXPECTED_MACHINE}" "${HOME}"
+
+  shared:
+    if: github.repository == 'ai-dynamo/aisim'
+    name: Runner canary (shared)
+    runs-on: dynamo-cpu-4gi-amd64
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify shared runner admission, source and writable workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = ai-dynamo/aisim
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(pwd -P)" = "$(realpath "${GITHUB_WORKSPACE}")"
+          test "$(uname -m)" = x86_64
+          test -w "${HOME}"
+          probe=$(mktemp .runner-canary.XXXXXX)
+          rm "${probe}"
+          printf 'Verified source %s on shared runner %s\n' "${GITHUB_SHA}" "${RUNNER_NAME}"
