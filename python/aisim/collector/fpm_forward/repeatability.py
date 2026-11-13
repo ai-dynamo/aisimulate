@@ -24,8 +24,8 @@ from aisim.fpm_contract import FPM_MANIFEST_FILENAME
 
 from . import planner
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile
-from .config import FPMCollectionOptions, semantic_generator_overrides, with_kv_warmup_defaults
-from .execution_evidence import file_evidence, inspect_execution_evidence
+from .config import FPMCollectionOptions
+from .execution_evidence import _deployment_hashes, file_evidence, inspect_execution_evidence
 from .measurement_evidence import compare_measurements, extract_measurement_evidence
 from .memory_admission import DTypeMemoryEstimate, TopologyMemoryDecision
 from .model_capability import ResolvedModelConfig
@@ -58,13 +58,6 @@ _LAUNCH_FILES = ("generator-request.json", "run.sh", "fpm_env.sh", "collector-ru
 
 class _IncompleteSample(ValueError):
     pass
-
-
-def _deployment_hashes(overrides: dict[str, Any]) -> set[str]:
-    return {
-        _canonical_hash(semantic_generator_overrides(overrides)),
-        _canonical_hash(with_kv_warmup_defaults(overrides)),  # Historical schema-v11 launch hash.
-    }
 
 
 def load_repeatability_deployment(source_campaign_dir: str | Path) -> dict[str, Any]:

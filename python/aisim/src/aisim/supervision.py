@@ -30,6 +30,7 @@ from .config.common import (
     RECOMMENDATION_CORE_SECTIONS,
     ResourceConfig,
 )
+from .package_identity import PROGRAM_ENVIRONMENT, program_name
 from .resources import ResourceLimitError, descendants_of, discover_host, resolve_budget
 
 _CONTEXT = "_AISIM_SUPERVISED_BUDGET"
@@ -266,6 +267,8 @@ def _run_process(
     env = dict(os.environ)
     env.update(dict.fromkeys(_THREAD_VARIABLES, "1"))
     env["TOKENIZERS_PARALLELISM"] = "false"
+    # Preserve the invoked CLI in parser errors from the supervised worker.
+    env[PROGRAM_ENVIRONMENT] = program_name()
     events_path = directory / "events.jsonl"
     ready_path = directory / "ready"
     env[_CONTEXT] = json.dumps(

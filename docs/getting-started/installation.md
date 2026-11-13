@@ -16,6 +16,7 @@ predate a documented feature. Record your installed version before comparing
 results or reporting a problem:
 
 ```bash
+aisim --version
 python -c 'import aisim; print(aisim.__version__)'
 python -c 'import aisim, aisim._runtime; print(aisim.__file__); print(aisim._runtime.__file__)'
 ```
@@ -75,6 +76,8 @@ python -m pip download --no-deps --only-binary=:all: \
 This checks only AISim's wheel, not all transitive dependencies. A missing
 wheel on an unlisted host does not establish source-build support there.
 
+Both `aisim --version` and `aisimulate --version` report the installed distribution as `aisim VERSION`. The two launchers expose the same `predict`, `recommend`, and `onboard` commands and options. Help and parser errors retain the invoked command name, including `python -m aisim`, `python -m aisimulate`, and supervised workers.
+
 ## Migrate to the renamed distribution
 
 Current source builds `aisim` / `aisim-core`; historical published releases use
@@ -122,6 +125,15 @@ uv sync --project python/aisim --extra dev
 source python/aisim/.venv/bin/activate
 aisim --help
 ```
+
+To repair an existing source-checkout environment after installing a legacy distribution, run these commands from that same checkout:
+
+```bash
+uv pip uninstall --python python/aisim/.venv/bin/python aisimulate
+uv sync --project python/aisim --extra dev --frozen --reinstall-package aisim
+```
+
+The explicit interpreter selects the checkout's project environment. The sync command reinstalls this checkout and its CLI entry points using the existing lockfile, including shared files removed by the uninstall.
 
 Install `uv`, a Rust toolchain with Cargo, and a C/C++ compiler plus platform
 linker before syncing: Maturin compiles the native extension. On macOS, install
