@@ -53,7 +53,7 @@ jobs:
     needs: select
     if: needs.select.outputs.run_comparison == 'true'
     name: Forward Prediction Performance (advisory)
-    runs-on: prod-aisimulate-default-amd64-v1
+    runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 45
     defaults:
       run:
@@ -61,7 +61,7 @@ jobs:
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
-        HOME: /__w/aisimulate/aisimulate
+        HOME: /__w/aisim/aisim
         USER: runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
