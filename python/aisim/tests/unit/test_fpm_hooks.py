@@ -379,3 +379,63 @@ def test_sglang_hook_finds_owner_class_by_method_name(fake_sglang):
     # a module without any builder is skipped, not an error
     empty = types.ModuleType("sglang.srt.managers.scheduler_components.metrics_reporter_empty")
     assert sglang.patch_sglang_metrics_reporter(empty) is False
+
+
+def test_record_frames_keeps_hook_fields_and_reports_gaps():
+    import io
+    import json
+
+    from aisim_core.fpm_hooks import _record
+
+    fpm = _stock_fpm_module("x.fpm")
+    ext = _struct.extend_struct(fpm.ScheduledRequestMetrics)
+    scheduled = _struct.with_pairs(
+        ext,
+        fpm.ScheduledRequestMetrics(num_decode_requests=1),
+        [(4, 700)],
+        {"spec_accept_lengths": [3], "device_time_s_by_category": {"target_verify": 0.02}},
+    )
+    payload = fpm.encode(fpm.ForwardPassMetrics(wall_time=0.02, scheduled_requests=scheduled))
+    frames = [(n.to_bytes(8, "big"), payload) for n in (5, 6, 9)] + [((10).to_bytes(8, "big"), b"\xc1")]
+    out = io.BytesIO()
+    summary = _record.record_frames(frames, out, clock=lambda: (1.0, 2.0))
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [line["sequence"] for line in lines] == [5, 6, 9]
+    first = lines[0]
+    assert first["received_unix_s"] == 1.0 and first["received_monotonic_s"] == 2.0
+    # untyped decode: the hook fields survive, unlike a decode with the stock typed struct
+    assert first["fpm"]["scheduled_requests"]["extend_lengths"] == [4]
+    assert first["fpm"]["scheduled_requests"]["spec_accept_lengths"] == [3]
+    assert summary["messages"] == 3 and summary["undecodable"] == 1
+    assert summary["gaps"] == [[6, 9]] and (summary["first_sequence"], summary["last_sequence"]) == (5, 10)
+
+
+def test_record_cli_records_a_live_zmq_stream(tmp_path):
+    import json
+    import threading
+    import time
+
+    zmq = pytest.importorskip("zmq")
+    from aisim_core.fpm_hooks import __main__ as cli
+
+    endpoint = f"ipc://{tmp_path / 'fpm'}.0"
+    context = zmq.Context()
+    pub = context.socket(zmq.PUB)
+    pub.bind(endpoint)
+    payload = msgspec.msgpack.encode({"wall_time": 0.01, "scheduled_requests": {"extend_lengths": [1]}})
+
+    def publish():
+        time.sleep(0.5)  # let the subscriber connect
+        for n in range(3):
+            pub.send_multipart((b"", n.to_bytes(8, "big"), payload))
+
+    sender = threading.Thread(target=publish)
+    sender.start()
+    out = tmp_path / "fpm.jsonl"
+    assert cli.main(["record", "--endpoint", endpoint, "--output", str(out), "--duration", "1.5"]) == 0
+    sender.join()
+    pub.close(linger=0)
+    context.term()
+    assert [json.loads(line)["sequence"] for line in out.read_text().splitlines()] == [0, 1, 2]
+    summary = json.loads((tmp_path / "fpm.jsonl.summary.json").read_text())
+    assert summary["messages"] == 3 and summary["gaps"] == []

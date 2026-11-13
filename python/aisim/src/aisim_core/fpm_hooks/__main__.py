@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """``python -m aisim_core.fpm_hooks <module> [-- args...]``: run ``<module>`` as ``__main__``
-with the FPM per-request hooks installed here and in every subprocess (via PYTHONPATH)."""
+with the FPM per-request hooks installed here and in every subprocess (via PYTHONPATH).
+
+``python -m aisim_core.fpm_hooks record --endpoint ENDPOINT --output FILE``: record
+an engine's FPM ZMQ stream to JSON Lines (see ``_record.py``)."""
 
 from __future__ import annotations
 
@@ -17,6 +20,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args or args[0] in ("-h", "--help"):
         print(__doc__.strip())
         return 0 if args else 2
+    if args[0] == "record":
+        from ._record import main as record_main
+
+        return record_main(args[1:])
     module = args.pop(0)
     if args and args[0] == "--":
         args.pop(0)

@@ -153,6 +153,23 @@ base, the two lists are added at runtime inside the engine process by
    `SchedulerMetricsReporter`) was caught exactly this way and fixed by the
    method-name lookup.
 
+### Recording without Dynamo
+
+A plain SGLang server publishes FPM on `{--forward-pass-metrics-ipc-name}.{dp_rank}`
+and stores nothing. To record it, run one recorder per capture run next to the server:
+
+```bash
+python -m sglang.launch_server ... --enable-forward-pass-metrics \
+  --forward-pass-metrics-ipc-name ipc:///tmp/fpm-run1
+python -m aisim_core.fpm_hooks record --endpoint ipc:///tmp/fpm-run1.0 --output run1/fpm.jsonl
+```
+
+Each JSON line holds the publisher `sequence`, the receive time (Unix and monotonic)
+and the payload under `fpm`, decoded without a type so the hook fields survive (item
+6 above). Split tiers afterwards by receive time. On exit (SIGINT, SIGTERM or
+`--duration`), `fpm.jsonl.summary.json` gives the message count and any sequence gaps,
+which are messages dropped by the publisher.
+
 ### Step diagnostics (SGLang)
 
 The SGLang hook also writes these optional fields into `scheduled_requests`. They are
