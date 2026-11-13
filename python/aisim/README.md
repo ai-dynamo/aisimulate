@@ -43,7 +43,8 @@ The distributions share their Python files and CLI, so uninstall `aisimulate`
 
 ```bash
 python3 -m pip uninstall -y aisimulate
-python3 -m pip install --upgrade --force-reinstall aisim
+python3 -m pip install --upgrade aisim
+python3 -m pip install --force-reinstall --no-deps aisim
 python3 -m pip check
 ```
 
@@ -164,5 +165,6 @@ so that AISim owns the installed files:
 
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
-python3 -m pip install --upgrade --force-reinstall aisim
+python3 -m pip install --upgrade aisim
+python3 -m pip install --force-reinstall --no-deps aisim
 ```
