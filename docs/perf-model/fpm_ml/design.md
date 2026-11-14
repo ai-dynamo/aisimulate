@@ -102,10 +102,11 @@ base, the two lists are added at runtime inside the engine process by
    imported eagerly.
 2. **Extended `ScheduledRequestMetrics`.** FPM is a `msgspec` struct serialized to
    msgpack. The hook creates a frozen subclass of the producer's
-   `ScheduledRequestMetrics` with two extra `list[int]` fields (`_struct.extend_struct`),
+   `ScheduledRequestMetrics` with two extra `list[int]` fields and the optional step
+   diagnostics (`_struct.extend_struct`),
    keeps the class name and module, and copies the original instance into it
    (`_struct.with_pairs`). The msgpack payload keeps FPM `version` 1; aggregate-only
-   consumers ignore the two extra keys, the Dynamo runtime decodes the event
+   consumers ignore the extra keys, the Dynamo runtime decodes the event
    unchanged and the Rust trace sink writes them out. If the producer's struct already
    has both fields (a patched image), the hook is a no-op.
 3. **SGLang** (`fpm_hooks/_sglang.py`; the leading underscore keeps the hook directory, which precedes site-packages on `PYTHONPATH`, from shadowing the real `sglang` package). The class that defines
@@ -121,7 +122,12 @@ base, the two lists are added at runtime inside the engine process by
      on the SGLang version it may include the token being decoded, i.e. be one above
      "KV before the step". The learned model tolerates exactly that (one token of slack
      per decode request in its consistency bound), and the trees see the same
-     convention at training and inference time.
+     convention at training and inference time;
+   - speculative decode batches: `(spec_num_draft_tokens, batch.seq_lens_cpu[i])`, so
+     the extend is the verify width `1 + k`, as on the vLLM path.
+
+   The same wrapper adds the step diagnostics below; `_emit_forward_pass_metrics` and
+   `_init_fpm` are wrapped to provide them.
 4. **Dynamo vLLM** (`fpm_hooks/_dynamo_vllm.py`). `InstrumentedScheduler._extract_scheduled`
    is wrapped; the pairs come from the `SchedulerOutput` the scheduler just produced:
    `num_scheduled_tokens[req_id]` is the extend, the request's `num_computed_tokens`
@@ -146,6 +152,45 @@ base, the two lists are added at runtime inside the engine process by
    predicting from NaN features. During the V4.1 captures a class-name change (mixin →
    `SchedulerMetricsReporter`) was caught exactly this way and fixed by the
    method-name lookup.
+
+### Recording without Dynamo
+
+A plain SGLang server publishes FPM on `{--forward-pass-metrics-ipc-name}.{dp_rank}`
+and stores nothing. To record it, run one recorder per capture run next to the server:
+
+```bash
+python -m sglang.launch_server ... --enable-forward-pass-metrics \
+  --forward-pass-metrics-ipc-name ipc:///tmp/fpm-run1
+python -m aisim_core.fpm_hooks record --endpoint ipc:///tmp/fpm-run1.0 --output run1/fpm.jsonl
+```
+
+Each JSON line holds the publisher `sequence`, the receive time (Unix and monotonic)
+and the payload under `fpm`, decoded without a type so the hook fields survive (item
+6 above). Split tiers afterwards by receive time. On exit (SIGINT, SIGTERM or
+`--duration`), `fpm.jsonl.summary.json` gives the message count and any sequence gaps,
+which are messages dropped by the publisher.
+
+### Step diagnostics (SGLang)
+
+The SGLang hook also writes these optional fields into `scheduled_requests`. They are
+not model features. They describe what a step contained under speculative decoding
+and where its time went, which the measured-SD-round and SD-approximation comparison
+in [whole-forward.md](../methods/whole-forward.md) needs. Records without the source
+data keep the defaults (zero or empty); the Dynamo vLLM hook leaves them at the
+defaults.
+
+| Field | Meaning |
+| --- | --- |
+| `spec_num_steps`, `spec_num_draft_tokens` | Active speculative configuration of the worker (`_active_spec_config_snapshot`); 0 when speculation is off. |
+| `spec_accept_lengths[i]` | Tokens committed by request *i* in a speculative decode step, bonus token included (`result.accept_lens`). Read only when already on the CPU, so the hook adds no device synchronization; empty otherwise. |
+| `device_time_s_by_category` | Seconds of device time per DeviceTimer category (`decode`, `extend`, `target_verify`, `eagle_draft`, `eagle_draft_extend`, ...). The hook adds one DeviceTimer reporter and drains it at each record, so the categories cover the same intervals as `wall_time`. |
+| `host_scheduled_at_s` | Host monotonic time when the scheduler started building the batch (`batch.fpm_start_time`). |
+| `host_emitted_at_s` | Host monotonic time when the record was emitted. Consecutive differences give the step period on the host clock; the gap to the summed device time is exposed CPU time. Under the overlap scheduler they also show where a record merged two forwards. |
+
+Host times are per worker process and only comparable within one capture.
+Checked against SGLang v0.5.20 (`94602c9c`): DeviceTimer tags the target verify,
+the EAGLE/MTP draft and the draft extend, and `GenerationBatchResult.accept_lens` is
+on the CPU when the record is emitted.
 
 ### Validation of the recorded lists
 
