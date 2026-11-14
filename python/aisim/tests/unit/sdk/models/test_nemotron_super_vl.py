@@ -12,6 +12,7 @@ scope: AISim models the text path of this vision-language model.
 import hashlib
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,10 @@ import pytest
 import aisim_core
 from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, common, config
 from aisim_core.sdk.engine import EngineHandle, compile_engine
-from aisim_core.sdk.errors import PerfDataNotAvailableError
+from aisim_core.sdk.errors import InvalidEngineConfigurationError, PerfDataNotAvailableError
 from aisim_core.sdk.models import get_model
 from aisim_core.sdk.models.helpers import _get_model_info
+from aisim_core.sdk.models.nemotron_h import NemotronHModel
 from aisim_core.sdk.utils import _load_model_config_from_model_path, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
@@ -188,6 +190,61 @@ def test_mamba2_kernels_ask_for_the_per_shard_shape(tp, nheads, n_groups):
             spec["chunk_size"],
         )
         assert shape == (4096, nheads, 64, n_groups, 128, 4, 128), name
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("mamba_num_heads", 126), ("n_groups", 6)],
+)
+def test_mamba2_rejects_uneven_shards_before_building_pipelines(monkeypatch, field, value):
+    import aisim_core.sdk.models as models
+
+    info = dict(_get_model_info(MODEL))
+    info["extra_params"] = replace(info["extra_params"], **{field: value})
+    monkeypatch.setattr(models, "_get_model_info", lambda _: info)
+
+    def unexpected_builder(self):
+        pytest.fail("invalid Mamba2 geometry reached a pipeline builder")
+
+    monkeypatch.setattr(NemotronHModel, "_build_context_ops", unexpected_builder)
+    monkeypatch.setattr(NemotronHModel, "_build_generation_ops", unexpected_builder)
+    # The model's 32 attention heads divide TP 4, so base-model validation passes.
+    model_config = config.ModelConfig(tp_size=4, moe_tp_size=1, moe_ep_size=4)
+    diagnostic = rf"{field} \({value}\) must be divisible by tp_size \(4\)"
+    with pytest.raises(InvalidEngineConfigurationError, match=diagnostic):
+        get_model(MODEL, model_config, backend_name="trtllm")
+    for estimation_mode in ("op_level", "auto"):
+        request = ForwardPassPerfModelConfig(
+            model=MODEL,
+            system="b200_sxm",
+            backend="trtllm",
+            backend_version="1.3.0rc20",
+            worker_type="aggregated",
+            tp=4,
+            moe_tp_size=1,
+            moe_ep_size=4,
+            estimation_mode=estimation_mode,
+        )
+        # The public estimator must surface invalid geometry instead of trying another mode.
+        with pytest.raises(ValueError, match=diagnostic):
+            RustForwardPassPerfModel.best_available(request)
+
+
+def test_mamba2_replicates_groups_below_tp(monkeypatch):
+    import aisim_core.sdk.models as models
+
+    info = dict(_get_model_info(MODEL))
+    info["extra_params"] = replace(info["extra_params"], n_groups=3)
+    monkeypatch.setattr(models, "_get_model_info", lambda _: info)
+    model_config = config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8)
+    model = get_model(MODEL, model_config, backend_name="trtllm")
+    specs = [
+        json.loads(op._spec_json())["Mamba2"]
+        for op in model.context_ops + model.generation_ops
+        if "Mamba2" in json.loads(op._spec_json())
+    ]
+    assert len(specs) == 4
+    assert {(spec["nheads"], spec["n_groups"]) for spec in specs} == {(16, 1)}
 
 
 def _trtllm_hybrid_56b(tp):

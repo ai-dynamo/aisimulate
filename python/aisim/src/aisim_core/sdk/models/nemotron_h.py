@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import aisim_core.sdk.operations as ops
 from aisim_core.sdk import common
+from aisim_core.sdk.errors import InvalidEngineConfigurationError
 from aisim_core.sdk.models.base import BaseModel, register_model
 from aisim_core.sdk.models.helpers import mtp_scale_factor
 
@@ -80,6 +81,16 @@ class NemotronHModel(BaseModel):
         Args:
             hybrid_config: NemotronHConfig containing hybrid_override_pattern and layer parameters
         """
+        tp_size = self.config.tp_size
+        if hybrid_config.mamba_num_heads % tp_size:
+            raise InvalidEngineConfigurationError(
+                f"NemotronH mamba_num_heads ({hybrid_config.mamba_num_heads}) must be divisible by tp_size ({tp_size})."
+            )
+        if hybrid_config.n_groups >= tp_size and hybrid_config.n_groups % tp_size:
+            raise InvalidEngineConfigurationError(
+                f"NemotronH n_groups ({hybrid_config.n_groups}) "
+                f"must be divisible by tp_size ({tp_size}) when n_groups >= tp_size."
+            )
         self._hybrid_config = hybrid_config
         self._build_context_ops()
         self._build_generation_ops()

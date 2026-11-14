@@ -242,6 +242,13 @@ def run_prediction(
             raise PredictionExecutionError(
                 f"runner prediction_provenance.{role} requires nonempty strings for {required}"
             )
+        database_mode = entry.get("database_mode")
+        if database_mode is not None and (
+            not isinstance(database_mode, str) or database_mode not in ("SILICON", "HYBRID", "EMPIRICAL", "SOL")
+        ):
+            raise PredictionExecutionError(
+                f"runner prediction_provenance.{role}.database_mode must be SILICON, HYBRID, EMPIRICAL, SOL, or null"
+            )
     summary["prediction_provenance"] = provenance
     summary.update(normalize_power_summary(report.metrics))
     if encoder is not None:
