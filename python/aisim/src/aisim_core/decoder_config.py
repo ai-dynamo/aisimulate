@@ -50,8 +50,10 @@ def nested_decoder_ambiguity(key: str, decoder: Mapping[str, Any]) -> str | None
     llm_config only as a nonempty object. The decoder's own key comes first, then the other decoder key.
 
     The text is the diagnosis only: "ambiguous nested <key>" for the own key and "ambiguous nested <inner> in <key>"
-    for the other key. Each caller adds its remedy after "; ", because intake accepts a complete --fpm-profile and
-    the collector does not. The function never raises and never reads the registry.
+    for the other key. Config intake adds its remedy after "; ", and so does the collector through
+    decoder_config_problem. The remedies differ, because intake accepts a complete --fpm-profile and the collector
+    does not. The FPM profile check and the context lookup of replay put their own text before the diagnosis and add
+    no remedy. The function never raises and never reads the registry.
     """
     llm_config = decoder.get("llm_config")
     held = {"text_config": "text_config" in decoder, "llm_config": isinstance(llm_config, dict) and bool(llm_config)}
@@ -70,8 +72,9 @@ def decoder_config_problem(key: str, decoder: object) -> str | None:
     as a nonempty object, so it never fails the first check.
 
     The text is the diagnosis only: "<key> must be a nonempty object describing one text decoder", or the text of
-    nested_decoder_ambiguity. The collector and the FPM profile check add their remedy after "; ". Config intake keeps
-    its own two checks, because it words the remedy of each differently. The function never raises.
+    nested_decoder_ambiguity. The collector adds its remedy after "; ". The FPM profile check and the context lookup
+    of replay put their own text before the diagnosis and add no remedy. Config intake keeps its own two checks,
+    because it words the remedy of each differently. The function never raises.
     """
     if not isinstance(decoder, dict) or not decoder:
         return f"{key} must be a nonempty object describing one text decoder"
