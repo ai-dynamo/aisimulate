@@ -578,6 +578,8 @@ def qualify(args):
         source = sources[run["id"]]
         if any(run[key] != source[key] for key in IDENTITY):
             raise ValueError("Result identity differs from the reviewed catalog")
+        if "feature_metadata" in run and run["feature_metadata"] != document(args.inputs, source, "feature_metadata"):
+            raise ValueError("Result silicon features differ from retained evidence")
         relative = "details/" + run["id"] + ".json"
         detail = {"schema": SUMMARY_SCHEMA, "snapshot": snapshot, **run}
         target = args.output / relative

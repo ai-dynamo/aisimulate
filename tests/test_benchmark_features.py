@@ -13,6 +13,7 @@ from test_agentx_accuracy import bundle, result
 
 from scripts.e2e_accuracy.benchmark_features import (
     FEATURES,
+    SILICON_FEATURES,
     add_agentx_receipt,
     add_branch_receipt,
     add_preemption_receipt,
@@ -38,6 +39,33 @@ def metadata():
         "a" * 64,
         {"revision": "b" * 40, "sha256": "c" * 64},
     )
+
+
+def silicon_metadata(identity="qwen-weka-l1"):
+    """Synthetic complete receipt; the raw payload is retained by silicon_inputs."""
+    evidence = {
+        "sha256": hashlib.sha256(agentx_pages.canonical({"settings": {"synthetic": True}})).hexdigest(),
+        "pointer": "/settings",
+    }
+    return {
+        "schema": "aisimulate.benchmark.features.v1",
+        "benchmark_id": identity,
+        "taxonomy": None,
+        "features": [
+            {
+                "id": key,
+                "state": "disabled",
+                "observed": {"state": "unknown", "count": None},
+                "evidence": [dict(evidence)],
+                "parameters": [{"name": "scope", "value": "not_applicable"}]
+                if key in {"cache.g2", "cache.g3"}
+                else [{"name": "method", "value": "off"}, {"name": "draft_length", "value": None}]
+                if key == "speculation"
+                else [],
+            }
+            for key in sorted(SILICON_FEATURES)
+        ],
+    }
 
 
 def feature_sidecar(summary):
@@ -131,7 +159,7 @@ def test_enabled_does_not_claim_exercised_and_missing_is_unknown():
 @pytest.mark.parametrize("bad", ["/Users/private/file", "Bearer secret", "hf_secret", {"token_ids": [1]}])
 def test_private_parameters_rejected(bad):
     value = metadata()
-    value["features"][0]["parameters"] = [{"name": "hidden", "value": bad}]
+    value["features"][0]["parameters"] = [{"name": "implementation", "value": bad}]
     with pytest.raises(ValueError):
         validate(value)
 
@@ -155,6 +183,54 @@ def test_public_feature_record_round_trip_and_legacy_bundle():
     assert "feature_metadata" not in validate_bundle(bundle())["runs"][0]
     with pytest.raises(ValueError, match="require silicon feature metadata"):
         validate_bundle(bundle(result(id="qwen-weka-l1", category="self_collected")))
+
+
+def test_complete_receipt_accepts_actual_enabled_parameters_and_evidenced_na():
+    value = silicon_metadata()
+    enabled = {
+        "cache.sub_block_prefix_reuse": {"match_granularity_tokens": 1, "block_size": 64},
+        "cache.hybrid_state": {"cache_types": ["recurrent_state"]},
+        "cache.g2": {"scope": "local", "size": 4096, "implementation": "host-cache"},
+        "cache.g3": {"scope": "shared", "implementation": "storage-cache"},
+        "speculation": {"method": "dspark", "draft_length": 7},
+    }
+    for row in value["features"]:
+        parameters = enabled.get(row["id"])
+        row["state"] = "enabled" if parameters else "not_applicable"
+        if parameters:
+            row["parameters"] = [{"name": name, "value": scalar} for name, scalar in parameters.items()]
+    assert validate(value, require_complete=True) == value
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        f"self-p{length}-l{lanes}-{cache}-r{repeat}"
+        for length in (4096, 32768)
+        for lanes in (1, 4, 16)
+        for cache in ("cold", "warm")
+        for repeat in range(3)
+    ],
+)
+def test_only_explicit_historical_finite_runs_may_omit_complete_receipts(identity):
+    from scripts.e2e_accuracy.agentx_contract import HISTORICAL_SELF_COLLECTED
+
+    length, lanes, cache, repeat = HISTORICAL_SELF_COLLECTED[identity]
+    run = result(
+        id=identity,
+        category="self_collected",
+        model="Qwen/Qwen3.5-397B-A17B",
+        backend="vllm",
+        boundary="complete_finite_cohort",
+        initial_input_tokens=length,
+        lanes=lanes,
+        cache_state=cache,
+        repeat=repeat,
+    )
+    assert validate_bundle(bundle(run))["runs"][0]["id"] == identity
+    for change in ({"id": identity + "-new"}, {"boundary": "successful_profile_span"}, {"model": "another/model"}):
+        with pytest.raises(ValueError, match="require silicon feature metadata"):
+            validate_bundle(bundle({**run, **change}))
 
 
 def test_weka_preparation_is_not_reclassified_as_finite_cohort():
@@ -214,10 +290,19 @@ def test_arbitrary_public_parameter_names_and_values_are_not_allowed():
 
 def test_archive_is_validated_and_keeps_its_own_snapshot(tmp_path, monkeypatch):
     artifacts = tmp_path / "artifacts"
-    features = metadata()
-    features["benchmark_id"] = "qwen-weka-l1"
+    features = silicon_metadata()
     current = bundle(result(id="qwen-weka-l1", category="self_collected", feature_metadata=features))
-    historical = bundle(result(id="finite-old", category="self_collected", boundary="complete_finite_cohort"))
+    historical = bundle(
+        result(
+            id="self-p4096-l1-cold-r0",
+            category="self_collected",
+            model="Qwen/Qwen3.5-397B-A17B",
+            backend="vllm",
+            initial_input_tokens=4096,
+            cache_state="cold",
+            boundary="complete_finite_cohort",
+        )
+    )
     for prefix, files in ((artifacts, current), (artifacts / "archive/finite-v1", historical)):
         for name, content in files.items():
             path = prefix / artifact_key("main") / name
@@ -228,7 +313,7 @@ def test_archive_is_validated_and_keeps_its_own_snapshot(tmp_path, monkeypatch):
     archived = json.loads(
         (tmp_path / "site/archive/finite-v1/branches" / artifact_key("main") / "summary.json").read_bytes()
     )
-    assert archived["runs"][0]["id"] == "finite-old"
+    assert archived["runs"][0]["id"] == "self-p4096-l1-cold-r0"
     assert archived["snapshot"] == json.loads(historical["summary.json"])["snapshot"]
     damaged = artifacts / "archive/finite-v1" / artifact_key("main") / "summary.json"
     damaged.write_text("{}")

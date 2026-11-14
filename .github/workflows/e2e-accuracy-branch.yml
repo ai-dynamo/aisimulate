@@ -479,6 +479,7 @@ jobs:
         with:
           name: agentx-private-${{ inputs.artifact_key }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/agentx-encrypted/
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
 
@@ -531,5 +532,6 @@ jobs:
         with:
           name: ${{ inputs.preview && 'e2e-agentx-preview' || 'e2e-agentx-web' }}-${{ inputs.artifact_key }}
           path: ${{ runner.temp }}/agentx-public/
+          overwrite: true
           if-no-files-found: error
           retention-days: 90

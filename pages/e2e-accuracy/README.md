@@ -685,7 +685,8 @@ label after the run/lane/request counts.
 Labels use the recorded estimator and prediction database version; missing values
 stay unrecorded, and grouped runs retain each distinct model/version label.
 
-The replacement Qwen Weka campaign remains unpublished until all
+The [Qwen Weka collection protocol](../../benchmarks/evidence/accuracy/qwen-weka/README.md)
+defines the replacement campaign. It remains unpublished until all
 six silicon profiles and the manifest-selected twelve GLM/Qwen replays qualify.
 Completed collections carry checksum-pinned `aisimulate.benchmark.features.v1`
 silicon records in HF. Evidence displays that saved record separately from
@@ -780,6 +781,26 @@ campaign. Qualification requires every catalog identity, consistent wheel,
 dataset, evaluated commit, and driver digests, and reconciled request accounting.
 Raw traces, token arrays, local paths, and logs remain private. Only explicit
 numerical projections and approved source links enter the public payload.
+
+New `self_collected` publications require exactly the eight silicon feature rows
+from the [collection skill](../../.agents/skills/aisim-agentx-collect/SKILL.md).
+Configured states must be resolved, including evidenced `not_applicable` values;
+observed use may remain unknown. Enabled sub-block reuse requires positive
+`match_granularity_tokens` and `block_size`, hybrid caching requires `cache_types`,
+and speculation requires its actual method and positive integer `draft_length`.
+Disabled/N/A speculation uses `method: off` and `draft_length: null`.
+Enabled G2/G3 require `scope: local|shared` and a named `implementation`; G2 also
+requires positive integer capacity `size` in bytes. Off/N/A offload uses
+`scope: not_applicable`. Qualification checks the published receipt against the
+checksum-verified silicon input and resolves every retained evidence hash/pointer.
+
+The explicit compatibility allowlist is the original 36 finite Qwen identities
+`self-p{4096|32768}-l{1|4|16}-{cold|warm}-r{0|1|2}`, with matching workload fields,
+Qwen3.5-397B-A17B on B300/vLLM TP8 and `complete_finite_cohort`. Those historical
+records may retain missing or unknown receipts. A new ID, a Weka run, a failed
+prediction or a different boundary does not gain that exception. Unqualified
+silicon inputs may retain unknowns for investigation; they cannot pass this
+publication gate by declaring an all-unknown or evidence-free N/A inventory.
 
 The trusted Pages publisher checks the producer workflow and qualification job,
 branch ancestry, checksums, safe paths, allowed fields, and overview/detail
@@ -984,9 +1005,15 @@ order, and applies observed output-length substitutions. Finite token traces are
 reconstructed from recorded token equality and dependencies. Replay configuration,
 prediction database selection, and simulator cache geometry belong to CI rather
 than the HF bundles. The reviewed policies currently cover B300 TP8 GLM/SGLang and
-Qwen/vLLM. They retain the existing op-level policy, correction disabled, SGLang
-0.5.21 / vLLM 0.31.0 databases, and GLM verification depth 3 with acceptance 1.99.
-These simulator choices are distinct from the silicon's configured draft length.
+Qwen/vLLM. They retain the existing op-level policy, correction disabled, and SGLang
+0.5.21 / vLLM 0.31.0 databases. SGLang verification depth comes from the resolved
+recipe. Each point's checksum-pinned `feature_point_receipt` must retain
+`metrics.speculative_acceptance` with `verification_depth` matching that recipe
+and finite `accepted_draft_tokens` between zero and the depth. Missing, invalid or
+depth-mismatched acceptance stops preparation; no other point's value is reused.
+Depth zero needs no acceptance receipt and supplies zero accepted draft tokens.
+These values are distinct from the silicon's configured draft length. Historical
+snapshots retain their original explicit prediction settings and provenance.
 Qwen cache geometry is requalified by `scripts/e2e_accuracy/agentx_inputs.py`
 from all recorded worker ranks using the shared-pool mapping. Receipts must contain
 each integer rank from zero through TP minus one exactly once. The accuracy driver

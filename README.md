@@ -210,6 +210,8 @@ For agentic trace replay, follow the [AgentX simulation quickstart](docs/replay/
 It includes a Weka workload, a complete eight-GPU prefill/decode configuration,
 KV cache warmup, and commands for running and inspecting the simulation.
 
+For self-collected silicon benchmarks, use the [AgentX collection skill](.agents/skills/aisim-agentx-collect/SKILL.md) to capture all eight serving-feature settings and their evidence before qualification.
+
 ## Recommend a deployment
 
 `recommend` searches the prediction schema plus search domains and an

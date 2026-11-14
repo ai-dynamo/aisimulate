@@ -252,10 +252,12 @@
 /tests/test_fpm_grouped_workflow.py                    @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_fpm_profile_workflow.py                    @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_resource_supervision.py                    @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/access-aisim-maintain
+/.claude/skills/aisim-agentx-collect                   @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /crates/core/parity_tests/perfmodel/                   @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/src/aisim/resources.py                   @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_ci_workflow_contracts.py                   @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_e2e_accuracy_overview.py                   @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
+/.agents/skills/aisim-agentx-collect/                  @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /.claude/skills/aisim-fpe-performance                  @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/.pre-commit-config.yaml                  @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_agentx_snapshot_export.py                  @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain

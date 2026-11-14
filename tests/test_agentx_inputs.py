@@ -5,6 +5,10 @@
 import copy
 import hashlib
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from test_agentx_accuracy import result, silicon_inputs
@@ -16,6 +20,7 @@ from scripts.e2e_accuracy.agentx_inputs import (
     load_runs,
     manual_geometry,
     reconstruct,
+    replay_config,
     safe_path,
 )
 from scripts.e2e_accuracy.benchmark_features import SILICON_FEATURES, validate
@@ -64,6 +69,28 @@ def test_trusted_root_with_symlinked_ancestor(tmp_path, child_link):
             safe_path(root, "link/manifest.json")
     else:
         assert safe_path(root, "bundle/manifest.json") == target / "manifest.json"
+
+
+@pytest.mark.parametrize("root_link", [False, True])
+def test_checked_and_load_runs_through_trusted_symlink(tmp_path, root_link):
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+    root = alias if root_link else alias / "inputs"
+    root.mkdir(exist_ok=True)
+    catalog = silicon_inputs(root, result())
+    run = load_runs(root, catalog)[0]
+    assert checked(root, run["artifacts"]["feature_metadata"]).is_file()
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_in_bundle_symlinks_rejected_even_with_contained_targets(tmp_path, directory):
+    target = tmp_path / "actual"
+    target.mkdir() if directory else target.write_text("intact")
+    (tmp_path / "link").symlink_to(target, target_is_directory=directory)
+    with pytest.raises(ValueError, match="Unsafe"):
+        safe_path(tmp_path, "link/manifest.json" if directory else "link")
 
 
 def test_corpus_filter_preserves_original_bytes_and_order(tmp_path):
@@ -183,6 +210,91 @@ def test_partial_measurement_snapshot_cannot_pass_public_gate():
     snapshot["measurement_campaign_status"] = "complete"
     with pytest.raises(ValueError, match="require a preview"):
         validate_snapshot(snapshot, preview=True)
+
+
+def sglang_replay_inputs(tmp_path, *, depth=3, acceptance=None):
+    run = result()
+    run["artifacts"] = {}
+    documents = {
+        "recipe": {
+            "base": {
+                "roles": {
+                    "agg": {
+                        "args": {
+                            "context-length": 8192,
+                            "chunked-prefill-size": 512,
+                            "max-running-requests": 32,
+                            "speculative-num-steps": depth,
+                        }
+                    }
+                }
+            }
+        },
+        "feature_point_receipt": {
+            "metrics": {
+                "kv_cache_pool_tokens": 8192,
+                **({"speculative_acceptance": acceptance} if acceptance is not None else {}),
+            }
+        },
+        "source_manifest": {
+            "initial_selection": {"seed": 42, "corpus_cursor": 1, "source_play_id": "trace", "t_star_ms": 0}
+        },
+        "workload": {"silicon_reference": {"namespace_map": {"trace": "weka:1111111111111111"}}},
+        "feature_harness_receipt": {
+            "input_config": {"phases": [{"duration": 60, "system_idle_gap_cap_seconds": 2, "grace_period": 5}]}
+        },
+    }
+    for role, value in documents.items():
+        # Nonfinite fixture values exercise validation after checksum verification.
+        content = json.dumps(value).encode()
+        target = tmp_path / f"{role}.json"
+        target.write_bytes(content)
+        run["artifacts"][role] = {
+            "path": target.name,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "bytes": len(content),
+        }
+    return run
+
+
+@pytest.mark.parametrize("accepted", [1.25, 2.75, None, True, -1, 4, float("inf"), float("nan"), "1.99"])
+@pytest.mark.parametrize("depth", [2, 3])
+def test_sglang_replay_uses_only_depth_matched_retained_acceptance(tmp_path, accepted, depth):
+    receipt = {"verification_depth": depth, "accepted_draft_tokens": accepted}
+    run = sglang_replay_inputs(tmp_path, acceptance=receipt if accepted is not None else None)
+    if depth == 3 and type(accepted) is float and accepted in (1.25, 2.75):
+        engine = replay_config(tmp_path, run)["engine"]
+        assert engine["nextn"] == 3
+        assert engine["nextn_accepted"] == accepted
+    else:
+        with pytest.raises(ValueError, match="acceptance"):
+            replay_config(tmp_path, run)
+
+
+def test_non_speculative_replay_validates_without_acceptance(tmp_path):
+    run = sglang_replay_inputs(tmp_path, depth=0)
+    config = replay_config(tmp_path, run)
+    # The predictor consumes this selector before parsing the public config.
+    config["engine"]["backend_version"] = config.pop("prediction_database_version")
+    # Pages CI runs without an installed AISim wheel. Validate the real source
+    # models in a subprocess without importing the runtime into the test worker.
+    source = Path(__file__).resolve().parents[1] / "python/aisim/src"
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "from aisim.config import CorePredictionConfig\n"
+            "config = CorePredictionConfig.model_validate_json(sys.stdin.read())\n"
+            "assert config.engine.nextn == 0\n"
+            "assert config.engine.nextn_accepted is None\n"
+            "assert CorePredictionConfig.model_validate_json(config.model_dump_json()) == config\n",
+        ],
+        input=json.dumps(config),
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(source)},
+        check=True,
+    )
 
 
 @pytest.fixture

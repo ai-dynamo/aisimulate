@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from test_agentx_accuracy import bundle, result
 from test_benchmark_features import metadata as feature_fixture
+from test_benchmark_features import silicon_metadata
 
 from scripts.e2e_accuracy.agentx_comparison import build as build_comparison
 from scripts.e2e_accuracy.agentx_contract import canonical
@@ -69,8 +70,7 @@ def fixtures(site, weka=False):
         shutil.copyfile(source / "branches.json", archive / "branches.json")
         runs = [run for run in runs if run["category"] == "agentx"]
         for lanes in (1, 4, 8, 10, 13, 14):
-            feature = feature_fixture()
-            feature["benchmark_id"] = f"qwen-weka-l{lanes}"
+            feature = silicon_metadata(f"qwen-weka-l{lanes}")
             runs.append(
                 result(
                     id=feature["benchmark_id"],

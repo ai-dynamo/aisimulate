@@ -154,6 +154,10 @@ shared:
     owners: [replay, mocker, maintainers]
   - glob: .claude/skills/aisim-replay-performance
     owners: [replay, mocker, maintainers]
+  - glob: .agents/skills/aisim-agentx-collect/
+    owners: [replay, forward-pass-engine, infra, maintainers]
+  - glob: .claude/skills/aisim-agentx-collect
+    owners: [replay, forward-pass-engine, infra, maintainers]
   - glob: .agents/skills/aisim-agentx-gap-debug/
     owners: [replay, forward-pass-engine, maintainers]
   - glob: .claude/skills/aisim-agentx-gap-debug

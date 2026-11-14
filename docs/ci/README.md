@@ -115,7 +115,7 @@ Manual dispatches and site-change triggers are listed below.
 | [FPE Support Matrix (release)](../../.github/workflows/fpe-release-qualify.yml) | Called once per release by Release branch nightly CI | Builds the release wheel, probes all shards, and uploads its qualified matrix artifact |
 | [codeowners](../../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
 | [Forward Prediction Performance (advisory)](../../.github/workflows/performance.yml) | Every trusted `pull-request/*` push; selects relevant PR files before benchmarking; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
-| [E2E Accuracy Matrix](../../.github/workflows/e2e-accuracy.yml) | Daily at 10:17 UTC for `main` and all `release/*` heads; manual dispatch for one explicit SHA | Advisory accuracy campaigns using one wheel for both CLIs; publishes qualified artifacts |
+| [E2E Accuracy Matrix](../../.github/workflows/e2e-accuracy.yml) | Daily at 10:17 UTC for `main` and all `release/*` heads; manual dispatch for one evaluated SHA, plus preview-only pinned `agentx_revision` and optional `agentx_campaign_catalog` ([constraints](#agentx-accuracy-extension)) | Advisory accuracy campaigns using one wheel for both CLIs; publishes qualified artifacts |
 | [GitHub Pages](../../.github/workflows/pages.yml) | FPE Support Matrix, Main branch nightly CI, Release branch nightly CI, E2E Accuracy Matrix, or FPM Accuracy Matrix completion; relevant site changes on PRs/`main`; daily at 09:17 UTC; manual dispatch | Validates qualified FPE and accuracy snapshots, tests FPE branch selection in Chromium, and builds public pages; deployment is restricted to trusted `main` |
 
 Forward performance uses the same selection pattern as Full CI: a small
@@ -584,6 +584,13 @@ rotation configuration stops delivery. See the
 [setup and configuration guide](../../DEVELOPMENT.md#slack-review-digest-and-weekly-pic).
 
 ### AgentX accuracy extension
+
+Manual preview dispatch also accepts `agentx_revision`, a 40-character lowercase
+HF commit SHA requiring `preview: true`. `agentx_campaign_catalog` requires both
+that pinned revision and preview mode, and must match
+`catalog/e2e/agentx/qualifications/<name>.json` with a lowercase alphanumeric/hyphen
+name. It selects explicitly unscored failed/stopped silicon evidence for a
+trusted preview; it cannot publish to production Pages.
 
 The daily E2E branch matrix also evaluates the reviewed AgentX catalog. Each branch
 uses its exact wheel and the same single resolved HF revision as InfX. Two bounded

@@ -4,6 +4,7 @@
 
 import hashlib
 import json
+import math
 import re
 
 from scripts.e2e_accuracy.benchmark_features import SILICON_FEATURES, validate
@@ -341,6 +342,26 @@ def manual_geometry(workers):
     return mapping
 
 
+def measured_acceptance(point, depth):
+    """Read depth-matched acceptance, or None when speculation is disabled."""
+    if type(depth) is not int or depth < 0:
+        raise ValueError("Invalid recorded verification depth")
+    if depth == 0:
+        return None
+    receipt = point.get("metrics", {}).get("speculative_acceptance")
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != {"verification_depth", "accepted_draft_tokens"}
+        or type(receipt["verification_depth"]) is not int
+        or receipt["verification_depth"] != depth
+    ):
+        raise ValueError("Missing depth-matched measured speculative acceptance")
+    accepted = receipt["accepted_draft_tokens"]
+    if type(accepted) not in {int, float} or not math.isfinite(accepted) or not 0 <= accepted <= depth:
+        raise ValueError("Invalid measured speculative acceptance")
+    return accepted
+
+
 def replay_config(root, run):
     """Simulation policy lives in CI; measured settings come from verified receipts."""
     if (run["backend"], run["model"], run["hardware"], run["tensor_parallel"], run["precision"]) not in {
@@ -419,7 +440,12 @@ def replay_config(root, run):
             "max_sequences": args["max-running-requests"],
         }
         # Recorded verification depth and measured acceptance remain distinct from configured draft length.
-        engine.update(context_length=args["context-length"], nextn=args["speculative-num-steps"], nextn_accepted=1.99)
+        depth = args["speculative-num-steps"]
+        engine.update(
+            context_length=args["context-length"],
+            nextn=depth,
+            nextn_accepted=measured_acceptance(point, depth),
+        )
         source = document(root, run, "source_manifest")["initial_selection"]
         snapshot = {
             "seed": source["seed"],

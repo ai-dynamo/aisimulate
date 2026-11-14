@@ -9,6 +9,13 @@ import { test } from "node:test";
 import vm from "node:vm";
 
 const workflow = readFileSync(new URL("../.github/workflows/e2e-accuracy.yml", import.meta.url), "utf8");
+test("AgentX private and public uploads overwrite artifacts when jobs are retried", () => {
+  const branchWorkflow = readFileSync(new URL("../.github/workflows/e2e-accuracy-branch.yml", import.meta.url), "utf8");
+  const uploads = branchWorkflow.split(/\n      - /).filter(step => step.includes("actions/upload-artifact@") &&
+    (step.includes("name: agentx-private-") || step.includes("'e2e-agentx-preview'")));
+  assert.equal(uploads.length, 2);
+  for (const step of uploads) assert.match(step, /\n          overwrite: true\n/);
+});
 const source = workflow.match(/          script: \|\n((?:(?:            .*)?\n)+)/)[1];
 assert.match(source, /core\.setOutput\('matrix', JSON\.stringify\(\{include: entries\}\)\);\s*$/);
 const sha = "a".repeat(40);
