@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import difflib
 import json
 import multiprocessing.spawn
@@ -396,6 +397,8 @@ def _require_known_sections(raw: dict[str, Any], *, command: str, stack: str) ->
 
 def main(argv: Sequence[str] | None = None) -> int:
     from .cli_args import _apply_overrides, _extract_output_configs, _load_mapping, build_parser
+    from .config.ais_perf_model import anchor_paths, warn_old_keys
+    from .config.cli import config_folder
     from .output import prepare_output_directory
 
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -410,9 +413,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
         except KeyboardInterrupt:
             return 130
-    raw = None
+    if args.command == "perf-model":
+        from .perf_model_cli import run_perf_model_command
+
+        try:
+            return run_perf_model_command(args)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return 130
+    raw = file_raw = None
     try:
         raw = _load_mapping(args.config)
+        # A path written in the file starts at the file's folder. A path given
+        # with --set starts at the working directory, so anchor before overrides.
+        raw = anchor_paths(raw, config_folder(args.config), args.command)
+        # --set edits the mapping in place; the deprecation hint needs what the file itself said.
+        file_raw = copy.deepcopy(raw) if args.overrides else raw
         _apply_overrides(raw, args.overrides, command=args.command)
         policy = ResourceConfig.model_validate(raw.get("execution", {}).get("resources", {}))
     except (OSError, ValueError, AttributeError):
@@ -465,6 +482,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise ValueError("encoder pools require --stack engine without adapters")
         except (ValueError, TypeError, AttributeError) as exc:
             parser.error(f"{args.config}: {exc}")
+    if raw is not None:
+        # Old estimator fields keep working and warn once, here in the process the
+        # user started. The call stays outside every try: when warnings are turned
+        # into errors, the warning must not be reported as a configuration error.
+        warn_old_keys(raw, args.command, source=args.config, file_raw=file_raw)
     event_output = None
     if raw is not None:
         try:

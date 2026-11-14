@@ -23,7 +23,11 @@ from aisim.config import CorePredictionConfig, CoreRecommendationConfig
 from aisim.support.fpm import _resolve_execution, fpm_cli_args
 from aisim.support.schema import SupportRequest
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 _REQUIRED = {
     "model": "example/unintegrated-model",

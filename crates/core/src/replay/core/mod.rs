@@ -10,7 +10,7 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::replay::ReplayTerminalStatus;
-use crate::replay::protocol::AuthoredKvHints;
+use crate::replay::protocol::{AuthoredKvHints, DirectRequest};
 
 pub mod round_robin;
 
@@ -59,7 +59,7 @@ pub trait AdmissionSource {
         now_ms: f64,
         cluster_in_flight: usize,
     ) -> Result<Vec<ReadyArrival<Self::Request, Self::Metadata>>>;
-    fn on_output_token(&mut self, request_id: Uuid, token_id: u32) -> Result<()>;
+    fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()>;
     fn on_terminal(
         &mut self,
         request_id: Uuid,
@@ -68,6 +68,95 @@ pub trait AdmissionSource {
     ) -> Result<()>;
     fn is_drained(&self) -> bool;
     fn total_requests(&self) -> usize;
+}
+
+/// A reactive workload owned outside Replay and fed through the same
+/// admission seam as Replay's own workload driver.
+///
+/// Replay owns the clock. The next instant is the earliest of the next engine
+/// event and the source's next wakeup ([`Self::next_wakeup_ms`]), a request to
+/// be stepped then that may produce nothing: empty steps are legal. A step is
+/// one [`Self::pop_ready`] call. Each instant `t` runs four phases:
+///
+/// 1. **Wakeup step**, only if `t` is the source's wakeup or feedback awaits
+///    it: Replay steps the source once, before engine work at `t` settles. Its
+///    submissions are scheduled arrivals, admitted exactly as native arrivals
+///    at `t`.
+/// 2. **Settle**: engine work due at `t` settles (pass ends, output tokens,
+///    terminals), delivered through the feedback callbacks.
+/// 3. **Reaction fixpoint**: Replay steps the source again while a step left
+///    new feedback at `t`. These submissions are reactions.
+/// 4. **Pass starts**: idle workers start passes one at a time in ascending
+///    worker order, each worker's attention-DP ranks in ascending rank order
+///    within its one pass, as native replay does. Feedback from a pass start,
+///    such as an admission rejection, is delivered and the source stepped
+///    before the next worker starts, so a reaction joins every pass not yet
+///    started and none that has.
+///
+/// An instant whose only activity is an empty wakeup step leaves engine
+/// state untouched, so idle wakeups never change engine timing.
+///
+/// Progress rules: after every step at `t` the next wakeup is `None` or finite
+/// and strictly later than `t`; a source not drained, with nothing in flight
+/// and no wakeup, has stalled. Both fail the run with
+/// `ReplayError::WorkloadSource`, as do an error the source returns, a reused
+/// request `uuid` and an out-of-range rank. A per-instant step budget
+/// (`Replayer::with_max_source_steps_per_instant`, default 1,000,000) bounds
+/// steps at one instant; exceeding it, which only a reaction loop can, fails
+/// with `ReplayError::ResourceLimited` naming the budget and the instant.
+///
+/// The run takes ownership of the source, so it cannot borrow caller state;
+/// share results with the caller through an owned handle such as
+/// `Rc<RefCell<_>>`. The source need not be `Send`.
+// Deliberately separate from `AdmissionSource`, the runtimes' internal view of
+// their admission queue: that trait returns `ReadyArrival` plumbing and has no
+// causal-terminal or quiescence split, while this one hands Replay plain
+// `DirectRequest`s and reports the client-visible terminal separately from
+// engine quiescence.
+pub trait ReplayWorkloadSource {
+    /// The instant at which the source next wants to be stepped, or `None`
+    /// while it only waits for feedback. Replay reads it once before the first
+    /// step, where it must be finite and no earlier than the run's first
+    /// instant, and after every step at `t`, where it must be `None` or finite
+    /// and strictly later than `t`. A wakeup does not promise work.
+    fn next_wakeup_ms(&mut self) -> Option<f64>;
+
+    /// One step at `now_ms`: the requests the source submits now, possibly
+    /// none. Every request must carry a `uuid` that is unique across the whole
+    /// run. Replay stamps each returned request's arrival as `now_ms`.
+    ///
+    /// `cluster_in_flight` is informational: the requests inside the cluster
+    /// when this step is called (in the engine, or waiting on placement,
+    /// encoding, tokenization or detokenization). It does not count requests
+    /// this source has submitted that Replay still holds, such as this
+    /// instant's scheduled arrivals before they are released. The source owns
+    /// its concurrency, so a source that bounds its in-flight work counts its
+    /// own outstanding submissions rather than gating on this argument.
+    fn pop_ready(&mut self, now_ms: f64, cluster_in_flight: usize) -> Result<Vec<DirectRequest>>;
+
+    /// One client-visible output token, produced at replay instant `now_ms`.
+    fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()>;
+
+    /// The request's client-visible terminal.
+    fn on_causal_terminal(
+        &mut self,
+        request_id: Uuid,
+        now_ms: f64,
+        status: ReplayTerminalStatus,
+    ) -> Result<()>;
+
+    /// The request no longer holds engine state. Defaults to a no-op.
+    fn on_quiescent(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+
+    /// True when the source will submit nothing more and awaits no feedback.
+    fn is_drained(&self) -> bool;
+
+    /// Progress-bar total; `0` when unknown.
+    fn total_requests_hint(&self) -> usize {
+        0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

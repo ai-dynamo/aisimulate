@@ -23,6 +23,7 @@ from .capacity import (
     reject_pipeline_parallelism,
     resolve_model_context_length,
 )
+from .config.ais_perf_model import check_entry_identity
 from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import (
@@ -1058,6 +1059,9 @@ def _worker_engine_args(
             # Restoration compares the saved identity exactly, including how
             # it spells unset context parallelism, MoE and model controls.
             timing_config.update(spell_as_saved(saved, timing_config))
+        # The unified key may restate what this config already fixes. A value
+        # that says something else would be ignored, so it is an error.
+        check_entry_identity(engine.ais_perf_model, role, timing_config)
         if timing.fpm_parquet_path is not None:
             interpolation = timing_config["estimator_config"].setdefault("fpm_interpolation", {})
             if interpolation.get("fpm_parquet_path", timing.fpm_parquet_path) != timing.fpm_parquet_path:

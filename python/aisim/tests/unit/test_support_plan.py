@@ -31,7 +31,11 @@ from aisim.support.fpm import run_fpm
 from aisim.support.plan import check_plan, create_plan, plan_lock, request_id, validation_id
 from aisim.support.schema import SupportRequest
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 
 def _pre_rename_plan(root: Path, case: str) -> SupportRequest:

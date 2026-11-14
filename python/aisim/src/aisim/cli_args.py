@@ -15,6 +15,7 @@ import yaml
 from aisim._legacy import plugin_entry_points
 
 from .detail import parse_detail_sections
+from .perf_model_cli import add_perf_model_parser
 from .support.cli import add_support_parser
 
 
@@ -119,19 +120,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="write additional artifacts using an installed output adapter",
     )
     add_support_parser(subparsers)
+    add_perf_model_parser(subparsers)
     return parser
 
 
 def _load_mapping(path: str) -> dict[str, Any]:
     source = Path(path)
     try:
-        value = yaml.safe_load(source.read_text(encoding="utf-8"))
+        text = source.read_text(encoding="utf-8")
+        value = yaml.safe_load(text)
     except OSError as exc:
         raise _CliConfigError(f"could not read configuration {source}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise _CliConfigError(f"malformed YAML in {source}: {exc}") from exc
     if not isinstance(value, dict):
         raise _CliConfigError(f"configuration {source} must contain one YAML mapping")
+    from .config.ais_perf_model import reject_repeated_keys
+
+    # A predict and a recommend config keep ais_perf_model in the same section, so one kind checks both.
+    reject_repeated_keys(text, "predict", source)
     return value
 
 

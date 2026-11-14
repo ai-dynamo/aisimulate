@@ -35,11 +35,11 @@
 //! messages whose *prefixes* mirror the Python `ValueError` texts (the
 //! parser-detail suffix differs between PyYAML and serde_yaml).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use pep440_rs::Version;
 use serde::Serialize;
@@ -185,18 +185,63 @@ fn yaml_type_name(v: &serde_yaml::Value) -> &'static str {
     }
 }
 
-fn load_yaml_mapping(path: &Path, label: &str) -> Result<serde_yaml::Mapping, AicError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| perf_err(format!("{}: failed to parse {label}: {e}", path.display())))?;
-    let value: serde_yaml::Value = serde_yaml::from_str(&text)
-        .map_err(|e| perf_err(format!("{}: failed to parse {label}: {e}", path.display())))?;
-    match value {
-        serde_yaml::Value::Mapping(m) => Ok(m),
-        other => Err(perf_err(format!(
-            "{}: expected a YAML mapping at the top level, got {}",
-            path.display(),
-            yaml_type_name(&other)
-        ))),
+/// One YAML file as read from disk: the parsed document, or the text of the
+/// read or parse failure so that each caller builds its own error message.
+enum YamlDoc {
+    Parsed(serde_yaml::Value),
+    ReadFailed(String),
+    ParseFailed(String),
+}
+
+impl YamlDoc {
+    fn load(path: &Path) -> Self {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) => return YamlDoc::ReadFailed(e.to_string()),
+        };
+        match serde_yaml::from_str(&text) {
+            Ok(value) => YamlDoc::Parsed(value),
+            Err(e) => YamlDoc::ParseFailed(e.to_string()),
+        }
+    }
+
+    /// The document as the top-level mapping every sidecar must be.
+    fn mapping(&self, path: &Path, label: &str) -> Result<&serde_yaml::Mapping, AicError> {
+        match self {
+            YamlDoc::Parsed(serde_yaml::Value::Mapping(m)) => Ok(m),
+            YamlDoc::Parsed(other) => Err(perf_err(format!(
+                "{}: expected a YAML mapping at the top level, got {}",
+                path.display(),
+                yaml_type_name(other)
+            ))),
+            YamlDoc::ReadFailed(e) | YamlDoc::ParseFailed(e) => Err(perf_err(format!(
+                "{}: failed to parse {label}: {e}",
+                path.display()
+            ))),
+        }
+    }
+}
+
+/// Parsed YAML documents by path. Resolving one basename reads the reuse
+/// manifest and the sidecars of every version directory it visits, and the
+/// basenames of one load visit largely the same files, so a
+/// [`SourceResolver`] keeps one of these and reads each file once. Like the
+/// per-basename source cache, this assumes the tree does not change while the
+/// resolver is alive.
+#[derive(Default)]
+struct YamlDocs {
+    docs: Mutex<HashMap<PathBuf, Arc<YamlDoc>>>,
+}
+
+impl YamlDocs {
+    fn get(&self, path: &Path) -> Arc<YamlDoc> {
+        let mut docs = self.docs.lock().unwrap();
+        if let Some(doc) = docs.get(path) {
+            return Arc::clone(doc);
+        }
+        let doc = Arc::new(YamlDoc::load(path));
+        docs.insert(path.to_path_buf(), Arc::clone(&doc));
+        doc
     }
 }
 
@@ -256,6 +301,7 @@ fn check_strict_provenance_coverage(
     version_path: &Path,
     strict: bool,
     only_table: Option<&str>,
+    docs: &YamlDocs,
     warnings: &mut Vec<ResolverWarning>,
 ) -> Result<(), AicError> {
     let stems = match only_table {
@@ -300,7 +346,8 @@ fn check_strict_provenance_coverage(
         return Ok(());
     }
 
-    let meta = match load_yaml_mapping(&meta_path, "collection_meta.yaml") {
+    let meta_doc = docs.get(&meta_path);
+    let meta = match meta_doc.mapping(&meta_path, "collection_meta.yaml") {
         Ok(meta) => meta,
         Err(error) => {
             if strict {
@@ -368,8 +415,9 @@ struct ReuseEntry {
 /// `_parse_reuse_yaml`: fail loudly on any structural or type mismatch; a
 /// present-but-empty `reuse: []` is a valid "nothing declared" document; a
 /// MISSING top-level `reuse` key is a schema error.
-fn parse_reuse_yaml(path: &Path) -> Result<Vec<ReuseEntry>, AicError> {
-    let mapping = load_yaml_mapping(path, "reuse.yaml")?;
+fn parse_reuse_yaml(path: &Path, docs: &YamlDocs) -> Result<Vec<ReuseEntry>, AicError> {
+    let doc = docs.get(path);
+    let mapping = doc.mapping(path, "reuse.yaml")?;
     let entries_value = mapping
         .get(serde_yaml::Value::String("reuse".to_string()))
         .ok_or_else(|| {
@@ -448,12 +496,13 @@ fn parse_reuse_yaml(path: &Path) -> Result<Vec<ReuseEntry>, AicError> {
 fn version_dir_state_unusable(
     version_path: &Path,
     warn_scope: &Path,
+    docs: &YamlDocs,
     warnings: &mut Vec<ResolverWarning>,
 ) -> Result<bool, AicError> {
     let reuse_yaml_path = version_path.join(REUSE_YAML_MARKER);
     let legacy_reuse_path = version_path.join(SHARED_LAYER_REUSE_MARKER);
     if reuse_yaml_path.is_file() {
-        parse_reuse_yaml(&reuse_yaml_path)?;
+        parse_reuse_yaml(&reuse_yaml_path, docs)?;
     } else if legacy_reuse_path.is_file() {
         warnings.push(warn(
             "legacy_marker",
@@ -469,7 +518,8 @@ fn version_dir_state_unusable(
     let legacy_incomplete_path = version_path.join(INCOMPLETE_MARKER);
     if meta_yaml_path.is_file() {
         // Parsed for fail-loud parity; partial tables are informational.
-        load_yaml_mapping(&meta_yaml_path, "collection_meta.yaml")?;
+        docs.get(&meta_yaml_path)
+            .mapping(&meta_yaml_path, "collection_meta.yaml")?;
         Ok(false)
     } else if legacy_incomplete_path.is_file() {
         warnings.push(warn(
@@ -493,9 +543,10 @@ fn version_dir_unusable_for_request(
     version_path: &Path,
     data_dir: &Path,
     strict: bool,
+    docs: &YamlDocs,
     warnings: &mut Vec<ResolverWarning>,
 ) -> Result<bool, AicError> {
-    match version_dir_state_unusable(version_path, data_dir, warnings) {
+    match version_dir_state_unusable(version_path, data_dir, docs, warnings) {
         Ok(unusable) => Ok(unusable),
         Err(e) => {
             if strict {
@@ -719,6 +770,7 @@ fn requested_version_reuse_entries(
     version: &str,
     op_file_basename: &str,
     strict: bool,
+    docs: &YamlDocs,
     warnings: &mut Vec<ResolverWarning>,
 ) -> Result<Vec<ReuseEntry>, AicError> {
     let mut matched = Vec::new();
@@ -732,7 +784,7 @@ fn requested_version_reuse_entries(
         if !reuse_path.is_file() {
             continue;
         }
-        let entries = match parse_reuse_yaml(&reuse_path) {
+        let entries = match parse_reuse_yaml(&reuse_path, docs) {
             Ok(entries) => entries,
             Err(e) => {
                 if strict {
@@ -770,23 +822,28 @@ struct ManifestEntry {
 fn manifest_entries_for(
     systems_root: &Path,
     op_file_basename: &str,
+    docs: &YamlDocs,
 ) -> Result<Vec<ManifestEntry>, AicError> {
     let manifest_path = systems_root.join("perf_data_reuse_manifest.yaml");
     if !manifest_path.exists() {
         return Ok(Vec::new());
     }
-    let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
-        perf_err(format!(
-            "{}: failed to read perf_data_reuse_manifest.yaml: {e}",
-            manifest_path.display()
-        ))
-    })?;
-    let value: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|e| {
-        perf_err(format!(
-            "{}: failed to parse perf_data_reuse_manifest.yaml: {e}",
-            manifest_path.display()
-        ))
-    })?;
+    let doc = docs.get(&manifest_path);
+    let value = match &*doc {
+        YamlDoc::Parsed(value) => value,
+        YamlDoc::ReadFailed(e) => {
+            return Err(perf_err(format!(
+                "{}: failed to read perf_data_reuse_manifest.yaml: {e}",
+                manifest_path.display()
+            )));
+        }
+        YamlDoc::ParseFailed(e) => {
+            return Err(perf_err(format!(
+                "{}: failed to parse perf_data_reuse_manifest.yaml: {e}",
+                manifest_path.display()
+            )));
+        }
+    };
     // `yaml.safe_load(f) or {}` — an empty document is an empty manifest.
     let mapping = match value {
         serde_yaml::Value::Null => return Ok(Vec::new()),
@@ -795,7 +852,7 @@ fn manifest_entries_for(
             return Err(perf_err(format!(
                 "{}: expected a YAML mapping at the top level, got {}",
                 manifest_path.display(),
-                yaml_type_name(&other)
+                yaml_type_name(other)
             )));
         }
     };
@@ -937,10 +994,27 @@ pub struct ResolveCtx {
 /// Resolve the full source report for ONE op-file basename. `primary_override`
 /// preserves the retired Python signature (callers passed the resolved
 /// primary path); `None` resolves it via [`resolve_op_data_path`].
+///
+/// This standalone entry shares parsed YAML within the one call only; a
+/// [`SourceResolver`] shares it across every basename it resolves.
 pub fn resolve_one(
     ctx: &ResolveCtx,
     op_file_basename: &str,
     primary_override: Option<&Path>,
+) -> Result<ResolveReport, AicError> {
+    resolve_one_with_docs(
+        ctx,
+        op_file_basename,
+        primary_override,
+        &YamlDocs::default(),
+    )
+}
+
+fn resolve_one_with_docs(
+    ctx: &ResolveCtx,
+    op_file_basename: &str,
+    primary_override: Option<&Path>,
+    docs: &YamlDocs,
 ) -> Result<ResolveReport, AicError> {
     let backend_lower = ctx.backend.to_lowercase();
     let mut warnings: Vec<ResolverWarning> = Vec::new();
@@ -997,6 +1071,7 @@ pub fn resolve_one(
             &primary_version_dir,
             &ctx.system_data_root,
             ctx.strict,
+            docs,
             &mut warnings,
         )?;
     if primary_is_file
@@ -1005,7 +1080,13 @@ pub fn resolve_one(
             .as_ref()
             .is_some_and(|location| location.family.is_some())
     {
-        check_strict_provenance_coverage(&primary_version_dir, ctx.strict, None, &mut warnings)?;
+        check_strict_provenance_coverage(
+            &primary_version_dir,
+            ctx.strict,
+            None,
+            docs,
+            &mut warnings,
+        )?;
     }
     if primary_unusable {
         // Only the unstructured legacy marker is a whole-directory veto.
@@ -1070,6 +1151,7 @@ pub fn resolve_one(
             &ctx.version,
             op_file_basename,
             ctx.strict,
+            docs,
             &mut warnings,
         )? {
             if declared_donor_versions.contains(&reuse_entry.from_version) {
@@ -1100,6 +1182,7 @@ pub fn resolve_one(
                 &donor_dir,
                 &ctx.system_data_root,
                 ctx.strict,
+                docs,
                 &mut warnings,
             )? {
                 continue;
@@ -1111,6 +1194,7 @@ pub fn resolve_one(
                     &donor_dir,
                     ctx.strict,
                     Some(&reuse_entry.table),
+                    docs,
                     &mut warnings,
                 )?;
             }
@@ -1193,6 +1277,7 @@ pub fn resolve_one(
                 &sibling_dir,
                 &ctx.system_data_root,
                 ctx.strict,
+                docs,
                 &mut warnings,
             )? {
                 continue;
@@ -1211,7 +1296,7 @@ pub fn resolve_one(
     // Channel 4 (design §6.4): cross-backend fill, kernel-identity gated.
     let mut per_framework_filter: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut per_framework_fallback: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for entry in manifest_entries_for(&ctx.systems_root, op_file_basename)? {
+    for entry in manifest_entries_for(&ctx.systems_root, op_file_basename, docs)? {
         let frameworks_lower: BTreeSet<String> = entry
             .frameworks
             .iter()
@@ -1287,6 +1372,7 @@ pub fn resolve_one(
                 &sibling_dir,
                 &ctx.system_data_root,
                 ctx.strict,
+                docs,
                 &mut warnings,
             )? {
                 continue;
@@ -1331,10 +1417,12 @@ enum ResolverKind {
 /// Per-load source resolution handle. Tables call [`Self::sources_for`] at
 /// construction; the table view resolves ad-hoc basenames through the same
 /// handle. Live results are memoized per basename (resolution walks
-/// directories and parses sidecar yaml).
+/// directories and parses sidecar yaml), and the parsed yaml is memoized per
+/// file because different basenames read the same manifest and sidecars.
 pub struct SourceResolver {
     kind: ResolverKind,
     cache: Mutex<BTreeMap<String, Vec<PrioritizedSource>>>,
+    yaml_docs: YamlDocs,
 }
 
 impl SourceResolver {
@@ -1342,6 +1430,7 @@ impl SourceResolver {
         SourceResolver {
             kind: ResolverKind::Live(ctx),
             cache: Mutex::new(BTreeMap::new()),
+            yaml_docs: YamlDocs::default(),
         }
     }
 
@@ -1349,6 +1438,7 @@ impl SourceResolver {
         SourceResolver {
             kind: ResolverKind::Fixed(perf_db_sources),
             cache: Mutex::new(BTreeMap::new()),
+            yaml_docs: YamlDocs::default(),
         }
     }
 
@@ -1414,7 +1504,7 @@ impl SourceResolver {
                 if let Some(cached) = self.cache.lock().unwrap().get(basename) {
                     return Ok(cached.clone());
                 }
-                let report = resolve_one(ctx, basename, None)?;
+                let report = resolve_one_with_docs(ctx, basename, None, &self.yaml_docs)?;
                 let sources = report.prioritized_sources();
                 self.cache
                     .lock()
@@ -2030,5 +2120,116 @@ mod tests {
         // absent = default primary (legacy path when no family dir has it)
         let sources = resolver.sources_for("absent.parquet", &data_root).unwrap();
         assert_eq!(sources[0].0, data_root.join("absent.parquet"));
+    }
+
+    #[test]
+    fn one_resolver_reads_each_yaml_once_and_matches_standalone_reports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let data = root.join("data");
+        for (family, table) in [("gemm", "gemm_perf"), ("attention", "attention_perf")] {
+            for dir in ["trtllm/1.0.0", "trtllm/1.2.0", "trtllm/0.9.0", "vllm/0.5.0"] {
+                write(
+                    &data.join(format!("{family}/{dir}/{table}.parquet")),
+                    "stub",
+                );
+            }
+        }
+        for version in ["1.0.0", "0.8.0"] {
+            write(
+                &data.join(format!(
+                    "comm/trtllm/{version}/custom_allreduce_perf.parquet"
+                )),
+                "stub",
+            );
+        }
+        let yaml_files = [
+            (
+                root.join("perf_data_reuse_manifest.yaml"),
+                "groups:\n  - op_file: gemm_perf.parquet\n    kernel_source: k\n    tier: shared\n    frameworks: [trtllm, vllm]\n  - op_file: attention_perf.parquet\n    kernel_source: k\n    tier: shared_fallback\n    frameworks: [trtllm, vllm]\n",
+            ),
+            (
+                data.join("gemm/trtllm/1.0.0/reuse.yaml"),
+                "reuse:\n  - {table: gemm_perf, from_version: '1.2.0', reason: r, approved_by: a}\n  - {table: attention_perf, from_version: '1.2.0', reason: r, approved_by: a}\n",
+            ),
+            (
+                data.join("gemm/trtllm/1.0.0/collection_meta.yaml"),
+                "tables:\n  gemm_perf: {status: complete}\n",
+            ),
+            // An uncovered table, a sidecar that is not a mapping and a
+            // reuse.yaml without its `reuse` key: each is a warning here.
+            (
+                data.join("attention/trtllm/1.0.0/collection_meta.yaml"),
+                "tables: {}\n",
+            ),
+            (
+                data.join("gemm/trtllm/0.9.0/collection_meta.yaml"),
+                "- not a mapping\n",
+            ),
+            (
+                data.join("attention/trtllm/0.9.0/reuse.yaml"),
+                "schema_version: 1\n",
+            ),
+            (
+                data.join("comm/trtllm/0.8.0/collection_meta.yaml"),
+                "tables:\n  custom_allreduce_perf: {status: complete}\n",
+            ),
+        ];
+        for (path, content) in &yaml_files {
+            write(path, content);
+        }
+        let c = ctx(root, "trtllm", "1.0.0");
+        let basenames = [
+            "gemm_perf.parquet",
+            "attention_perf.parquet",
+            "custom_allreduce_perf.parquet",
+            "absent_perf.parquet",
+        ];
+        let standalone: Vec<ResolveReport> = basenames
+            .iter()
+            .map(|basename| resolve_one(&c, basename, None).unwrap())
+            .collect();
+        assert_eq!(
+            channels(&standalone[0]),
+            ["primary", "declared_reuse", "fallback", "cross_backend"]
+        );
+        let warning_kinds: BTreeSet<&str> = standalone
+            .iter()
+            .flat_map(|report| &report.warnings)
+            .map(|warning| warning.kind)
+            .collect();
+        for kind in ["malformed_sidecar", "strict_provenance", "low_fidelity"] {
+            assert!(warning_kinds.contains(kind), "{kind}");
+        }
+
+        let resolver = SourceResolver::live(c.clone());
+        let json = |report: &ResolveReport| serde_json::to_string(report).unwrap();
+        for (basename, expected) in basenames.iter().zip(&standalone) {
+            let report = resolve_one_with_docs(&c, basename, None, &resolver.yaml_docs).unwrap();
+            assert_eq!(json(&report), json(expected), "{basename}");
+        }
+        assert_eq!(
+            resolver.yaml_docs.docs.lock().unwrap().len(),
+            yaml_files.len()
+        );
+
+        // Nothing is read a second time: once every YAML file on disk is
+        // unparseable a standalone resolution fails, while the resolver
+        // still returns the sources it would have returned before.
+        for (path, _) in &yaml_files {
+            write(path, "{");
+        }
+        assert!(resolve_one(&c, basenames[0], None).is_err());
+        let data_root = data.join("trtllm/1.0.0");
+        for (basename, expected) in basenames.iter().zip(&standalone) {
+            let sources = resolver
+                .prioritized_sources_for(basename, &data_root)
+                .unwrap();
+            assert_eq!(
+                format!("{sources:?}"),
+                format!("{:?}", expected.prioritized_sources()),
+                "{basename}"
+            );
+        }
     }
 }

@@ -147,8 +147,9 @@ def materialize_aic_num_gpu_blocks(
                 finally:
                     model.close()
             if diagnostics.get("readiness") != "ready":
-                from .estimator_readiness import unready_estimator_message
+                from .estimator_readiness import reject_unlisted_estimator_version, unready_estimator_message
 
+                reject_unlisted_estimator_version(diagnostics)
                 raise ValueError(unready_estimator_message(diagnostics))
             canonical_result = dict(raw)
             resolved = diagnostics["provenance"]["config"]

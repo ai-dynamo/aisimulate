@@ -22,7 +22,11 @@ from aisim.support.schema import SupportRequest
 
 from .collector.test_runtime_observations import observation_fixture
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 
 def _write(path, value):
