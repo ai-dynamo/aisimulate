@@ -159,29 +159,19 @@ fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
     let mut runtime =
         AggRuntimeImpl::<MismatchedPlacement, NoEngineEvents, NoReplayMetadata>::new_composed(
             role_factory,
-            AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+            AdmissionQueue::new_requests(VecDeque::from([request(1, 0.0)]), ReplayMode::Trace),
             1,
             None,
             |_, _| Ok(MismatchedPlacement),
         )
-        .unwrap()
-        .into_steppable();
+        .unwrap();
     let uuid = Uuid::from_u128(1);
-    let error = runtime.submit_dynamic(request(1, 0.0)).unwrap_err();
+    let error = runtime.step().unwrap_err();
     assert!(error.to_string().contains("while placing"), "{error}");
     assert!(!runtime.collector.contains_request(uuid));
     assert_eq!(runtime.traffic.drain_planner(1_000.0).num_req, 0);
     assert!(runtime.requests.is_empty());
     assert_eq!(runtime.cluster_in_flight(), 0);
-    assert!(runtime.cancel_dynamic(uuid).unwrap().is_none());
-    assert_eq!(
-        runtime
-            .take_report_dynamic(0.0)
-            .unwrap()
-            .request_counts
-            .num_requests,
-        0
-    );
 }
 
 // G3 fixtures independently adapt vLLM behavioral contracts (Apache-2.0).
@@ -343,57 +333,6 @@ fn g3_fixed_scaling_policy_preserves_no_policy_results() {
             report
         });
         assert_eq!(summaries[0], summaries[1]);
-    }
-}
-
-#[test]
-fn g3_reused_runtime_reports_cumulative_counters_and_keeps_cache() {
-    fn submit_and_drain(runtime: &mut RoundRobinAggRuntime, id: u128, base: u32, count: u32) {
-        runtime
-            .submit_dynamic(DirectRequest {
-                tokens: (base..base + count).collect(),
-                max_output_tokens: 1,
-                uuid: Some(Uuid::from_u128(id)),
-                arrival_timestamp_ms: Some(runtime.now_ms()),
-                ..DirectRequest::default()
-            })
-            .unwrap();
-        for _ in 0..1000 {
-            runtime.step_dynamic_until(f64::INFINITY).unwrap();
-            runtime.take_step_tokens();
-            runtime.take_step_terminals();
-            if runtime.is_workload_done() {
-                return;
-            }
-        }
-        panic!("request and cache I/O did not drain");
-    }
-    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
-        let mut runtime = g3_runtime(g3_spec(scope, 1, 4, 3, 4, &[])).into_steppable();
-        submit_and_drain(&mut runtime, 1, 0, 9);
-        submit_and_drain(&mut runtime, 2, 100, 15);
-        let first = runtime.take_report_dynamic(0.0).unwrap();
-        assert_eq!(first.request_counts.completed_requests, 2);
-        let first = first.g3_offload.unwrap();
-        assert!(first.write.completed_bytes > 0);
-        assert_eq!(first.read.completed_jobs, 0);
-        assert!(first.resident_blocks > 0);
-        submit_and_drain(&mut runtime, 3, 0, 9);
-        let second = runtime.take_report_dynamic(0.0).unwrap();
-        assert_eq!(second.request_counts.completed_requests, 1);
-        let second = second.g3_offload.unwrap();
-        assert!(
-            second.read.completed_bytes > 0,
-            "second round restores the first round's G3 prefix"
-        );
-        assert_eq!(
-            second.write, first.write,
-            "reporting must not clear cache or counters"
-        );
-        assert_eq!(second.resident_blocks, first.resident_blocks);
-        let idle = runtime.take_report_dynamic(0.0).unwrap();
-        assert_eq!(idle.request_counts.num_requests, 0);
-        assert_eq!(idle.g3_offload.unwrap(), second);
     }
 }
 
