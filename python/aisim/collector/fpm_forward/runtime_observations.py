@@ -1212,9 +1212,13 @@ def _validate_startup_concurrency(record: dict[str, Any]) -> None:
         spec = group["spec_type"]
         if spec == _MAMBA_SPEC:
             state = group["state"]
-            blocks += state["num_speculative_blocks"] + (
+            expected = state["num_speculative_blocks"] + (
                 2 + state["num_prefill_checkpoint_blocks"] if cache["mamba_cache_mode"] == "align" else 1
             )
+            startup = state.get("startup_blocks_per_request", expected)
+            if type(startup) is not int or startup != expected:
+                raise ValueError("runtime Mamba startup blocks_per_request contradicts its scheduler cache mode")
+            blocks += startup
         elif spec in _ONE_BLOCK_SPECS:
             blocks += 1
         elif spec.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS:
@@ -1246,6 +1250,7 @@ def _mode_free(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
             group.pop("block_size_tokens", None)
             if isinstance(group.get("state"), dict):
                 group["state"].pop("mamba_cache_mode", None)
+                group["state"].pop("startup_blocks_per_request", None)
     return result
 
 

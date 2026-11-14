@@ -1670,8 +1670,41 @@ def test_mamba_hybrid_observations_import_state_groups(tmp_path):
     assert result["resources"]["runtime_memory"]["kv_cache_bytes"] == 9 * 16_384
 
 
+def _add_startup_blocks(record):
+    for group in record["cache"]["groups"]:
+        state = group.get("state", {})
+        if "num_speculative_blocks" in state:
+            state["startup_blocks_per_request"] = (
+                2 + state["num_speculative_blocks"] + state["num_prefill_checkpoint_blocks"]
+                if state["mamba_cache_mode"] == "align"
+                else 1 + state["num_speculative_blocks"]
+            )
+
+
+@pytest.mark.parametrize("decode_prefix_caching", [False, True])
+@pytest.mark.parametrize("startup", [0, 1, 3, None, True, 2.0])
+def test_import_checks_observed_mamba_startup_blocks_per_phase(tmp_path, decode_prefix_caching, startup):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid", decode_prefix_caching=decode_prefix_caching)
+    _mutate(path, _add_startup_blocks)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+
+    def edit(record):
+        if record["phase"] == "decode":
+            record["cache"]["groups"][1]["state"]["startup_blocks_per_request"] = startup
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    if startup == 1 and type(startup) is int and not decode_prefix_caching:
+        assert result["status"] == "complete", result["diagnostics"]
+    else:
+        assert result["status"] == "incomplete"
+        assert "startup blocks_per_request contradicts its spec" in " ".join(result["diagnostics"])
+
+
 def test_aggregated_phases_with_different_prefix_caching_import_the_prefill_values(tmp_path):
     path, launches = observation_fixture(tmp_path, layout="mamba_hybrid", decode_prefix_caching=False)
+    _mutate(path, _add_startup_blocks)
     # The engine core sets a different startup capacity in each phase. Import checks each one against the Mamba cache
     # mode of its own phase, and it does not compare the phases.
     capacity = {

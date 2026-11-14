@@ -674,6 +674,13 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
                 checkpoint_fields["prefill_checkpoint_blocks"] = checkpoint
                 if checkpoint == 1:
                     checkpoint_fields["prefill_checkpoint_alignment"] = alignment
+                # New probes read MambaSpec.max_memory_usage_bytes with the actual runtime config.
+                # Frozen older bundles lack this independent startup observation; keep their checks.
+                if "startup_blocks_per_request" in state:
+                    startup = state["startup_blocks_per_request"]
+                    expected = 2 + checkpoint if state.get("mamba_cache_mode") == "align" else 1
+                    if type(startup) is not int or startup != expected:
+                        raise ValueError(f"runtime Mamba startup blocks_per_request contradicts its spec: {names}")
             # blocks_per_request is the steady count, held between block boundaries. In vLLM 0.33.0, a MambaSpec
             # holds one state block and its speculative blocks in both modes (mode none:
             # kv_cache_interface.py:1140-1141, align mode: single_type_kv_cache_manager.py:1640-1657 frees the older
