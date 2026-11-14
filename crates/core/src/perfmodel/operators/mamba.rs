@@ -288,6 +288,31 @@ pub struct KdaOp {
 }
 
 impl KdaOp {
+    /// Analytic KDA latency for whole-forward SOL transfer. Keep fractional
+    /// prefill lengths: FPM back-maps total tokens divided by request count.
+    /// This uses the same byte model as the op-level estimate, without probing
+    /// silicon tables or selecting a different kernel from their contents.
+    pub(crate) fn fpm_sol_latency_ms(
+        &self,
+        db: &PerfDatabase,
+        batch_size: f64,
+        seq_len: f64,
+    ) -> Result<f64, AicError> {
+        let seq_len = match self.phase.as_str() {
+            "context" => seq_len,
+            "generation" => 0.0,
+            phase => {
+                return Err(AicError::SolNotImplemented(format!(
+                    "forward_model='fpm' KDA SOL supports autoregressive context/generation, got {phase:?}"
+                )));
+            }
+        };
+        Ok(
+            self.sol_latency_ms_with(db, &self.kernel_source, batch_size, seq_len)
+                * self.scale_factor,
+        )
+    }
+
     pub fn query(
         &self,
         db: &PerfDatabase,

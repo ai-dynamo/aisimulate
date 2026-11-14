@@ -1206,6 +1206,16 @@ def _cell_generator_overrides(
     smoke: bool = False,
 ) -> dict[str, Any]:
     explicit_points = _frozen_points(plan)
+    k31_native_state = _kimi_k31_native_state(plan)
+    # Dynamo 17628144, InstrumentedScheduler._bench_materialize_prefill_candidate:
+    # nonzero historical KV requires prefix lookup. This source-bound
+    # baseline retains private Mamba state with prefix caching disabled.
+    if (
+        k31_native_state
+        and explicit_points is not None
+        and any(point["total_kv_read_tokens"] != 0 for point in json.loads(explicit_points)["prefill"])
+    ):
+        raise ValueError("K3.1 mamba none prefill requires total_kv_read_tokens=0 in every explicit point")
     enforce_eager = bool(getattr(plan.options, "enforce_eager", False))
     if explicit_points is not None and smoke:
         raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
@@ -1335,6 +1345,26 @@ def _cell_generator_overrides(
         scheduler_args.extend(["--max-num-seqs", str(max_num_seqs)])
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
+    if k31_native_state:
+        role = getattr(plan.options, "worker_type", None)
+        if role not in {"prefill", "decode"} or cell.workload_kind != role:
+            raise ValueError("K3.1 native state collection requires an independent prefill or decode worker")
+        # vLLM image 88175ddf (amd64) / 52b79356 (arm64), KimiK3DeltaAttention
+        # and MambaSpec: none retention owns one private state per request.
+        # Dynamo 17628144 InstrumentedScheduler._kvwarm_warm_eligible computes
+        # that state through native_exact_context without a prefix-cache hit.
+        # Its _bench_prefill_kv_read_points returns [0] when prefix caching is
+        # disabled; _bench_step_prefill injects ordinary new requests at KV=0.
+        model_args.extend(
+            [
+                "--trust-remote-code",
+                "--language-model-only",
+                "--mamba-cache-mode",
+                "none",
+                "--mamba-ssm-cache-dtype",
+                "float32",
+            ]
+        )
     if architecture == "DeepseekV41ForCausalLM":
         if plan.options.decoder_replay:
             raise NotImplementedError("vLLM DeepSeek-V4.1 true decoder replay is not verified")
@@ -1491,6 +1521,17 @@ def _cell_generator_overrides(
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
     policy_flags = {str(argument).split("=", 1)[0].split(" ", 1)[0] for argument in policy_args}
+    if k31_native_state and policy_flags & {
+        "--mamba-cache-mode",
+        "--mamba-ssm-cache-dtype",
+        "--mamba-cache-dtype",
+        "--speculative-config",
+        "--no-language-model-only",
+        "--enable-prefix-caching",
+    }:
+        raise ValueError(
+            "backend policy cannot change K3.1 observed private state, prefix caching or speculation settings"
+        )
     if instrumentation is not None and "--revision" in policy_flags:
         raise ValueError("backend policy cannot override the runtime probe's selected model revision")
     if (observe_memory or observe_execution) and "--worker-cls" in policy_flags:
@@ -1516,7 +1557,7 @@ def _cell_generator_overrides(
     if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
         raise ValueError("benchmark points must be supplied through --fpm-benchmark-points-file")
     if cell.workload_kind == "decode":
-        prefix_caching = _decode_prefix_caching_mode(cell)
+        prefix_caching = _decode_prefix_caching_mode(cell, plan)
         policy_disables = any(
             str(argument) == "--no-enable-prefix-caching" or str(argument).startswith("--no-enable-prefix-caching=")
             for argument in policy_args
@@ -1534,6 +1575,8 @@ def _cell_generator_overrides(
         workload_args = () if prefix_caching == "enabled" else _FPM_VLLM_DECODE_FAKE_KV_ARGS
     else:
         workload_args = _FPM_VLLM_PREFILL_ARGS
+        if k31_native_state:
+            workload_args = (*workload_args, "--no-enable-prefix-caching")
     resolved_args = [*_FPM_VLLM_RUNTIME_ARGS, *workload_args, *model_args, *policy_args]
     has_benchmark_timeout = any(
         str(argument) == "--benchmark-timeout" or str(argument).startswith("--benchmark-timeout=")
@@ -1555,9 +1598,25 @@ def _cell_generator_overrides(
     return merged
 
 
-def _decode_prefix_caching_mode(cell: FPMCell) -> str:
-    """Return the rendering/checkpoint policy for one decode strategy."""
+def _kimi_k31_native_state(plan) -> bool:
+    capability = getattr(plan, "capability", None)
+    config = getattr(getattr(capability, "model_config", None), "payload", {})
+    if getattr(capability, "architecture", None) != "KimiK31ForConditionalGeneration" and config.get(
+        "architectures"
+    ) != ["KimiK31ForConditionalGeneration"]:
+        return False
+    bundle = getattr(plan, "runtime_instrumentation", None)
+    if bundle is None:
+        return False
+    from .runtime_k31 import is_audited_runtime
 
+    return is_audited_runtime(bundle.manifest["runtime"])
+
+
+def _decode_prefix_caching_mode(cell: FPMCell, plan=None) -> str:
+    """Return the rendering/checkpoint policy for one decode strategy."""
+    if plan is not None and _kimi_k31_native_state(plan):
+        return "disabled"
     return "enabled" if cell.parallel_strategy in KVWARM_STRATEGIES else "disabled"
 
 
@@ -1579,7 +1638,7 @@ def _configured_sampling_metadata(
         # Derive checkpoint evidence from the same strategy predicate used to
         # render the engine flags. _cell_generator_overrides rejects policy
         # arguments that conflict with this resolved protocol.
-        return {"decode_prefix_caching": _decode_prefix_caching_mode(cell)}
+        return {"decode_prefix_caching": _decode_prefix_caching_mode(cell, plan)}
     if smoke:
         payload: dict[str, int | str | None] = {"prefill_max_new_token_samples": 2}
         if plan.options.prefill_sampling.cudagraph_policy == "runtime":
@@ -1609,6 +1668,10 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         READINESS_TIMEOUT_ENV,
         FPM_FINALIZATION_TIMEOUT_ENV,
         "PYTHONPATH",
+        "PYTHONNOUSERSITE",
+        "HF_HOME",
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
         "DYN_FPM_DSV41_REAL_KV",
         "DYN_FPM_INPUT_TEXT",
         "DYN_FPM_TOKENIZER_REVISION",

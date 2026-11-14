@@ -443,6 +443,119 @@ def test_modelopt_nvfp4_allows_bfloat16_attention_and_shared_experts(tmp_path, m
     assert settings["quantization_config"]["quant_method"] == "NVFP4"
 
 
+def _kimi_k31_precision_evidence(backend):
+    # Independently authored identity facts, not a checkpoint or native cache
+    # fixture. This exercises precision intake only, not hybrid memory support.
+    cell = replace(
+        _cell(dp=2),
+        backend_policy=planner.BackendPolicy("native", {}, {}, aic_fields={"attention_backend": backend}),
+        weight_quantization="bfloat16",
+        gemm_quant_mode="bfloat16",
+        moe_quant_mode="w4a16_mxfp4",
+        fmha_quant_mode="bfloat16",
+    )
+    native = _vllm_config(tp=1, dp=2)
+    native.model_config.quantization = "mxfp4"
+    native.quant_config = _typed("vllm.model_executor.layers.quantization.mxfp4", "Mxfp4Config")
+    config = observer.resolved_config(native)
+    config["model_config"]["architectures"] = ["KimiK31ForConditionalGeneration"]
+    native_backend, cache_dtype = {
+        "flashmla": ("FLASHMLA_SPARSE", "fp8_ds_mla"),
+        "trtllm_mla": ("FLASHINFER_MLA_SPARSE", "fp8_e4m3"),
+    }[backend]
+    config["attention_config"] = {"backend": native_backend, "indexer_kv_dtype": "fp8"}
+    config["cache_config"]["cache_dtype"] = cache_dtype
+    return cell, {"kind": "scheduler", "resolved_config": config}
+
+
+def _validate_kimi_k31_precision(cell, payload):
+    return runtime_memory._validate_config(payload, cell, context=4096, tokens=1024, sequences=64, fraction=0.9)
+
+
+@pytest.mark.parametrize(
+    "backend,cache_dtype", [("flashmla", "fp8_ds_mla"), ("trtllm_mla", "fp8_e4m3"), ("trtllm_mla", "fp8")]
+)
+def test_kimi_k31_cache_precision_preserves_native_layout_without_attesting_moe_activations(backend, cache_dtype):
+    cell, payload = _kimi_k31_precision_evidence(backend)
+    payload["resolved_config"]["cache_config"]["cache_dtype"] = cache_dtype
+    config = payload["resolved_config"]
+    assert runtime_memory._resolved_cache_dtype(config, cell) == "fp8"
+    assert config["cache_config"]["cache_dtype"] == cache_dtype
+    assert config["quantization_config"] == {"type": "vllm.model_executor.layers.quantization.mxfp4.Mxfp4Config"}
+    with pytest.raises(ValueError, match="requires initialized MoE backend and activation evidence"):
+        _validate_kimi_k31_precision(cell, payload)
+
+
+@pytest.mark.parametrize("backend", ["flashmla", "trtllm_mla"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "architecture",
+        "missing_architecture",
+        "missing_attention",
+        "native_backend",
+        "indexer",
+        "public_backend",
+        "planned_kv",
+    ],
+)
+def test_kimi_k31_precision_requires_matching_observed_and_planned_identity(backend, change):
+    cell, payload = _kimi_k31_precision_evidence(backend)
+    config = payload["resolved_config"]
+    if change == "architecture":
+        config["model_config"]["architectures"] = ["KimiK3ForConditionalGeneration"]
+    elif change == "missing_architecture":
+        config["model_config"].pop("architectures")
+    elif change == "missing_attention":
+        config.pop("attention_config")
+    elif change == "native_backend":
+        config["attention_config"]["backend"] = "FLASH_ATTN"
+    elif change == "indexer":
+        config["attention_config"]["indexer_kv_dtype"] = "bf16"
+    elif change == "public_backend":
+        cell = replace(cell, backend_policy=planner.BackendPolicy("auto", {}, {}))
+    else:
+        cell = replace(cell, kv_cache_dtype="bfloat16")
+    with pytest.raises(ValueError, match="precision"):
+        _validate_kimi_k31_precision(cell, payload)
+
+
+@pytest.mark.parametrize(
+    "backend,cache_dtype",
+    [
+        ("flashmla", "fp8"),
+        ("flashmla", "fp8_e4m3"),
+        ("trtllm_mla", "fp8_ds_mla"),
+        ("trtllm_mla", "fp8_e5m2"),
+        ("flashmla", "auto"),
+        ("trtllm_mla", "bfloat16"),
+    ],
+)
+def test_kimi_k31_precision_never_aliases_distinct_native_cache_layouts(backend, cache_dtype):
+    cell, payload = _kimi_k31_precision_evidence(backend)
+    payload["resolved_config"]["cache_config"]["cache_dtype"] = cache_dtype
+    with pytest.raises(ValueError, match="KV precision/layout"):
+        _validate_kimi_k31_precision(cell, payload)
+
+
+@pytest.mark.parametrize("change", ["method", "quant_class", "base_dtype", "gemm", "moe", "moe_bf16"])
+def test_kimi_k31_mxfp4_precision_cannot_relabel_other_quantization(change):
+    cell, payload = _kimi_k31_precision_evidence("flashmla")
+    config = payload["resolved_config"]
+    if change == "method":
+        config["model_config"]["quantization"] = "compressed-tensors"
+    elif change == "quant_class":
+        config["quantization_config"]["type"] = "vllm.model_executor.layers.quantization.mxfp4.GptOssMxfp4Config"
+    elif change == "base_dtype":
+        config["model_config"]["dtype"] = "torch.float16"
+    elif change == "gemm":
+        cell = replace(cell, gemm_quant_mode="nvfp4")
+    else:
+        cell = replace(cell, moe_quant_mode="bfloat16" if change == "moe_bf16" else "nvfp4")
+    with pytest.raises(ValueError, match="weight precision"):
+        _validate_kimi_k31_precision(cell, payload)
+
+
 @pytest.mark.parametrize(
     "change", ["missing", "missing_mode", "wrong_type", "wrong_max", "unsorted", "eager_with_graphs"]
 )

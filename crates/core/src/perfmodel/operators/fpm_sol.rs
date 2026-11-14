@@ -74,7 +74,7 @@ use crate::operators::{
 };
 use crate::perf_database::PerfDatabase;
 use crate::perf_database::dsa::{
-    dsa_context_sol_flops, dsa_context_sol_ms, dsa_dims, dsa_generation_sol_flops,
+    dsa_context_sol_flops, dsa_context_sol_ms, dsa_dims_for_backend, dsa_generation_sol_flops,
     dsa_generation_sol_ms,
 };
 
@@ -119,6 +119,7 @@ pub(crate) fn op_sol_latency_ms(
         Op::Elementwise(o) => Ok(elementwise_sol(o, spec, x)),
         Op::ContextAttention(o) => Ok(context_attention_sol(o, spec, batch, s, prefix)),
         Op::GenerationAttention(o) => Ok(generation_attention_sol(o, spec, batch, s)),
+        Op::Kda(o) => o.fpm_sol_latency_ms(db, batch, s),
         Op::Dsv41Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
         Op::Glm53Primitive(o) => {
             o.validate()?;
@@ -394,6 +395,8 @@ fn dsa_context_module_sol(
     s: f64,
     p: f64,
 ) -> Result<f64, AicError> {
+    op.validate_kimi_geometry()?;
+    op.validate_kimi_backend()?;
     if op.cp_size > 1 {
         return Err(AicError::SolNotImplemented(format!(
             "forward_model='fpm' SOL roofline has no Rust implementation for DSA context \
@@ -402,7 +405,7 @@ fn dsa_context_module_sol(
         )));
     }
     let spec = &db.system_spec;
-    let dims = dsa_dims(&op.architecture);
+    let dims = dsa_dims_for_backend(&op.architecture, op.context_table_backend());
     let flops = dsa_context_sol_flops(spec, op.gemm_quant_mode, op.fmha_quant_mode)?;
     let (b, s, p) = (
         b.round().max(1.0) as i64,
@@ -476,8 +479,10 @@ fn dsa_generation_module_sol(
     b: f64,
     s: f64,
 ) -> Result<f64, AicError> {
+    op.validate_kimi_geometry()?;
+    op.validate_kimi_backend()?;
     let spec = &db.system_spec;
-    let dims = dsa_dims(&op.architecture);
+    let dims = dsa_dims_for_backend(&op.architecture, op.generation_table_backend());
     let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
     // Decode CP geometry mirrors `DsaModuleOp::query_generation`: gathered
     // heads over this rank's KV stripe, sparse attention over the rank's
@@ -746,6 +751,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    use crate::perf_database::dsa::dsa_dims;
+
     use crate::common::enums::{
         CommQuantMode, FmhaQuantMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode,
     };
@@ -769,6 +776,65 @@ mod tests {
             (got - expected).abs() <= 1e-9 * expected.abs().max(1e-12),
             "got {got}, expected {expected}"
         );
+    }
+
+    #[test]
+    fn kda_fpm_sol_preserves_fractional_prefill_coordinates() {
+        let db = db();
+        let op = Op::Kda(crate::operators::KdaOp {
+            name: "context_kda".into(),
+            scale_factor: 69.0,
+            kernel_source: "flashkda_fwd".into(),
+            phase: "context".into(),
+            d_model: 7168,
+            d_conv: 4,
+            num_k_heads: 96,
+            head_k_dim: 128,
+            num_v_heads: 96,
+            head_v_dim: 128,
+            draft_tokens: 0,
+        });
+        // 129 tokens over two requests => s=64.5, one 64-token state chunk.
+        // KDA's documented byte model reads/writes 15,851,520 token bytes,
+        // 25,165,824 recurrent-state bytes and 25,165,824 chunk-state bytes:
+        // 66,183,168 bytes / 7.7 TB/s, repeated over the 69 KDA layers.
+        approx(
+            op_sol_latency_ms(&op, &db, 129.0, 2.0, 64.5, 8192.0).unwrap(),
+            0.008_595_216_623_376_624 * 69.0,
+        );
+    }
+
+    #[test]
+    fn kda_fpm_sol_decode_ignores_kv_length_and_rejects_verify() {
+        let db = db();
+        let mut kda = crate::operators::KdaOp {
+            name: "generation_kda".into(),
+            scale_factor: 1.0,
+            kernel_source: "kda_fused_decode".into(),
+            phase: "generation".into(),
+            d_model: 7168,
+            d_conv: 4,
+            num_k_heads: 12,
+            head_k_dim: 128,
+            num_v_heads: 12,
+            head_v_dim: 128,
+            draft_tokens: 0,
+        };
+        // TP8, batch=3: fused conv moves 165,888 bytes; recurrent tokens
+        // move 46,080 bytes and fp32 state moves 4,718,592 bytes.
+        // The total 4,930,560 bytes is independent of past KV length.
+        for kv in [128.0, 1_048_575.0] {
+            approx(
+                op_sol_latency_ms(&Op::Kda(kda.clone()), &db, 3.0, 3.0, kv, 0.0).unwrap(),
+                0.000_640_332_467_532_467_6,
+            );
+        }
+        kda.phase = "verify".into();
+        kda.draft_tokens = 4;
+        assert!(matches!(
+            op_sol_latency_ms(&Op::Kda(kda), &db, 12.0, 12.0, 1.0, 0.0),
+            Err(AicError::SolNotImplemented(_))
+        ));
     }
 
     #[test]
@@ -1274,6 +1340,73 @@ mod tests {
             "GlmMoeDsaForCausalLM",
             2048,
         )
+    }
+
+    #[test]
+    fn kimi_k31_fpm_sol_uses_the_selected_cache_layout() {
+        let d = db();
+        let mut prefill = Vec::new();
+        // TP8, one decode request with 4096 cached tokens: weights plus
+        // FP8 index history and 2048 selected latent entries. FlashMLA's
+        // entries are 656 bytes, TRTLLM's 576 bytes, a 163840-byte delta.
+        for (backend, expected_decode_ms) in
+            [("trtllm_mla", 0.098001920), ("flashmla", 0.098165760)]
+        {
+            let mut op = DsaModuleOp::new(
+                "attention",
+                12,
+                KvCacheQuantMode::Fp8,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                "KimiK31ForConditionalGeneration",
+                2048,
+            );
+            op.attention_backend = Some(backend.into());
+            approx(
+                op_sol_latency_ms(&Op::DsaGeneration(op.clone()), &d, 1.0, 1.0, 4096.0, 0.0)
+                    .unwrap(),
+                expected_decode_ms / 7.7,
+            );
+            prefill
+                .push(op_sol_latency_ms(&Op::DsaContext(op), &d, 64.0, 1.0, 64.0, 4096.0).unwrap());
+        }
+        assert!(
+            prefill[1] > prefill[0],
+            "prefill must retain the FlashMLA cache footprint"
+        );
+    }
+
+    #[test]
+    fn kimi_k31_fpm_sol_rejects_unqualified_backends_and_geometry() {
+        let d = db();
+        for (backend, kv, cp, dcp, fraction) in [
+            (None, KvCacheQuantMode::Fp8, 1, 1, 1.0),
+            (Some("unknown"), KvCacheQuantMode::Bfloat16, 1, 1, 1.0),
+            (Some("flashmla"), KvCacheQuantMode::Int8, 1, 1, 1.0),
+            (Some("flashmla"), KvCacheQuantMode::Fp8, 2, 1, 1.0),
+            (Some("flashmla"), KvCacheQuantMode::Fp8, 1, 2, 1.0),
+            (Some("flashmla"), KvCacheQuantMode::Fp8, 1, 1, 0.5),
+        ] {
+            let mut op = DsaModuleOp::new(
+                "attention",
+                12,
+                kv,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                "KimiK31ForConditionalGeneration",
+                2048,
+            );
+            op.attention_backend = backend.map(str::to_owned);
+            op.cp_size = cp;
+            op.dcp_size = dcp;
+            op.full_frac = fraction;
+            for op in [Op::DsaContext(op.clone()), Op::DsaGeneration(op)] {
+                assert!(matches!(
+                    op_sol_latency_ms(&op, &d, 1.0, 1.0, 4096.0, 0.0),
+                    Err(AicError::InvalidEngineConfig(_))
+                ));
+            }
+        }
     }
 
     #[test]

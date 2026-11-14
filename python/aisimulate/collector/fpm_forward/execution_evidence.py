@@ -130,7 +130,9 @@ def _effective_launch(plan: FPMCollectionPlan, cell_dir: Path) -> dict[str, Any]
     return flags
 
 
-def _matches_pinned_hub_snapshot(expected: str, model: dict[str, Any], revisions: set[Any]) -> bool:
+def _matches_pinned_hub_snapshot(
+    expected: str, model: dict[str, Any], revisions: set[Any], native_model: dict[str, Any] | None = None
+) -> bool:
     """Recognize a resolved Hub cache identity, not an arbitrary local alias.
 
     Offline vLLM can replace the Hub ID with its cached snapshot directory.
@@ -161,10 +163,60 @@ def _matches_pinned_hub_snapshot(expected: str, model: dict[str, Any], revisions
     ):
         return False
     loaded = model.get("loaded_config_commit_hash")
-    return isinstance(loaded, str) and loaded.lower() == commit.lower()
+    if loaded is not None:
+        return isinstance(loaded, str) and loaded.lower() == commit.lower()
+    # Locally loaded HF configs can omit _commit_hash. Only an independently
+    # validated initialized-worker config (including its actual config SHA)
+    # may establish the same snapshot identity in that case.
+    return native_model is not None and all(
+        key in native_model and native_model[key] == value for key, value in model.items()
+    )
 
 
-def _inspect_config(payload, cell, plan, flags, missing, failures):
+def _runtime_worker_evidence(plan, cell, raw_root, collection):
+    """Bind canonical initialized-worker evidence to this exact native attempt."""
+    from .runtime_instrumentation import contained_file, read_json
+    from .runtime_observations import validate_observation_phase
+
+    index_path = raw_root.parent.parent.parent / "runtime-observations.json"
+    if index_path.is_symlink():
+        raise ValueError("runtime model snapshot index cannot be a symlink")
+    index = read_json(index_path)
+    name = plan.runtime_configuration
+    entry = index["configurations"][name]
+    attempt_id = entry["active_attempt_id"]
+    attempts = [item for item in entry["attempts"] if item["attempt_id"] == attempt_id]
+    if len(attempts) != 1:
+        raise ValueError("runtime model snapshot active attempt is missing or duplicated")
+    phase = attempts[0]["phases"][cell.workload_kind]
+    if phase.get("cell_id") != cell.cell_id or phase.get("collector_attempt_id") != collection.collector_attempt_id:
+        raise ValueError("runtime model snapshot belongs to a different cell or native attempt")
+    result = validate_observation_phase(
+        index_path, name, plan.runtime_launch, phase=cell.workload_kind, attempt_id=attempt_id
+    )
+    if (
+        result["status"] != "complete"
+        or result["provenance"]["bundle_sha256"] != plan.runtime_instrumentation.sha256
+        or result["provenance"]["instrumentation"].get("import_binding") != "verified"
+    ):
+        raise ValueError("runtime model snapshot lacks complete matching instrumentation evidence")
+    context = read_json(contained_file(index_path.parent, phase["launch_manifest"]["path"]))
+    if context.get("cell_id") != cell.cell_id or context.get("collector_attempt_id") != collection.collector_attempt_id:
+        raise ValueError("runtime model snapshot context belongs to a different cell or native attempt")
+    models = {}
+    for artifact in result["provenance"]["artifacts"]:
+        worker = artifact["evidence"]
+        if worker["kind"] != "worker":
+            continue
+        rank = tuple(worker[key] for key in ("dp_rank", "tp_rank", "pp_rank"))
+        if rank in models:
+            raise ValueError("runtime model snapshot worker ranks are duplicated")
+        models[rank] = worker
+    return models, file_evidence(index_path)
+
+
+def _inspect_config(payload, cell, plan, flags, missing, failures, native_worker=None):
+    native_model = native_worker["resolved_config"]["model_config"] if native_worker is not None else None
     config = payload.get("resolved_config")
     if not isinstance(config, dict):
         missing.append("resolved runtime configuration is unreported")
@@ -247,7 +299,9 @@ def _inspect_config(payload, cell, plan, flags, missing, failures):
             if (flag == "--max-model-len" and value == -1) or (flag == "--moe-backend" and value == "auto"):
                 continue
             if valid[section][name] != value:
-                if flag == "--model" and _matches_pinned_hub_snapshot(value, config["model_config"], revisions):
+                if flag == "--model" and _matches_pinned_hub_snapshot(
+                    value, config["model_config"], revisions, native_model
+                ):
                     continue
                 failures.append(f"runtime {section}.{name} differs from generated {flag}")
         for flag, section, name in (
@@ -301,6 +355,22 @@ def _inspect_config(payload, cell, plan, flags, missing, failures):
             failures.append("runtime quantization method contradicts its absent quantization configuration")
         elif method is not None and (not isinstance(quant, dict) or not required.issubset(quant)):
             missing.append("runtime quantization family configuration is incomplete")
+        elif method == "mxfp4" and native_worker is not None:
+            from .runtime_k31 import is_audited_runtime
+
+            if not is_audited_runtime(native_worker.get("runtime")):
+                missing.append("MXFP4 execution requires the exact audited initialized runtime")
+            elif any(
+                key not in native_model or native_model[key] != value for key, value in model.items()
+            ) or quant != native_worker["resolved_config"].get("quantization_config"):
+                failures.append("runtime MXFP4 execution differs from the validated initialized worker")
+            else:
+                try:
+                    _validate_precision(
+                        native_worker["resolved_config"], cell, evidence=native_worker.get("initialized_moe")
+                    )
+                except ValueError as error:
+                    failures.append(str(error))
         elif method not in {None, "modelopt", "modelopt_fp4", "fp8"}:
             missing.append(f"runtime quantization mapping is unaudited: {method}")
         else:
@@ -362,10 +432,11 @@ def inspect_execution_evidence(
     if actual_pin is not None and collection.backend_version != actual_pin:
         failures.append("observed backend version differs from the frozen plan")
     release = audited_release(collection.backend_version, EXECUTION_SUPPORTED_VERSIONS)
-    if release is None:
-        missing.append(f"execution configuration inspection is unaudited for {collection.backend_version}")
     workers = []
     ranks = set()
+    snapshot_models = None
+    snapshot_source = None
+    audited_runtime_ranks = set()
     scheduling = {"requested": _requested_scheduling(flags), "observed_workers": []}
     for path in sorted(raw_root.glob("**/fpm-execution-worker-*.json")):
         payload = json.loads(path.read_text())
@@ -413,7 +484,38 @@ def inspect_execution_evidence(
             )
         ):
             failures.append(f"runtime attention group observation is malformed: {path}")
-        _inspect_config(payload, cell, plan, flags, missing, failures)
+        config = payload.get("resolved_config")
+        model = config.get("model_config", {}) if isinstance(config, dict) else {}
+        if not isinstance(model, dict):
+            model = {}
+        native_worker = None
+        if getattr(plan, "runtime_instrumentation", None) is not None and (
+            release is None
+            or model.get("quantization") == "mxfp4"
+            or (
+                flags is not None
+                and "--model" in flags
+                and model.get("model") != flags["--model"]
+                and model.get("loaded_config_commit_hash") is None
+            )
+        ):
+            try:
+                if snapshot_models is None:
+                    snapshot_models, snapshot_source = _runtime_worker_evidence(plan, cell, raw_root, collection)
+                native_worker = snapshot_models.get(rank)
+                if native_worker is None:
+                    raise ValueError("runtime evidence is missing this execution worker rank")
+                from .runtime_k31 import is_audited_runtime
+
+                if (
+                    is_audited_runtime(native_worker.get("runtime"))
+                    and native_worker["runtime"]["version"] == collection.backend_version
+                ):
+                    audited_runtime_ranks.add(rank)
+                item["runtime_observation_binding"] = snapshot_source
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                failures.append(f"runtime model snapshot evidence: {error}")
+        _inspect_config(payload, cell, plan, flags, missing, failures, native_worker)
         config = payload.get("resolved_config")
         scheduler = config.get("scheduler_config") if isinstance(config, dict) else None
         scheduling["observed_workers"].append(
@@ -429,6 +531,8 @@ def inspect_execution_evidence(
         for tp in range(cell.topology.tp)
         for pp in range(cell.topology.pp)
     }
+    if release is None and audited_runtime_ranks != expected:
+        missing.append(f"execution configuration inspection is unaudited for {collection.backend_version}")
     if ranks - expected:
         raise ValueError("runtime execution observations contain unexpected worker ranks")
     if ranks != expected:

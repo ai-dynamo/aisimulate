@@ -38,6 +38,7 @@ from .config import (
     with_kv_warmup_defaults,
 )
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
+from .model_capability import kimi_k31_native_attention_backend
 from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS, audited_release
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
@@ -412,6 +413,7 @@ def _backend_policies(
     collector_config: dict[str, Any],
     *,
     backend: str,
+    architecture: str | None = None,
 ) -> tuple[BackendPolicy, ...]:
     declarations = collector_config.get("backend_variants", {})
     if not isinstance(declarations, dict):
@@ -440,7 +442,7 @@ def _backend_policies(
     # verify: a row claiming a backend the engine never ran is worse than no
     # row. vLLM plumbing exists for moe_backend (--kernel-config) and eplb
     # (--enable-eplb); wide-EP is an SGLang concept; pinning the attention
-    # backend has no verified vLLM plumbing yet.
+    # backend is admitted only for the source-checked K3.1 DSA paths below.
     if specified and backend != "vllm":
         raise ValueError(
             f"explicit FPM backend identity is only plumbed for the vllm backend; got {backend} with "
@@ -448,7 +450,8 @@ def _backend_policies(
         )
     if wideep == "true":
         raise ValueError("enable_wideep=true is not collectable on vllm (wide-EP is SGLang-only)")
-    if attention != "auto":
+    native_attention = kimi_k31_native_attention_backend(architecture, attention)
+    if attention != "auto" and native_attention is None:
         raise ValueError(
             "attention_backend pinning has no verified vllm plumbing yet; collect with auto or add the "
             "engine flag and its resolved-config marker first"
@@ -456,6 +459,11 @@ def _backend_policies(
 
     extra_cli_args: list[str] = []
     expected_markers: dict[str, str] = {}
+    if native_attention is not None:
+        extra_cli_args += ["--attention-config", json.dumps({"backend": native_attention, "indexer_kv_dtype": "fp8"})]
+        # Dynamo's config_dump encoder serializes native enums with str().
+        expected_markers["config.engine_args.attention_config.backend"] = f"AttentionBackendEnum.{native_attention}"
+        expected_markers["config.engine_args.attention_config.indexer_kv_dtype"] = "fp8"
     if options.enforce_eager:
         expected_markers["config.engine_args.enforce_eager"] = "True"
     if moe != "auto":
@@ -723,6 +731,255 @@ def _require_real_prefix_seeding(
             )
 
 
+def _k31_runtime_proof(proof: Any, launch: dict[str, Any], profile: FpmModelProfile) -> Any:
+    """Resolve the canonical onboarding wrapper back to immutable native evidence.
+
+    The onboarding importer replaces inline memory provenance with this source
+    manifest. Verify its files and rerun the collector's native validators; a
+    wrapper or its saved status alone never establishes observed precision.
+    """
+    if not isinstance(proof, dict) or proof.get("schema_version") != "aisimulate-onboarding-runtime-probe/v1":
+        return proof
+    from .runtime_instrumentation import validate_sha256
+    from .runtime_observations import validate_observations
+
+    name, location, refs = (proof.get(key) for key in ("configuration", "observations_index", "source_artifacts"))
+    if not isinstance(name, str) or not name or not isinstance(location, str) or not location:
+        raise ValueError("K3.1 onboarding provenance requires configuration and observation index")
+    if (
+        not isinstance(refs, list)
+        or not isinstance(proof.get("checkpoint"), str)
+        or not proof["checkpoint"]
+        or any(
+            not isinstance(proof.get(key), dict) for key in ("observed_resources", "model_metadata", "user_overrides")
+        )
+    ):
+        raise ValueError("K3.1 onboarding provenance requires immutable source artifacts and profile metadata")
+    if proof["model_metadata"] != {
+        key: getattr(profile, key) for key in ("architecture", "context_length", "num_experts")
+    }:
+        raise ValueError("K3.1 onboarding model metadata differs from the imported profile")
+    covered = set()
+    for ref in refs:
+        if not isinstance(ref, dict) or not isinstance(ref.get("path"), str):
+            raise ValueError("K3.1 onboarding provenance has an invalid source artifact")
+        path = Path(ref["path"])
+        digest = validate_sha256(ref.get("sha256"), "K3.1 onboarding source artifact")
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"K3.1 onboarding source artifact changed: {path}")
+        if str(path) in covered:
+            raise ValueError("K3.1 onboarding source artifacts are duplicated")
+        covered.add(str(path))
+    index = Path(location)
+    if {str(index), str(index.parent / "launch.json"), str(index.parent / "model-config.json")} - covered:
+        raise ValueError("K3.1 onboarding provenance is missing immutable source artifacts")
+    result = validate_observations(index, {name: launch})[name]
+    if result["status"] != "complete":
+        raise ValueError("K3.1 onboarding native evidence is incomplete: " + "; ".join(result["diagnostics"]))
+    resources = json.loads(json.dumps(result["resources"]))
+    resources.pop("provenance", None)
+    resources.get("runtime_memory", {}).pop("provenance", None)
+    if proof.get("observed_resources") != resources:
+        raise ValueError("K3.1 onboarding observed resources differ from immutable native evidence")
+    return result["provenance"]
+
+
+def _observed_k31_capability(
+    capability: ModelCapabilityProfile,
+    profile: FpmModelProfile,
+    topologies: tuple[ParallelTopology, ...],
+    *,
+    model_path: str,
+    system: str,
+    backend: str,
+    options: FPMCollectionOptions,
+    runtime_instrumentation,
+    runtime_launch: dict[str, Any] | None,
+) -> ModelCapabilityProfile:
+    """Bind native expert activation precision to complete imported observations.
+
+    Config.json describes MXFP4 weights, not the initialized MoE activation
+    arithmetic. Recheck the imported proof's semantics; its original artifact
+    hashes were verified on import and cannot be reconstructed from inline JSON.
+    The final formal launch check and fresh worker observations remain required.
+    """
+    from . import runtime_observations as observations
+    from .runtime_instrumentation import (
+        OBSERVATION_SCHEMA,
+        load_instrumentation,
+        relative_path,
+        runtime_binding,
+        validate_sha256,
+    )
+    from .runtime_k31 import is_audited_runtime, moe_precision
+    from .runtime_probe import build_runtime_probe_plan, normalize_probe_launch
+
+    deployments = tuple(
+        profile.select(
+            model=model_path,
+            system=system,
+            backend=backend,
+            backend_version=capability.aic_database_version,
+            tp_size=topology.tp,
+            pp_size=topology.pp,
+            attention_dp_size=topology.dp,
+            moe_tp_size=topology.moe_tp,
+            moe_ep_size=topology.moe_ep,
+            cp_size=topology.cp,
+            worker_type=options.worker_type or "aggregated",
+        )
+        for topology in topologies
+    )
+    if all(deployment.moe_quant_mode == capability.dtype.moe_quant_mode for deployment in deployments):
+        return capability
+    if runtime_instrumentation is None or runtime_launch is None:
+        raise ValueError("K3.1 observed MoE precision requires formal runtime instrumentation and launch facts")
+    bundle = (
+        load_instrumentation(runtime_instrumentation)
+        if isinstance(runtime_instrumentation, (str, Path))
+        else runtime_instrumentation
+    )
+    if not is_audited_runtime(bundle.manifest["runtime"]):
+        raise ValueError("K3.1 observed MoE precision requires the exact audited runtime source map")
+    launch = normalize_probe_launch(runtime_launch)
+    probe = build_runtime_probe_plan("collection", launch, bundle)
+    if probe.capability.model_config.sha256 != capability.model_config.sha256:
+        raise ValueError("K3.1 observed MoE model configuration differs from the current checkpoint")
+    identity = launch["identity"]
+    if (
+        (
+            identity["model"],
+            identity["model_revision"],
+            identity["gpu"],
+            identity["framework"],
+            identity["framework_version"],
+        )
+        != (model_path, profile.model_revision, system, backend, capability.aic_database_version)
+        or any(topology.to_dict() != launch["topology"] for topology in topologies)
+        or options.worker_type != launch.get("worker_type")
+    ):
+        raise ValueError("K3.1 observed MoE launch identity or topology differs from formal collection")
+    modes = set()
+    for deployment in deployments:
+        resources = deployment.resources
+        memory = resources.runtime_memory
+        if memory is None:
+            raise ValueError("K3.1 observed MoE precision requires imported runtime memory provenance")
+        collection = launch["collection"]
+        if (
+            resources.max_num_tokens != collection["max_num_batched_tokens"]
+            or resources.max_batch_size != collection["max_num_seqs"]
+            or memory.max_model_len != collection["max_model_len"]
+            or memory.gpu_memory_utilization != collection["gpu_memory_utilization"]
+        ):
+            raise ValueError("K3.1 observed MoE resource envelope differs from the imported launch")
+        try:
+            proof = json.loads(memory.provenance)
+        except (TypeError, ValueError) as error:
+            raise ValueError("K3.1 observed MoE precision requires JSON runtime provenance") from error
+        proof = _k31_runtime_proof(proof, launch, profile)
+        if (
+            not isinstance(proof, dict)
+            or proof.get("source") != "runtime_observations"
+            or proof.get("observation_schema") != OBSERVATION_SCHEMA
+            or not is_audited_runtime(proof.get("runtime"))
+            or proof.get("bundle_sha256") != bundle.sha256
+            or proof.get("launch") != launch
+            or proof.get("instrumentation", {}).get("files") != bundle.files
+            or proof.get("instrumentation", {}).get("import_binding") != "verified"
+        ):
+            raise ValueError("K3.1 observed MoE provenance is not bound to the accepted runtime bundle and launch")
+        for name in ("attempt_id", "configuration"):
+            if not isinstance(proof.get(name), str) or not proof[name].strip():
+                raise ValueError("K3.1 observed MoE provenance is missing its attempt/configuration binding")
+        artifacts = proof.get("artifacts")
+        capacities = proof.get("rank_capacities")
+        if not isinstance(artifacts, list) or not artifacts or not isinstance(capacities, list):
+            raise ValueError("K3.1 observed MoE provenance requires worker artifacts and rank capacities")
+        workers, schedulers, paths = {}, {}, set()
+        for artifact in artifacts:
+            if not isinstance(artifact, dict) or not isinstance(artifact.get("evidence"), dict):
+                raise ValueError("K3.1 observed MoE artifact requires inline native evidence")
+            path = relative_path(artifact.get("path"))
+            validate_sha256(artifact.get("sha256"), "imported runtime artifact")
+            if path in paths:
+                raise ValueError("K3.1 observed MoE artifact paths are duplicated")
+            paths.add(path)
+            record = artifact["evidence"]
+            phase = record.get("phase")
+            if phase not in options.workload_kinds:
+                raise ValueError("K3.1 observed MoE evidence has an unexpected phase")
+            binding = {key: proof[key] for key in ("attempt_id", "configuration", "bundle_sha256")}
+            binding["phase"] = phase
+            observations._validate_record(
+                record, launch=launch, bundle=bundle, binding=binding, cell=observations._launch_cell(launch, phase)
+            )
+            observations._validate_import_binding(record, runtime_binding(), bundle)
+            dp, tp, pp = (record.get(key) for key in ("dp_rank", "tp_rank", "pp_rank"))
+            if type(dp) is not int or not 0 <= dp < deployment.dp:
+                raise ValueError("K3.1 observed MoE evidence has an invalid DP rank")
+            if record["kind"] == "worker":
+                if type(tp) is not int or not 0 <= tp < deployment.tp or type(pp) is not int or pp != 0:
+                    raise ValueError("K3.1 observed MoE evidence has an invalid TP/PP rank")
+                key = (phase, dp, tp)
+                if key in workers:
+                    raise ValueError("K3.1 observed MoE worker evidence is duplicated")
+                workers[key] = record
+                modes.add(moe_precision(record.get("initialized_moe")))
+            else:
+                if tp is not None or pp is not None or (phase, dp) in schedulers:
+                    raise ValueError("K3.1 observed MoE scheduler evidence is duplicated or invalid")
+                schedulers[(phase, dp)] = record
+        expected = {
+            (phase, dp, tp)
+            for phase in options.workload_kinds
+            for dp in range(deployment.dp)
+            for tp in range(deployment.tp)
+        }
+        if set(workers) != expected or set(schedulers) != {(phase, dp) for phase, dp, _ in expected}:
+            raise ValueError("K3.1 observed MoE phase/DP/TP worker and scheduler evidence is incomplete")
+        capacity_by_rank = {}
+        for capacity in capacities:
+            if not isinstance(capacity, dict):
+                raise ValueError("K3.1 observed MoE rank capacity must be an object")
+            key = tuple(capacity.get(name) for name in ("phase", "dp_rank", "tp_rank"))
+            if key in capacity_by_rank or type(key[1]) is not int or type(key[2]) is not int:
+                raise ValueError("K3.1 observed MoE rank capacity is duplicated or invalid")
+            capacity_by_rank[key] = capacity
+        if set(capacity_by_rank) != expected:
+            raise ValueError("K3.1 observed MoE rank capacity coverage is incomplete")
+        canonical_groups = None
+        for key, worker in workers.items():
+            scheduler = schedulers[key[:2]]
+            observations.runtime_memory._validate_scheduler_config(worker, scheduler)
+            groups, accounting = observations._physical_views(
+                worker["cache"], scheduler["cache"], deployment.kv_cache_dtype
+            )
+            if canonical_groups is None:
+                canonical_groups = groups
+            elif groups != canonical_groups:
+                raise ValueError("K3.1 observed MoE cache groups differ across native ranks")
+            expected_capacity = {
+                "phase": key[0],
+                "dp_rank": key[1],
+                "tp_rank": key[2],
+                **accounting,
+                "kv_cache_bytes": accounting["initial_free_blocks"] * accounting["page_size_bytes"],
+            }
+            if capacity_by_rank[key] != expected_capacity:
+                raise ValueError("K3.1 observed MoE rank capacity differs from native allocation evidence")
+        if (
+            resources.cache_layout != "grouped"
+            or [group.model_dump(mode="json") for group in resources.cache_groups] != canonical_groups
+        ):
+            raise ValueError("K3.1 observed MoE profile cache groups differ from native allocation evidence")
+        if memory.kv_cache_bytes != min(capacity["kv_cache_bytes"] for capacity in capacities):
+            raise ValueError("K3.1 observed MoE profile capacity differs from the imported rank minimum")
+    if len(modes) != 1 or any(deployment.moe_quant_mode not in modes for deployment in deployments):
+        raise ValueError("K3.1 observed MoE precision differs across workers or from the selected profile")
+    return replace(capability, dtype=replace(capability.dtype, moe_quant_mode=modes.pop()))
+
+
 def build_collection_plan(
     *,
     backend: str,
@@ -826,8 +1083,31 @@ def build_collection_plan(
         options=options,
         allow_pure_tp=capability.allow_pure_tp,
     )
-    policies = _backend_policies(options, collector_config, backend=backend)
+    policy_architecture = (
+        "KimiK31ForConditionalGeneration"
+        if capability.model_config.payload.get("architectures") == ["KimiK31ForConditionalGeneration"]
+        else capability.architecture
+    )
+    if (
+        policy_architecture == "KimiK31ForConditionalGeneration"
+        and "fp8" in capability.dtype.kv_cache_dtypes
+        and options.attention_backend == "auto"
+    ):
+        raise ValueError("Kimi K3.1 FP8 FPM requires --fpm-attention-backend=flashmla or trtllm_mla")
+    policies = _backend_policies(options, collector_config, backend=backend, architecture=policy_architecture)
     if profile is not None:
+        if policy_architecture == "KimiK31ForConditionalGeneration":
+            capability = _observed_k31_capability(
+                capability,
+                profile,
+                candidate_topologies,
+                model_path=model_path,
+                system=system,
+                backend=backend,
+                options=options,
+                runtime_instrumentation=runtime_instrumentation,
+                runtime_launch=runtime_launch,
+            )
         deployments = _validate_profile_identities(
             profile,
             capability,

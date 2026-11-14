@@ -16,7 +16,7 @@ from typing import Any
 
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
-from .model_capability import ResolvedModelConfig
+from .model_capability import ResolvedModelConfig, kimi_k31_native_attention_backend
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import BackendPolicy, FPMCell, _canonical_hash
 from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS, SCHEMA_NAME, SCHEMA_VERSION, audited_release
@@ -229,14 +229,38 @@ def _dtype(value: Any) -> str:
     }.get(value, value)
 
 
-def _resolved_cache_dtype(config: dict[str, Any]) -> str:
+def _resolved_cache_dtype(config: dict[str, Any], cell: FPMCell) -> str:
     value = config["cache_config"].get("cache_dtype")
+    if config["model_config"].get("architectures") == ["KimiK31ForConditionalGeneration"]:
+        # vllm/vllm-openai:kimi-k31, amd64 manifest
+        # sha256:88175ddf4f59944ccbb24c6b60c1bc535a160be3c4f09a3b08702c5e301a599e:
+        # model_executor/models/config.py::KimiK3ForConditionalGenerationConfig
+        # resolves these two native layouts. Keep the observed storage identity
+        # intact; only the public precision comparison uses the common fp8 name.
+        native = kimi_k31_native_attention_backend(
+            "KimiK31ForConditionalGeneration", cell.backend_policy.aic_fields.get("attention_backend")
+        )
+        attention = config.get("attention_config")
+        if (
+            native is None
+            or not isinstance(attention, dict)
+            or attention.get("backend") != native
+            or attention.get("indexer_kv_dtype") != "fp8"
+            or cell.kv_cache_dtype != "fp8"
+        ):
+            raise ValueError(
+                "Kimi K3.1 runtime precision requires the selected native attention backend and FP8 indexer"
+            )
+        expected = ("fp8_ds_mla",) if native == "FLASHMLA_SPARSE" else ("fp8", "fp8_e4m3")
+        if value not in expected:
+            raise ValueError("Kimi K3.1 runtime KV precision/layout differs from the selected native attention backend")
+        return "fp8"
     if value == "auto":
         value = config["model_config"].get("dtype")
     return _dtype(value)
 
 
-def _validate_precision(config: dict[str, Any], cell: FPMCell) -> None:
+def _validate_precision(config: dict[str, Any], cell: FPMCell, *, evidence=None, scheduler=False) -> None:
     """Check audited quantization families without assigning every layer a dtype.
 
     vLLM 4bdc8a788d2e2ce9165d552b3d4d8b72604626bf:
@@ -270,6 +294,23 @@ def _validate_precision(config: dict[str, Any], cell: FPMCell) -> None:
             and quant.get("quant_method") == "FP8"
         ):
             gemm, moe = "fp8_static", "fp8"
+        elif (
+            model.get("architectures") == ["KimiK31ForConditionalGeneration"]
+            and method == "mxfp4"
+            and quant.get("type") == prefix + "mxfp4.Mxfp4Config"
+        ):
+            # The pinned image's quantization/mxfp4.py::Mxfp4MoEMethod and
+            # fused_moe/oracle/mxfp4.py::make_mxfp4_moe_quant_config can select
+            # MXFP8/FP4 activations despite BF16 model inputs. The config class
+            # establishes weight format, not the initialized expert arithmetic.
+            from .runtime_k31 import moe_precision
+
+            gemm = base  # Mxfp4Config.get_quant_method leaves LinearBase unquantized.
+            # Schedulers have no model. Every worker must independently attest
+            # the initialized precision before rank-complete import succeeds.
+            moe = "w4a8_mxfp4_mxfp8_trtllm" if scheduler else moe_precision(evidence)
+            if cell.gemm_quant_mode != base or cell.moe_quant_mode != moe:
+                raise ValueError("K3.1 initialized MoE weight precision differs from the planned GEMM/MoE identity")
     if gemm is None:
         raise ValueError("runtime memory weight precision mapping is unsupported or contradicts quantization evidence")
     # A mixed checkpoint may leave attention/shared experts in the base dtype.
@@ -436,9 +477,16 @@ def _validate_config(
         and (config.get("kernel_config") or {}).get("moe_backend") != expected_backend
     ):
         raise ValueError("runtime memory MoE backend differs from the planned identity")
-    if _resolved_cache_dtype(config) != cell.kv_cache_dtype:
+    if _resolved_cache_dtype(config, cell) != cell.kv_cache_dtype:
         raise ValueError("runtime memory KV precision differs from the planned identity")
-    _validate_precision(config, cell)
+    from .runtime_k31 import is_audited_runtime
+
+    _validate_precision(
+        config,
+        cell,
+        evidence=payload.get("initialized_moe"),
+        scheduler=payload.get("kind") == "scheduler" and is_audited_runtime(payload.get("runtime")),
+    )
     _validate_no_offload(payload, config)
     config["compilation_config"] = _validate_graph(
         config.get("compilation_config"),
@@ -466,6 +514,10 @@ def _validate_revision(config: dict[str, Any], expected: str | None) -> None:
 
 
 def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], page_bytes: int) -> list[dict[str, Any]]:
+    from .runtime_k31 import LAYOUT, normalize_groups
+
+    if cache.get("allocation_layout") == LAYOUT or scheduler_cache.get("allocation_layout") == LAYOUT:
+        return normalize_groups(cache, scheduler_cache, page_bytes)
     raw_groups = cache.get("groups")
     scheduler_groups = scheduler_cache.get("groups")
     if not isinstance(raw_groups, list) or not raw_groups or not isinstance(scheduler_groups, list):

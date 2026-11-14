@@ -2287,6 +2287,59 @@ OSRB approval.
   `benchmarks/evidence/aiperf-metrics/aiperf_expected.py`.
   No AIPerf runtime dependency or source files are bundled.
 
+## vLLM Kimi K3.1 FPM runtime evidence mapping
+
+The Kimi K3.1 native backend, cache precision and MXFP4 evidence mappings in
+`python/aisimulate/collector/fpm_forward/{model_capability,planner,runner,runtime_probe,runtime_memory,runtime_observations}.py`,
+the configuration observations in `runtime/instrumentation/observer.py`,
+`runtime_k31.py`, the `runtime/instrumentation/{kimi_k31,vllm_kimi_k31}.py`
+adapters, `runtime/vllm-kimi-k31.example.json`, and associated collector tests
+are original AISimulate integrations informed by
+vLLM's runtime interfaces. The inspected upstream artifact is
+`vllm/vllm-openai:kimi-k31`, pinned to AMD64 image manifest
+`sha256:88175ddf4f59944ccbb24c6b60c1bc535a160be3c4f09a3b08702c5e301a599e`
+(package version `0.1.dev24216+g266e88c05`). A full upstream Git commit is not
+asserted from the abbreviated build version. Original paths:
+`vllm/model_executor/models/config.py`,
+`vllm/model_executor/layers/quantization/mxfp4.py`,
+`vllm/model_executor/layers/fused_moe/oracle/mxfp4.py`,
+`vllm/v1/attention/backends/registry.py`,
+`vllm/v1/attention/backends/mla/indexer.py`, and
+`vllm/models/kimi_k3/nvidia/kda_metadata.py`.
+
+Source repository: https://github.com/vllm-project/vllm
+Artifact: https://hub.docker.com/r/vllm/vllm-openai/tags?name=kimi-k31
+Copyright contributors to the vLLM project. The inspected files are licensed
+under Apache-2.0, available in the repository root `LICENSE` and Python
+distribution. No upstream implementation is copied; the integrations are
+modified for AISimulate's explicit policy and evidence validation contracts.
+
+The ARM64 image child is
+`sha256:52b793567651780dc529647a211a3d15cec11ebc872ac7492636d7d75340eab4`.
+The complete original path and SHA-256 inventory for the 35 inspected vLLM
+interfaces is in `runtime/vllm-kimi-k31.example.json`; the adjacent
+`runtime/instrumentation/vllm-kimi-k31.md` records their observation contracts.
+The initialized cache comparison also observes the representative-child projection
+in `vllm/v1/core/kv_cache_utils.py::generate_scheduler_kv_cache_config`, preserving
+the worker's full per-layer cache geometry and physical allocation evidence.
+The strided DSA indexer view additionally follows the initialized kernel-block
+mapping exposed through `vllm/v1/worker/gpu/attn_utils.py` and
+`vllm/v1/attention/backends/mla/compressor_utils.py`. The adapter observes this
+mapping and validates addresses; it does not change native cache views.
+The source mapping also reads Dynamo's
+`components/src/dynamo/vllm/instrumented_scheduler.py` at immutable commit
+`17628144dc33c9d5916b08789f9d317924217dad`:
+https://github.com/ai-dynamo/dynamo/blob/17628144dc33c9d5916b08789f9d317924217dad/components/src/dynamo/vllm/instrumented_scheduler.py
+(Apache-2.0; Copyright NVIDIA Corporation & Affiliates). No upstream
+implementation is copied into these adapters; native scheduling and timing
+continue to execute the upstream runtime unchanged.
+
+The K3.1 launch and zero-history prefill integration in `runner.py`,
+`runtime_probe.py`, and `docs/perf-model/fpm-self-service/implementation.md`
+also uses this pinned Dynamo scheduler interface. It does not copy or modify
+the native sampling or forward implementation.
+
+
 ## DeepSeek V3 configuration license scope unresolved
 
 `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json`

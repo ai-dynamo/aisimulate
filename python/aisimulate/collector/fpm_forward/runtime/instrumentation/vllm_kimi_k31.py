@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Exact preview-image adapter; source contract in vllm-kimi-k31.md."""
+
+from dynamo.vllm.instrumented_scheduler import InstrumentedScheduler
+from vllm.v1.worker.gpu_worker import Worker
+
+from .hooks import SchedulerObservation, WorkerObservation
+from .kimi_k31 import VERSION
+
+
+class ObservedWorker(WorkerObservation, Worker):
+    observation_version = VERSION
+
+
+class ObservedInstrumentedScheduler(SchedulerObservation, InstrumentedScheduler):
+    observation_version = VERSION

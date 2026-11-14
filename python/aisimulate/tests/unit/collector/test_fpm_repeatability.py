@@ -757,6 +757,21 @@ def test_resolved_hub_snapshot_does_not_override_generated_revision(campaign, la
         assert "runtime model_config.model differs from generated --model" in result["failures"]
 
 
+@pytest.mark.parametrize("model_config", [None, []])
+def test_instrumented_execution_rejects_non_object_model_config(campaign, monkeypatch, model_config):
+    plan, source, _ = campaign
+    monkeypatch.setattr(type(plan), "runtime_instrumentation", property(lambda _plan: object()))
+    _mutate_workers(source, lambda payload: payload["resolved_config"].update(model_config=model_config))
+    cell = plan.cells[0]
+    raw = source / "cells" / cell.cell_id / "raw"
+    collection = validate_native_collection(cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id="source")
+
+    result = execution_evidence.inspect_execution_evidence(cell, raw, collection, plan=plan)
+
+    assert result["status"] == "failed"
+    assert "runtime model_config is unreported" in result["missing_evidence"]
+
+
 def test_fallback_commit_satisfies_revision_and_model_evidence(campaign, tmp_path, monkeypatch):
     plan, source, checkpoint = campaign
     revision = "a" * 40

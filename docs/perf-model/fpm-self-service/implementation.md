@@ -1488,6 +1488,47 @@ Both probe preview/execution and `onboard import-observations` automatically upd
 
 An onboarding agent should investigate and author a campaign-local adapter when no compatible bundled adapter exists. Inspect the exact pinned source and relevant vendor patches, document the field mappings, and test them through the runtime's extension classes. Use the existing authorized campaign scope to preview and execute; ask only for missing access, unresolved user choices, or a resource/runtime constraint requiring a decision. Neither an upstream adapter merge nor a runtime downgrade is required to use a local bundle. A runtime with unsupported cache semantics still needs an explicit limitation or a separately supported representation.
 
+### Kimi K3.1 first-prefill and decode probes
+
+The source-pinned K3.1 adapter accepts independent `prefill` and `decode`
+configurations. Both use Mamba cache mode `none`, FP32 recurrent state,
+disabled prefix caching, and no speculation. Each role requires its own
+initialized-rank observations and native measurement evidence. Aggregated
+collection remains unsupported by this adapter.
+
+For prefill, the supported scope is **historical KV = 0**: new requests whose
+entire scheduled prompt is computed in the measured forward pass. At pinned
+[Dynamo `17628144dc33c9d5916b08789f9d317924217dad`](https://github.com/ai-dynamo/dynamo/blob/17628144dc33c9d5916b08789f9d317924217dad/components/src/dynamo/vllm/instrumented_scheduler.py#L3892),
+`_bench_prefill_kv_read_points` returns only `[0]` when prefix caching is
+disabled. `_bench_generate_prefill_grid` retains native new-token and batch
+axes and native feasibility checks. The zero-KV branch of
+[`_bench_step_prefill`](https://github.com/ai-dynamo/dynamo/blob/17628144dc33c9d5916b08789f9d317924217dad/components/src/dynamo/vllm/instrumented_scheduler.py#L5488)
+enqueues ordinary new requests through `_bench_inject_prefill`, without
+prefix staging or synthetic cached blocks. Native timing, warm-up, scheduling
+and point-admission checks are unchanged. The measured token count, batch and
+historical KV must still match the requested coordinate.
+
+Use `worker_type: prefill` in an independent onboarding configuration, or
+`--fpm-worker-type prefill` for formal collection with its accepted runtime
+profile and launch. The renderer supplies `--mamba-cache-mode none`,
+`--mamba-ssm-cache-dtype float32` and `--no-enable-prefix-caching`.
+The ordinary `--fpm-max-prefill-isl` and `--fpm-max-prefill-batch-size`
+controls bound the native token/batch axes. Probe sampling retains the native
+two-endpoint limits; `--prefill-max-kv-read-token-samples=1` is invalid and is
+not how the KV axis is restricted. `DYN_BENCH_PREFILL_REAL_SEED=on` remains
+enabled; the zero-KV path does not enter that branch.
+
+An optional `--fpm-benchmark-points-file` uses the existing explicit-point
+interface, and every prefill entry must have `total_kv_read_tokens: 0`.
+Any nonzero prefill entry is rejected, including one in a file also containing
+decode points. No point is removed or relabeled. Native zero-KV prefill
+evidence is `not_applicable` for seeding and publishes as `n/a`; it does not
+establish cached or continued prefill support. These source conclusions permit
+a bounded probe, not a claim that the selected hardware has passed it.
+The frozen bundle's original notes describe its first decode-only candidate;
+this section records the subsequently audited zero-KV prefill extension without
+changing that bundle's bytes or source identity.
+
 ### Save the launch inputs in the existing checkpoint
 
 `--configuration` selects checkpoint keys; the name never implies topology. The command reads each configuration's `draft_request.identity/search/collection` and fills absent facts from shared or per-configuration `inputs`. Conflicting facts are rejected. An incomplete draft is allowed. For inputs without a profile, supply these fields:
@@ -1503,6 +1544,13 @@ An onboarding agent should investigate and author a campaign-local adapter when 
 | `resource_overrides` | Per-configuration metadata assumptions, if required for the model. Cache geometry can remain absent at probe entry. |
 
 Save source research and outstanding questions after each meaningful finding with `onboard checkpoint`, using its current revision. Register the local bundle files and source notes as input artifacts; do not put independent configurations' byte bounds into shared inputs. Probe and import also register their results, but they do not observe or save the agent's investigation automatically.
+
+For an audited runtime assembled from mounted dependencies, `collection_deployment.extra_env`
+accepts unique literal `{name, value}` entries through the existing Generator environment
+interface. These entries remain part of the frozen launch and formal collection settings.
+`PYTHONPATH`, `PYTHONNOUSERSITE`, `HF_HOME`, `HF_HUB_OFFLINE`, and `TRANSFORMERS_OFFLINE`
+also reach the Collector's startup checks before the engine starts. Record mounted source
+and binary hashes alongside the image identity; environment declarations do not qualify them.
 
 ### Choose or author the instrumentation bundle
 
