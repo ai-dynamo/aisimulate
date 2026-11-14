@@ -113,6 +113,11 @@ def load_repeatability_source(source_campaign_dir: str | Path) -> FPMCollectionP
         options.update(
             benchmark_points_json=json.dumps(points["payload"], sort_keys=True, separators=(",", ":")),
             benchmark_points_sha256=points["sha256"],
+            # A list that the planner generated names its generator and its drop counts. A user file has neither.
+            benchmark_points_origin=points.get("origin"),
+            benchmark_points_dropped_json=(
+                json.dumps(points["dropped"], sort_keys=True, separators=(",", ":")) if "dropped" in points else None
+            ),
         )
     capability = copy.deepcopy(saved["capability"])
     config = capability.pop("model_config")
@@ -406,6 +411,9 @@ def _subset_plan(
         source.options,
         benchmark_points_json=canonical,
         benchmark_points_sha256=_canonical_hash(selected["benchmark_points"]),
+        # A bounded sample is not the list that a generator produced, so it is labeled and staged as an explicit list.
+        benchmark_points_origin=None,
+        benchmark_points_dropped_json=None,
     )
     if comparison_mode == "full_grid":
         options = source.options

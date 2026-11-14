@@ -27,6 +27,8 @@ from urllib.request import Request, urlopen
 import yaml
 
 from aisim.config import CorePredictionConfig
+from aisim.config.ais_perf_model import anchor_paths, lower_engine, reject_repeated_keys
+from aisim.config.cli import config_folder
 
 AIPERF_REVISION = "7db2ba37a62aa80c882bc90eaf61cc8073e2387b"
 AIPERF_SOURCE = "https://github.com/ai-dynamo/aiperf"
@@ -154,6 +156,55 @@ def _timing_subset(play: dict[str, Any]) -> str | None:
     return None
 
 
+def _read_prediction_config(path: Path) -> dict[str, Any]:
+    """Read a prediction config with the paths in ``engine.ais_perf_model`` made absolute.
+
+    Those paths start at the folder of the config file. The matched workload
+    saves a copy of the config in another folder, where a relative path would
+    name a different file. A config without the key is returned as it was read.
+    ``engine.ais_perf_model`` written twice, or a key written twice inside
+    it, is an error (see ``reject_repeated_keys``).
+    """
+    text = path.read_text(encoding="utf-8")
+    raw = yaml.safe_load(text)
+    reject_repeated_keys(text, "predict", path)
+    return anchor_paths(raw, config_folder(path), "predict")
+
+
+def _replayed_estimator(prediction: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Any, Any]:
+    """Return the engine, the aggregated worker, its systems paths and its estimator config as replay reads them.
+
+    ``prediction`` is a config mapping that ``_scope`` accepted. It may state
+    the estimator on the worker's timing, once for the whole engine, or under
+    ``engine.ais_perf_model``. Replay rewrites that key into the engine and
+    worker fields and then uses the worker's value when it has one, so the
+    same is done here. A config without the key keeps its engine mapping.
+
+    Replay also reads the file that the worker's old ``timing.fpm_parquet_path``
+    names as ``estimator_config.fpm_interpolation.fpm_parquet_path``. The
+    returned estimator config names that file too, in a copy, so the mappings
+    of ``prediction`` stay as written. An estimator config that already has
+    another value there is the error replay raises.
+    """
+    engine = lower_engine(prediction["engine"], "predict")
+    worker = engine["workers"]["aggregated"]
+    timing = worker.get("timing") or {}
+    systems_paths = timing.get("systems_paths") or engine.get("systems_paths")
+    estimator_config = (
+        timing["estimator_config"] if timing.get("estimator_config") is not None else engine.get("estimator_config")
+    )
+    parquet_path = timing.get("fpm_parquet_path")
+    if parquet_path is not None:
+        interpolation = (estimator_config or {}).get("fpm_interpolation") or {}
+        if interpolation.get("fpm_parquet_path", parquet_path) != parquet_path:
+            raise ValueError("conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path")
+        estimator_config = {
+            **(estimator_config or {}),
+            "fpm_interpolation": {**interpolation, "fpm_parquet_path": parquet_path},
+        }
+    return engine, worker, systems_paths, estimator_config
+
+
 def _scope(prediction: dict[str, Any], trace: Path) -> dict[str, Any]:
     config = CorePredictionConfig.model_validate(prediction).model_dump(mode="json", exclude_none=True)
     traffic, engine = config["traffic"], config["engine"]
@@ -179,11 +230,17 @@ def _scope(prediction: dict[str, Any], trace: Path) -> dict[str, Any]:
     if any(worker["kv_cache"].get(tier) is not None for tier in ("host_offload", "g3_offload", "hicache")):
         raise ValueError("serving validation initially qualifies HBM-only cache")
     timing = worker["timing"]
+    # A config may state the estimator on the worker's timing or once for the
+    # whole engine; replay uses the worker's value when it has one.
+    estimation_mode, fallback_policy, estimator_config = (
+        timing[key] if timing.get(key) is not None else engine.get(key)
+        for key in ("estimation_mode", "fallback_policy", "estimator_config")
+    )
     if (
         timing.get("type") != "default"
-        or timing.get("estimation_mode") != "fpm_interpolation"
-        or timing.get("fallback_policy") != "deny"
-        or timing.get("estimator_config", {}).get("fpm_interpolation", {}).get("method") != "direct"
+        or estimation_mode != "fpm_interpolation"
+        or fallback_policy != "deny"
+        or (estimator_config or {}).get("fpm_interpolation", {}).get("method") != "direct"
     ):
         raise ValueError("serving validation requires ordinary strict direct-FPM prediction")
     return {
@@ -288,9 +345,7 @@ def _materialize_payloads(recipe: dict[str, Any], output: Path, aiperf_python: P
 def _prepare_matched_workload(
     recipe: dict[str, Any], prediction: dict[str, Any], output: Path, python: Path
 ) -> dict[str, Any]:
-    from aisim.supervision import main as predict
-
-    from .validation import _completion_issues
+    from .validation import _completion_issues, _predict_generated_config
 
     output.mkdir()
     materialization = _materialize_payloads(recipe, output, python)
@@ -350,7 +405,7 @@ def _prepare_matched_workload(
     derived["traffic"]["source"] = {"type": "trace", "paths": [str(trace_path)], "format": "agentic_mooncake"}
     config_path = output / "predict.yaml"
     config_path.write_text(yaml.safe_dump(derived, sort_keys=False))
-    status = predict(
+    status = _predict_generated_config(
         [
             "predict",
             "--config",
@@ -412,7 +467,7 @@ def prepare_serving_validation(
     for source in (trace, prediction_config, tokenizer):
         if source == output or output in source.parents:
             raise ValueError("serving output must not contain an input")
-    prediction = yaml.safe_load(prediction_config.read_text(encoding="utf-8"))
+    prediction = _read_prediction_config(prediction_config)
     scope = _scope(prediction, trace)
     play, issues = _read_play(trace)
     timing_subset = _timing_subset(play) if play is not None and not issues else None
@@ -428,8 +483,7 @@ def prepare_serving_validation(
         issues.append("run ordinary onboarding replay with per-request capture before preparing serving validation")
     if aiperf_python is None:
         issues.append("provide the pinned AIPerf Python for request materialization before matched prediction")
-    engine = prediction["engine"]
-    worker = engine["workers"]["aggregated"]
+    engine, worker, systems_paths, estimator_config = _replayed_estimator(prediction)
     configured = {key: engine.get(key) for key in ("model", "backend", "backend_version", "hardware", "context_length")}
     configured.update(
         model_revision=engine.get("fpm_profile", {}).get("model_revision"),
@@ -453,15 +507,17 @@ def prepare_serving_validation(
         issues.append("the pinned tokenizer directory has no tokenizer/config artifacts")
     timing_paths = {
         path.resolve()
-        for root in engine.get("systems_paths", [])
+        for root in systems_paths or []
         for path in Path(root).expanduser().rglob("fpm_forward_perf.*")
         if path.is_file()
     }
-    external = worker["timing"].get("estimator_config", {}).get("fpm_interpolation", {}).get("fpm_parquet_path")
+    external = (estimator_config or {}).get("fpm_interpolation", {}).get("fpm_parquet_path")
     if external:
         timing_paths.update((Path(external).resolve(), Path(external).with_suffix(".metadata.json").resolve()))
     if not timing_paths:
         issues.append("the prediction's collected FPM timing artifacts could not be located")
+    # A timing file that is missing stops here, before the output folder exists.
+    timing_artifacts = [_identity(path) for path in sorted(timing_paths)]
     output.mkdir(parents=True, exist_ok=False)
     observer_dir = output / "observer"
     observer_dir.mkdir()
@@ -490,7 +546,7 @@ def prepare_serving_validation(
         "endpoint": endpoint,
         "tokenizer": str(tokenizer),
         "tokenizer_files": tokenizer_files,
-        "timing_artifacts": [_identity(path) for path in sorted(timing_paths)],
+        "timing_artifacts": timing_artifacts,
         "expected_execution": expected_execution,
         "policy": {
             "latency_p95_relative_error": _threshold(latency_p95_error, "latency_p95_error"),
@@ -835,9 +891,8 @@ def _forward_validation(path: Path | None, recipe_path: Path, threshold: float) 
     from aisim_core.sdk import RustForwardPassPerfModel
 
     recipe = _checked_recipe(recipe_path)
-    prediction = yaml.safe_load(Path(recipe["prediction_config"]["path"]).read_text())
-    engine = prediction["engine"]
-    worker = engine["workers"]["aggregated"]
+    prediction = _read_prediction_config(Path(recipe["prediction_config"]["path"]))
+    engine, worker, systems_paths, estimator_config = _replayed_estimator(prediction)
     parallel = worker["parallelism"]
     config = {
         "model": engine["model"],
@@ -851,10 +906,10 @@ def _forward_validation(path: Path | None, recipe_path: Path, threshold: float) 
         "moe_tp_size": parallel.get("moe_tensor", 1),
         "moe_ep_size": parallel.get("moe_expert", 1),
         "fpm_profile": engine["fpm_profile"],
-        "systems_paths": engine["systems_paths"],
+        "systems_paths": systems_paths,
         "estimation_mode": "fpm_interpolation",
         "fallback_policy": "deny",
-        "estimator_config": worker["timing"]["estimator_config"],
+        "estimator_config": estimator_config,
     }
     try:
         model = RustForwardPassPerfModel.best_available(config)

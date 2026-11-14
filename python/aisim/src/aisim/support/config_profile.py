@@ -1534,12 +1534,22 @@ def derive_profile(
     return ProfileDraft(profile, values, {}, sources, notes=notes)
 
 
-def _cache_group_shapes(groups: list[Any]) -> Counter[str]:
-    """Cache groups as a multiset of their geometry. Names and order carry none, and the probe chooses both."""
+# The cache group fields that only a runtime probe import writes. A cache_groups claim gives the geometry, so it may
+# leave them out.
+_PROBE_GROUP_FIELDS = ("prefill_checkpoint_blocks", "prefill_checkpoint_alignment")
+
+
+def _cache_group_shapes(groups: list[Any], ignored: tuple[str, ...] = ()) -> Counter[str]:
+    """Cache groups as a multiset of their geometry. Names and order carry none, and the probe chooses both.
+
+    The ``ignored`` fields are left out of every shape.
+    """
     shapes: Counter[str] = Counter()
     for group in groups:
         shape = FpmCacheGroup.model_validate(group).model_dump(mode="json")
         del shape["name"]
+        for name in ignored:
+            shape.pop(name, None)
         shapes[json.dumps(shape, sort_keys=True)] += 1
     return shapes
 
@@ -1640,7 +1650,9 @@ def _matches_observation(key: str, typed: Any, resources: Mapping[str, Any]) -> 
     """Whether a resource override agrees with what the runtime probe measured."""
     if key == "cache_groups":
         measured = resources.get(key)
-        return measured is not None and _cache_group_shapes(typed) == _cache_group_shapes(measured)
+        # A probe-only field is compared when a claimed group states it, and then on every group.
+        unstated = tuple(name for name in _PROBE_GROUP_FIELDS if all(group.get(name) is None for group in typed))
+        return measured is not None and _cache_group_shapes(typed, unstated) == _cache_group_shapes(measured, unstated)
     if key == "kv_bytes_per_token" or (key == "cache_layout" and typed == "linear"):
         # The vLLM probe reports a grouped cache; full-attention groups without a window have a per-token size.
         measured = _measured_kv_bytes(resources)
@@ -1700,9 +1712,10 @@ def profile_from_observations(
     Runtime grouping need not match config-derived planning groups. No estimated
     geometry or non-KV byte declaration is substituted for the observation. Cache
     geometry, scheduler and precision overrides must agree with it, and the
-    measurement is authoritative: cache groups compare without names or order,
-    and a cache_layout: linear or kv_bytes_per_token claim compares with the
-    measured bytes per token.
+    measurement is authoritative: cache groups compare without names or order
+    and a state group compares its blocks_per_request, and a cache_layout:
+    linear or kv_bytes_per_token claim compares with the measured bytes per
+    token.
     """
     supplied = validate_overrides(overrides)
     metadata = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}

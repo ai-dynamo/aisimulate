@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -37,6 +38,7 @@ from .config import (
     semantic_generator_overrides,
     with_kv_warmup_defaults,
 )
+from .glm53flash_points import GLM_ARCHITECTURE, GLM_POINTS_ORIGIN, glm_plan_manifest
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
 from .runtime.fpm_memory_observer import MEMORY_SUPPORTED_VERSIONS, audited_release
 from .topology import enumerate_fpm_topologies, topology_strategy
@@ -614,7 +616,13 @@ class FPMCollectionPlan:
             "point_generation": {
                 "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
                 "method": "native_self_benchmark",
-                "source": "frozen_explicit_manifest" if explicit_points is not None else "native_auto_grid",
+                "source": (
+                    "generated_glm53flash_grid"
+                    if self.options.benchmark_points_origin == GLM_POINTS_ORIGIN
+                    else "frozen_explicit_manifest"
+                    if explicit_points is not None
+                    else "native_auto_grid"
+                ),
                 "manifest_sha256": self.options.benchmark_points_sha256,
                 "coordinates": [
                     "batch_size",
@@ -658,6 +666,9 @@ class FPMCollectionPlan:
             },
             "sha256": self.sha256,
         }
+        # Guided onboarding sets no log handler, so the plan keeps the drop counts of a generated list.
+        if self.options.benchmark_points_dropped_json is not None:
+            payload["point_generation"]["dropped_points"] = json.loads(self.options.benchmark_points_dropped_json)
         if self._fpm_profile_json is not None:
             payload["fpm_profile"] = json.loads(self._fpm_profile_json)
         runtime_observation = json.loads(self._runtime_observation_json) if self._runtime_observation_json else None
@@ -811,13 +822,16 @@ def build_collection_plan(
         engram_cpu_offload=False,
         input_modality="text",
     )
-    if execution[0] and not options.enforce_eager:
+    # Eager timing and the shared text corpus belong to DeepSeek V4.1 alone. GLM-5.3-Flash also has an execution
+    # identity, but its producer requires the runtime's CUDA graph policy and seeds its own tokens.
+    eager_required = capability.architecture == "DeepseekV41ForCausalLM"
+    if eager_required and not options.enforce_eager:
         raise ValueError("V4.1 FPM collection currently requires --fpm-enforce-eager; graph timing is not qualified")
-    if options.enforce_eager and not execution[0]:
+    if options.enforce_eager and not eager_required:
         raise ValueError("explicit eager FPM collection is currently qualified only for DeepSeek V4.1")
     input_text_sha256 = (
         hashlib.sha256((Path(__file__).parent / "runtime" / "fpm_text.txt").read_bytes()).hexdigest()
-        if execution[0]
+        if eager_required
         else ""
     )
     candidate_topologies = enumerate_fpm_topologies(
@@ -879,6 +893,30 @@ def build_collection_plan(
                     options.max_decode_batch_size or options.max_num_seqs or resources.max_batch_size,
                     options.max_prefill_batch_size or options.max_num_seqs or resources.max_batch_size,
                 ),
+            )
+    if capability.architecture == GLM_ARCHITECTURE and options.benchmark_points_json is None:
+        # The GLM-5.3-Flash producer measures an explicit point list only. Generate it from the resolved limits and
+        # the accepted profile, and freeze it into the options, so the plan hash covers it.
+        if profile is None:
+            raise ValueError("GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens")
+        points_json, points_sha256, dropped_json = glm_plan_manifest(options, deployments)
+        options = replace(
+            options,
+            benchmark_points_json=points_json,
+            benchmark_points_sha256=points_sha256,
+            benchmark_points_origin=GLM_POINTS_ORIGIN,
+            benchmark_points_dropped_json=dropped_json,
+        )
+    if capability.architecture == GLM_ARCHITECTURE:
+        # The runner passes this revision to vLLM and to the producer. It takes the revision of the accepted probe
+        # launch, and else the profile's. The producer refuses anything but a commit only after the engine starts.
+        if runtime_launch is not None:
+            revision = runtime_launch.get("identity", {}).get("model_revision")
+        else:
+            revision = profile.model_revision if profile is not None else None
+        if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise ValueError(
+                f"GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got {revision!r}"
             )
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,

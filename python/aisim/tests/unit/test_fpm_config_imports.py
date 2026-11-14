@@ -77,7 +77,9 @@ def assert_lightweight():
     loaded = [name for name in sys.modules if any(name == item or name.startswith(item + '.') for item in blocked)]
     assert not loaded, loaded
     core = {name for name in sys.modules if name == 'aisim_core' or name.startswith('aisim_core.')}
-    assert core <= {'aisim_core', 'aisim_core.fpm_profile', 'aisim_core.quantization'}, core
+    allowed = {'aisim_core', 'aisim_core.ais_perf_model', 'aisim_core.fpm_profile',
+               'aisim_core.quantization'}
+    assert core <= allowed, core
 
 class RejectRuntimeImports:
     def find_spec(self, fullname, path=None, target=None):
@@ -116,15 +118,52 @@ else:
     from aisim.config import CorePredictionConfig, CoreRecommendationConfig
     config_type = CorePredictionConfig if command == 'predict' else CoreRecommendationConfig
     parsed = config_type.from_yaml(config)
-    assert config_type.model_validate_json(parsed.model_dump_json()) == parsed
+    again = config_type.model_validate_json(parsed.model_dump_json())
+    if parsed.engine.ais_perf_model is None:
+        assert again == parsed
+    else:
+        # A dump writes what the key means and leaves the key out, so the two configs are compared by their dumps.
+        assert again.model_dump_json() == parsed.model_dump_json()
     assert_lightweight()
 """
 )
 
 
+def _add_old_transfer_policy(engine: dict, case: str) -> str:
+    """Write the key and an old ``transfer_policy`` into an engine; return the error to expect, or no text."""
+    del engine["fpm_profile"]
+    repeated = case.startswith("repeated")
+    old = {"transfer_policy": ["xshape"] if repeated else ["xquant"]}
+    if "worker" in case:
+        # Only the decode worker gets a policy from the key, so the key is compared with the timing of that worker.
+        engine["mode"] = "disaggregated"
+        worker = engine["workers"].pop("aggregated")
+        engine["workers"] = {"prefill": worker, "decode": {**worker, "timing": old}}
+        engine["ais_perf_model"] = [{"worker_type": "prefill"}, {"worker_type": "decode", "transfer_policy": "xshape"}]
+        path = "engine.workers.decode.timing.transfer_policy"
+    else:
+        engine.update(old)
+        engine["ais_perf_model"] = {"transfer_policy": "xshape"}
+        path = "engine.transfer_policy"
+    return "" if repeated else f"old estimator fields that say something else: {path}. Remove the old fields."
+
+
 @pytest.mark.parametrize("command", ["predict", "recommend"])
 @pytest.mark.parametrize(
-    "case", ["no-profile", "profile", "mixed-profile", "unknown-quant", "boolean-topology", "wrong-model"]
+    "case",
+    [
+        "no-profile",
+        "profile",
+        "mixed-profile",
+        "unknown-quant",
+        "boolean-topology",
+        "wrong-model",
+        "misspelled-perf-model-key",
+        "repeated-transfer-policy",
+        "conflicting-transfer-policy",
+        "repeated-worker-transfer-policy",
+        "conflicting-worker-transfer-policy",
+    ],
 )
 def test_supervised_profile_validation_is_runtime_free(command: str, case: str, tmp_path: Path) -> None:
     """Exercise the real parser and envelope validation before the child starts."""
@@ -152,6 +191,15 @@ def test_supervised_profile_validation_is_runtime_free(command: str, case: str, 
     elif case == "wrong-model":
         raw["engine"]["model"] = "test/different-decoder"
         error = "engine.model must match engine.fpm_profile.model"
+    elif case == "misspelled-perf-model-key":
+        # Telling a perf model field from a misspelled key must not load the perf model itself.
+        raw["engine"]["ais_perf_model"] = {"fpm_profile": raw["engine"].pop("fpm_profile"), "estimaton_mode": "auto"}
+        error = "estimaton_mode: not a perf model field"
+        if command == "recommend":
+            error = "estimaton_mode cannot be checked in a recommend config"
+    elif case.endswith("transfer-policy"):
+        # Comparing an old transfer_policy with the key must not load the perf model to read the policy.
+        error = _add_old_transfer_policy(raw["engine"], case)
     config = tmp_path / "config.json"
     config.write_text(json.dumps(raw))
     output = tmp_path / "output"

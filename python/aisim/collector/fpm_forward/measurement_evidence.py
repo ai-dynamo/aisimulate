@@ -37,6 +37,19 @@ _EXECUTION_CONTRACT = {
     "cudagraph_source": "ModelRunnerOutput.cudagraph_stats",
     "warmup_scope": "request_completion_and_existing_shape_validation",
 }
+# The GLM-5.3-Flash producer (runtime/glm53flash/glm53flash_prefix_scheduler.py) measures each point ten times in one
+# launch and keeps the upper median of the wall times of the repetitions after the first, Dynamo's own
+# adjacent_upper_median estimate. It writes this record into measurement_protocol["producer"] and seeded token content
+# into synthetic_content. The producer cannot import this module inside the runtime image, so both sides keep the
+# values, and a test keeps them equal. The frozen cell selects these rules (NativeCollection.execution_mode); the
+# artifact's own record never does.
+GLM_PRODUCER_PROTOCOL = {
+    "state_protocol": "glm53flash_prefix_cache_real_seed_v1",
+    "warmup_repeats": 5,
+    "measurement_repeats": 10,
+    "reduction": "upper_median_after_first_repetition",
+}
+GLM_PRODUCER_CONTENT = "seeded_tokens"
 
 
 def _hash(value: Any) -> str:
@@ -82,7 +95,13 @@ def _regime_gaps(point: dict[str, Any], regime: str | None) -> list[str]:
     return reasons
 
 
-def _validate_protocol(protocol: Any) -> None:
+def _validate_protocol(protocol: Any, *, glm: bool, path: Path) -> None:
+    """Validate the measurement protocol of a rank artifact.
+
+    ``glm`` is true when the frozen cell selects the GLM-5.3-Flash producer contract. That protocol must then hold the
+    producer's record, its seeded token content and Dynamo's execution evidence contract exactly, with the same JSON
+    types (5.0 is not 5). The protocol of any other cell must not carry a producer record.
+    """
     if not isinstance(protocol, dict):
         raise ValueError("measurement_protocol must be a mapping")
     fixed = {
@@ -97,9 +116,30 @@ def _validate_protocol(protocol: Any) -> None:
         _integer(protocol.get(key), 1) for key in ("schema_version", "independent_repetitions")
     ):
         raise ValueError("measurement_protocol has unsupported identity, timing, or repetition semantics")
-    if not all(isinstance(protocol.get(key), str) for key in ("content_seed", "synthetic_pool_tag")) or protocol.get(
-        "synthetic_content"
-    ) not in {"random", "sharegpt", "sharegpt_chain", "zeros"}:
+    if glm:
+        expected = (
+            ("producer", GLM_PRODUCER_PROTOCOL, "the GLM-5.3-Flash producer's record"),
+            ("synthetic_content", GLM_PRODUCER_CONTENT, "the GLM-5.3-Flash producer's content"),
+            # Dynamo 1.7, the producer's scheduler base, writes this contract into every rank artifact
+            # (ai-dynamo/dynamo@9abd2ef0d9 instrumented_scheduler.py:4252-4260 and :7846).
+            ("execution_evidence", _EXECUTION_CONTRACT, "Dynamo's execution evidence contract"),
+        )
+        for key, value, name in expected:
+            if _hash(protocol.get(key)) != _hash(value):
+                raise ValueError(
+                    f"measurement_protocol.{key} must be {name}: expected {value!r}, "
+                    f"found {protocol.get(key)!r}: {path}"
+                )
+    elif "producer" in protocol:
+        raise ValueError(
+            "measurement_protocol.producer must be absent for a cell without the GLM-5.3-Flash producer contract: "
+            f"expected no such field, found {protocol['producer']!r}: {path}"
+        )
+    contents = {"random", "sharegpt", "sharegpt_chain", "zeros"} | ({GLM_PRODUCER_CONTENT} if glm else set())
+    if (
+        not all(isinstance(protocol.get(key), str) for key in ("content_seed", "synthetic_pool_tag"))
+        or protocol.get("synthetic_content") not in contents
+    ):
         raise ValueError("measurement_protocol has malformed content settings")
     unobserved = protocol.get("unobserved")
     if not isinstance(unobserved, list) or not all(isinstance(item, str) and item for item in unobserved):
@@ -185,7 +225,7 @@ def _validate_estimate(measurement: dict[str, Any], fpm: dict[str, Any], rank: i
 
 
 def _read_measurement(
-    row: dict[str, Any], *, rank: int, grid_digest: str, position: int, protocol: dict[str, Any] | None
+    row: dict[str, Any], *, rank: int, grid_digest: str, position: int, protocol: dict[str, Any] | None, glm: bool
 ) -> tuple[dict[str, Any] | None, list[str]]:
     fpm = row["fpms"][0]
     if protocol is None:
@@ -213,6 +253,18 @@ def _read_measurement(
         raise ValueError("benchmark_measurement has inconsistent grid/order/KV preparation")
     recorded = _validate_prompts(measurement.get("prompts"))
     _validate_estimate(measurement, fpm, rank, row["point"]["benchmark_id"])
+    if glm and (
+        measurement["expected_internal_samples"] != GLM_PRODUCER_PROTOCOL["measurement_repeats"]
+        or len(measurement["raw_fpms"]) != GLM_PRODUCER_PROTOCOL["measurement_repeats"]
+        or measurement["estimate"]["method"] != "adjacent_upper_median"
+    ):
+        # The producer's protocol names one raw sample per measured repetition and the upper median after the first.
+        # Only a cell with the GLM-5.3-Flash producer contract reaches this rule; Dynamo's own records keep the rules
+        # above.
+        raise ValueError(
+            "benchmark_measurement does not hold the producer's ten measured repetitions with their "
+            "adjacent_upper_median estimate"
+        )
     return measurement, [] if recorded else [f"rank {rank}: injected prompt hashes unavailable"]
 
 
@@ -262,7 +314,7 @@ def _scheduling_observations(raw_root: Path, artifacts, collection) -> tuple[dic
     return result, missing
 
 
-def _warmup_history(payload: dict[str, Any], protocol: dict[str, Any] | None):
+def _warmup_history(payload: dict[str, Any], protocol: dict[str, Any] | None, *, glm: bool, path: Path):
     if protocol is None or "execution_evidence" not in protocol:
         return None, []
     if protocol["execution_evidence"] != _EXECUTION_CONTRACT:
@@ -275,6 +327,13 @@ def _warmup_history(payload: dict[str, Any], protocol: dict[str, Any] | None):
         or (history["status"] == "unavailable" and history["records"])
     ):
         raise ValueError("invalid warmup_evidence status or records")
+    # A benchmark-mode Dynamo 1.7 scheduler starts its warm-up history as an empty list
+    # (ai-dynamo/dynamo@9abd2ef0d9 instrumented_scheduler.py:2897-2907), and the producer runs only in that mode.
+    if glm and history["status"] != "recorded":
+        raise ValueError(
+            "warmup_evidence.status of a GLM-5.3-Flash producer artifact must be recorded: expected 'recorded', "
+            f"found {history['status']!r}: {path}"
+        )
     prefixes = [_hash([])]
     digest = hashlib.sha256()
     previous_completed = 0
@@ -316,8 +375,13 @@ def _warmup_history(payload: dict[str, Any], protocol: dict[str, Any] | None):
     return history, prefixes
 
 
-def _observed_execution(measurement, fpm, history, prefixes, previous_forward):
-    """Validate within one rank/process; absolute clocks are not compared across runs."""
+def _observed_execution(measurement, fpm, history, prefixes, previous_forward, *, glm: bool, path: Path):
+    """Validate within one rank/process; absolute clocks are not compared across runs.
+
+    For a cell with the GLM-5.3-Flash producer contract, every raw sample must hold its timing start and its observed
+    graph dispatch: the producer keeps only repetitions whose measured steps have a dispatch receipt, and it measures
+    a prefill from schedule to output and a steady decode step from the output before it.
+    """
     if "benchmark_sample" in fpm:
         raise ValueError("retained estimate cannot claim a single benchmark_sample")
     observed, reasons = [], []
@@ -352,9 +416,19 @@ def _observed_execution(measurement, fpm, history, prefixes, previous_forward):
         ):
             raise ValueError("benchmark_sample contradicts its local timing interval")
         if start is None:
+            if glm:
+                raise ValueError(
+                    f"benchmark_sample.timing.start_monotonic of a GLM-5.3-Flash producer sample must be recorded: "
+                    f"expected a number, found None: {path}"
+                )
             reasons.append("sample timing start is unavailable")
         if not isinstance(graph, dict) or graph.get("status") not in {"observed", "unavailable"}:
             raise ValueError("benchmark_sample has invalid graph observation status")
+        if glm and graph["status"] != "observed":
+            raise ValueError(
+                "benchmark_sample.cudagraph.status of a GLM-5.3-Flash producer sample must be observed: "
+                f"expected 'observed', found {graph['status']!r}: {path}"
+            )
         values = [
             graph.get(name) for name in ("runtime_mode", "num_unpadded_tokens", "num_padded_tokens", "num_paddings")
         ]
@@ -410,7 +484,10 @@ def extract_measurement_evidence(
     """Read schema-1 evidence for the publication-selected native samples.
 
     Call after native validation. Missing legacy evidence is explicitly
-    unestablished; malformed or contradictory new evidence is rejected.
+    unestablished; malformed or contradictory new evidence is rejected. The
+    collection's execution mode, which the frozen cell selected, decides the
+    rules: a cell with the GLM-5.3-Flash producer contract requires the
+    producer's protocol and evidence, and its producer always writes them.
     Raw adjacent steps are retained as evidence of one launch, never counted as
     independent observations. Duplicate consolidation uses publication's rule.
     """
@@ -421,8 +498,17 @@ def extract_measurement_evidence(
         raise ValueError("measurement evidence has no native rank artifacts")
     protocol = artifacts[0][1].get("measurement_protocol")
     present = "measurement_protocol" in artifacts[0][1]
+    # The frozen cell selects the producer contract (validate_native_collection), never the artifact's own record.
+    glm = collection.execution_mode == "native_graph_policy"
+    if glm and not present:
+        # Dynamo 1.7, the producer's scheduler base, writes the protocol into every rank artifact
+        # (ai-dynamo/dynamo@9abd2ef0d9 instrumented_scheduler.py:7846).
+        raise ValueError(
+            "measurement_protocol of a GLM-5.3-Flash producer artifact must be present: expected the producer's "
+            f"protocol, found no such field: {artifacts[0][0]}"
+        )
     if present:
-        _validate_protocol(protocol)
+        _validate_protocol(protocol, glm=glm, path=artifacts[0][0])
     expected_ranks = {rank for rank, *_ in collection.rank_timings}
     measurements = {item.point["benchmark_id"]: item for item in collection.points}
     selected = select_native_measurements(collection, cell_id="measurement evidence")
@@ -477,7 +563,9 @@ def extract_measurement_evidence(
         if not _integer(rank) or rank not in expected_ranks or rank in seen_ranks:
             raise ValueError("measurement evidence has inconsistent DP ranks")
         seen_ranks.add(rank)
-        history, prefixes = _warmup_history(payload, protocol) if evidence_version == 2 else (None, [])
+        history, prefixes = (
+            _warmup_history(payload, protocol, glm=glm, path=path) if evidence_version == 2 else (None, [])
+        )
         previous_forward = -1
         if history is not None:
             result["warmup_evidence"][str(rank)] = history
@@ -519,12 +607,17 @@ def extract_measurement_evidence(
             ):
                 raise ValueError("measurement evidence differs from validated native sample")
             measurement, reasons = _read_measurement(
-                row, rank=rank, grid_digest=collection.runtime_grid_digest, position=position, protocol=protocol
+                row,
+                rank=rank,
+                grid_digest=collection.runtime_grid_digest,
+                position=position,
+                protocol=protocol,
+                glm=glm,
             )
             prompt_missing = bool(reasons)
             if history is not None:
                 execution, gaps, previous_forward = _observed_execution(
-                    measurement, row["fpms"][0], history, prefixes, previous_forward
+                    measurement, row["fpms"][0], history, prefixes, previous_forward, glm=glm, path=path
                 )
                 measurement = {**measurement, "observed_execution": execution}
                 reasons.extend(f"rank {rank}: {reason}" for reason in gaps)

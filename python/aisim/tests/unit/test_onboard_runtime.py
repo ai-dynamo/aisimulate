@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,11 @@ from aisim.support.schema import SupportRequest
 
 from .collector.test_runtime_observations import observation_fixture
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 
 def _write(path, value):
@@ -33,7 +38,7 @@ def _campaign(
     tmp_path,
     *,
     capacity_multiplier=1,
-    context_length=4096,
+    context_length=None,
     tp=2,
     cpu_policy=True,
     worker_type=None,
@@ -41,29 +46,57 @@ def _campaign(
     resource_overrides=None,
     page_bytes=128,
     block_tokens=(16, 16),
+    layout="attention",
+    decode_prefix_caching=True,
+    warmup_iterations=None,
+    checkpoint=None,
 ):
-    index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
+    # The GLM-5.3-Flash records hold the 1,048,576-token context of the live probe record.
+    if context_length is None:
+        context_length = 1_048_576 if layout == "glm_tp4" else 4096
+    index, launches = observation_fixture(
+        tmp_path / "probe",
+        dense=True,
+        tp=tp,
+        layout=layout,
+        decode_prefix_caching=decode_prefix_caching,
+        checkpoint=checkpoint,
+    )
     launch = launches["tp2"]
     if cpu_policy:
         cpus, binding = cpu_policy if isinstance(cpu_policy, tuple) else (16, "cores")
         launch["deployment"].update(cpus_per_task=cpus, cpu_bind=binding)
     model_path = Path(launch["model_config"]["path"])
-    _write(
-        model_path,
-        {
-            "architectures": ["LlamaForCausalLM"],
-            "model_type": "llama",
-            "max_position_embeddings": 4096,
-            "torch_dtype": "bfloat16",
-            "hidden_size": 128,
-            "vocab_size": 1024,
-            "num_hidden_layers": 2,
-            "num_attention_heads": max(4, tp),
-            "num_key_value_heads": max(4, tp),
-            "intermediate_size": 256,
-            "quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "none"},
-        },
-    )
+    config = {
+        "architectures": ["LlamaForCausalLM"],
+        "model_type": "llama",
+        "max_position_embeddings": 4096,
+        "torch_dtype": "bfloat16",
+        "hidden_size": 128,
+        "vocab_size": 1024,
+        "num_hidden_layers": 2,
+        "num_attention_heads": max(4, tp),
+        "num_key_value_heads": max(4, tp),
+        "intermediate_size": 256,
+        "quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "none"},
+    }
+    if layout == "glm_tp4":
+        # The runtime-resolved GLM-5.3-Flash shape: a sparse attention layer after every three linear-attention
+        # layers, and no ordinary head size. The dense probe fixture has no experts.
+        del config["model_type"]
+        config.update(
+            architectures=["Glm5NextForConditionalGeneration"],
+            # The text_config value of the live model config.
+            max_position_embeddings=1_048_576,
+            num_hidden_layers=45,
+            head_dim=0,
+            layer_types=["deepseek_sparse_attention" if index % 4 == 3 else "linear_attention" for index in range(45)],
+            linear_attn_config={"head_dim": 128},
+            num_experts=0,
+            # The probe runs an fp8 KV cache, whose FMHA label is the checkpoint-native fp8 of this NVFP4 checkpoint.
+            quantization_config={"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "FP8"},
+        )
+    _write(model_path, config)
     checkpoint_model = tmp_path / "model-checkpoint"
     checkpoint_model.mkdir()
     (checkpoint_model / "config.json").write_bytes(model_path.read_bytes())
@@ -72,6 +105,8 @@ def _campaign(
         launch["identity"]["model_revision"] = "4" * 40
     launch["model_config"]["sha256"] = hashlib.sha256(model_path.read_bytes()).hexdigest()
     launch["collection"]["max_model_len"] = context_length
+    if warmup_iterations is not None:
+        launch["collection"]["warmup_iterations"] = warmup_iterations
     if worker_type is not None:
         launch["worker_type"] = worker_type
         launch["collection"]["cudagraph_mode"] = {
@@ -89,6 +124,11 @@ def _campaign(
     for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
         for ref in [phase["launch_manifest"], *phase["artifacts"]]:
             path = index.parent / ref["path"]
+            if path.name == "model-config.json":
+                # The probe stages the model configuration that the launch names.
+                path.write_bytes(model_path.read_bytes())
+                ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                continue
             value = json.loads(path.read_text())
             value["launch"] = launch
             if ref.get("kind") == "observation":
@@ -111,8 +151,19 @@ def _campaign(
                         storage["size_bytes"] *= capacity_multiplier
                     for allocation in cache["tensor_allocations"]:
                         allocation["size"] *= capacity_multiplier
-                    for view in cache["layer_tensors"].values():
-                        view["shape"][view["block_axis"]] *= capacity_multiplier
+                        if "layer_stride" in allocation:
+                            # A vLLM 0.33.0 layer-outer tensor keeps every block of one layer in one region, so its
+                            # regions, and the views in them, move with the pool size.
+                            for position, name in enumerate(allocation["layers"]):
+                                region = allocation["offset"] + position * allocation["layer_stride"]
+                                for view in cache["layer_tensors"][name]:
+                                    view["storage_offset_bytes"] += region * (capacity_multiplier - 1)
+                            allocation["offset"] *= capacity_multiplier
+                            allocation["layer_stride"] *= capacity_multiplier
+                    for views in cache["layer_tensors"].values():
+                        # A vLLM 0.33.0 layer has a list of views; older records have one view per layer.
+                        for view in views if isinstance(views, list) else [views]:
+                            view["shape"][view["block_axis"]] *= capacity_multiplier
                     if page_bytes != 128:
                         # The fixture gives each pool block one 128-byte page, which both cache groups share.
                         pool = cache["num_blocks"] * page_bytes
@@ -122,6 +173,10 @@ def _campaign(
                             view["stride_bytes"][view["block_axis"]] = page_bytes
                 else:
                     cache["initial_free_blocks"] = cache["num_blocks"] - cache["reserved_blocks"]
+                    if "kv_cache_max_concurrency" in cache:
+                        # A vLLM 0.33.0 scheduler divides its pool blocks by the blocks of one request
+                        # (kv_cache_utils.py:1076-1087), so its concurrency grows with the pool.
+                        cache["kv_cache_max_concurrency"] *= capacity_multiplier
                 if block_tokens != (16, 16):
                     # The fixture gives both cache groups 16-token blocks, one kernel block per pool block.
                     for group, tokens in zip(cache["groups"], block_tokens, strict=True):
@@ -165,6 +220,7 @@ def _campaign(
                         "precision": precision,
                         "collection_deployment": launch["deployment"],
                         **({"resource_overrides": resource_overrides} if resource_overrides else {}),
+                        **({"warmup_iterations": warmup_iterations} if warmup_iterations is not None else {}),
                     },
                 }
                 for name in ("tp2", "incomplete")
@@ -709,13 +765,16 @@ def _imported(
     capsys,
     *,
     capacity_multiplier=1,
-    context_length=4096,
+    context_length=None,
     tp=2,
     worker_type=None,
     model=None,
     resource_overrides=None,
     page_bytes=128,
     block_tokens=(16, 16),
+    layout="attention",
+    decode_prefix_caching=True,
+    warmup_iterations=None,
 ):
     checkpoint, index, _ = _campaign(
         tmp_path,
@@ -727,12 +786,53 @@ def _imported(
         resource_overrides=resource_overrides,
         page_bytes=page_bytes,
         block_tokens=block_tokens,
+        layout=layout,
+        decode_prefix_caching=decode_prefix_caching,
+        warmup_iterations=warmup_iterations,
     )
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
     state = _load(checkpoint)
     request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
     return checkpoint, index, request, result["configurations"]["tp2"]
+
+
+@pytest.mark.parametrize(
+    ("configured", "launched", "flag"),
+    [(0, 0, ["--fpm-warmup-iterations", "0"]), (None, 5, None)],
+    ids=["set", "default"],
+)
+def test_warmup_iterations_flow_from_the_checkpoint_to_the_launch_and_the_collector_command(
+    tmp_path, capsys, configured, launched, flag
+):
+    from aisim.support.fpm import fpm_cli_args
+    from aisim.support.runtime import checkpoint_launch
+
+    # Import succeeds only when the launch from the checkpoint inputs equals the launch that the probe saved.
+    checkpoint, _, request, _ = _imported(tmp_path, capsys, warmup_iterations=configured)
+    _, launch, _ = checkpoint_launch(_load(checkpoint), "tp2", checkpoint)
+    assert launch["collection"]["warmup_iterations"] == launched
+    assert request.collection.warmup_iterations == configured
+    command = fpm_cli_args(request, output_dir=tmp_path / "c", plan_only=True)
+    if flag is None:
+        assert "--fpm-warmup-iterations" not in command
+    else:
+        position = command.index("--fpm-warmup-iterations")
+        assert command[position : position + 2] == flag
+
+
+def test_request_without_warmup_iterations_keeps_its_identity(tmp_path):
+    from aisim.support.plan import request_id
+
+    checkpoint, _, _ = _campaign(tmp_path, model="example/model")
+    payload = _load(checkpoint).configurations["tp2"].draft_request
+    request = SupportRequest.model_validate(payload)
+    for dumped in (request.model_dump(mode="json"), request.model_dump(mode="json", exclude_none=True)):
+        assert "warmup_iterations" not in dumped["collection"]
+    # Computed before the field existed, so a saved request without it keeps the identity of its collection.
+    assert request_id(request) == "onboarding-5c6d7d093c812afbd24896bf52f326ae41372178b176eff2c0dd2d9d6ab8676a"
+    warmed = SupportRequest.model_validate({**payload, "collection": {**payload["collection"], "warmup_iterations": 0}})
+    assert request_id(warmed) != request_id(request)
 
 
 # The dense probe fixture measures two full-attention groups of 128 bytes per 16-token block: 16 bytes per token.
@@ -820,6 +920,112 @@ def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, ca
         save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
 
 
+# The groups that the GLM-5.3-Flash TP4 probe fixture imports, as the import of its live vLLM 0.33.0 record gives them:
+# four KDA groups with one prefill checkpoint block aligned to 16 tokens each, the 11 MLA and 11 indexer layers and the
+# 11 tail layers. Every page is one pool block of 13,516,800 bytes.
+_GLM_GROUPS = [
+    {
+        "name": f"runtime_group_{index}",
+        "kind": "attention" if index == 4 else "state",
+        "num_layers": layers,
+        "block_size_tokens": 4 if index == 5 else 2176,
+        "page_size_bytes": 13_516_800,
+        "sliding_window": None,
+        **({} if index == 4 else {"blocks_per_request": 1}),
+        **({"prefill_checkpoint_blocks": 1, "prefill_checkpoint_alignment": 16} if index < 4 else {}),
+    }
+    for index, layers in enumerate((9, 9, 8, 8, 22, 11))
+]
+
+
+def test_glm_state_groups_import_into_a_grouped_draft(tmp_path, capsys):
+    from aisim.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    _, _, request, _ = _imported(tmp_path, capsys, tp=4, layout="glm_tp4")
+    resources = request.profile_deployment().resources
+    assert resources.cache_layout == "grouped"
+    groups = resources.cache_groups
+    assert len(groups) == 6
+    assert [group.kind for group in groups].count("state") == 5
+    assert all(group.blocks_per_request == 1 for group in groups if group.kind == "state")
+    assert [group.model_dump(mode="json") for group in groups] == _GLM_GROUPS
+    runtime = resources.runtime_memory
+    assert (runtime.enable_prefix_caching, runtime.mamba_cache_mode, runtime.hash_block_size_tokens) == (
+        True,
+        "align",
+        2176,
+    )
+    assert verify_runtime_profile(request) is not None
+    assert runtime_probe_manifest(request)["observed_resources"]["runtime_memory"]["mamba_cache_mode"] == "align"
+
+
+@pytest.mark.parametrize("blocks", [1, 2])
+def test_state_group_claim_must_match_blocks_per_request(tmp_path, capsys, blocks):
+    # The exact claim imports, so blocks_per_request is the only difference that refuses the second one.
+    claim = copy.deepcopy(_GLM_GROUPS)
+    claim[0]["blocks_per_request"] = blocks
+    checkpoint, index, _ = _campaign(tmp_path, tp=4, layout="glm_tp4", resource_overrides={"cache_groups": claim})
+    status = _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"])
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    diagnostics = "\n".join(json.loads(Path(result["validation"]).read_text())["diagnostics"])
+    if blocks == 1:
+        assert (status, diagnostics) == (0, "")
+    else:
+        assert status == 1
+        assert "resource_overrides.cache_groups" in diagnostics
+        assert '"blocks_per_request":2' in diagnostics and "differs from the runtime probe's measured" in diagnostics
+
+
+# The cache group fields that only the runtime probe import writes.
+_PROBE_FIELDS = ("prefill_checkpoint_blocks", "prefill_checkpoint_alignment")
+
+
+@pytest.mark.parametrize(
+    ("stated", "accepted"),
+    [
+        # The documented claim gives the geometry only, without the fields that only the probe import writes.
+        ({}, True),
+        # Stated fields must match the probe, and here they do: each KDA group has one block aligned to 16 tokens.
+        (
+            {
+                "prefill_checkpoint_blocks": [1, 1, 1, 1, None, None],
+                "prefill_checkpoint_alignment": [16, 16, 16, 16, None, None],
+            },
+            True,
+        ),
+        # The alignment differs from the probe.
+        (
+            {
+                "prefill_checkpoint_blocks": [1, 1, 1, 1, None, None],
+                "prefill_checkpoint_alignment": [32, 32, 32, 32, None, None],
+            },
+            False,
+        ),
+        # A field stated for one group is compared on every group, and the other groups then differ.
+        ({"prefill_checkpoint_blocks": [1, None, None, None, None, None]}, False),
+    ],
+)
+def test_cache_group_claim_compares_probe_fields_only_when_stated(tmp_path, capsys, stated, accepted):
+    claim = [{key: value for key, value in group.items() if key not in _PROBE_FIELDS} for group in _GLM_GROUPS]
+    for field, values in stated.items():
+        for group, value in zip(claim, values, strict=True):
+            if value is not None:
+                group[field] = value
+    # The KDA specs prefill with FlashKDA: one checkpoint block aligned to 16 tokens.
+    checkpoint, index, _ = _campaign(
+        tmp_path, tp=4, layout="glm_tp4", checkpoint=(1, 16), resource_overrides={"cache_groups": claim}
+    )
+    status = _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"])
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    diagnostics = "\n".join(json.loads(Path(result["validation"]).read_text())["diagnostics"])
+    if accepted:
+        assert (status, diagnostics) == (0, "")
+    else:
+        assert status == 1
+        assert "resource_overrides.cache_groups" in diagnostics
+        assert "differs from the runtime probe's measured" in diagnostics
+
+
 @pytest.mark.parametrize("claim", [False, True])
 def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, claim):
     _, _, request, files = _imported(
@@ -835,6 +1041,22 @@ def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, 
     assert prerequisite["detail"] == (
         f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope."
     )
+
+
+def test_plan_admits_the_imported_glm_draft_at_its_observed_capacity(tmp_path, capsys):
+    # The live GLM probe record leaves 13,696 usable pool blocks of 13,516,800 bytes. A request at its 1,048,576-token
+    # context needs 482 attention blocks of 2,176 tokens and one block in each of the five state groups, the 4-token
+    # tail group too: 487 blocks.
+    _, _, _, files = _imported(tmp_path, capsys, tp=4, layout="glm_tp4")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    plan = json.loads((root / "support-plan.json").read_text())
+    assert plan["prerequisites"][0]["status"] == "runtime_memory_resolved"
+    assert plan["prerequisites"][0]["detail"] == (
+        "Observed cache capacity and grouped geometry are bound to this deployment and runtime envelope."
+    )
+    assert plan["resources"]["request_peak_cache_bytes"] == 487 * 13_516_800
+    assert plan["resources"]["total_kv_size_bytes"] == 13_696 * 13_516_800
 
 
 @pytest.mark.parametrize("claim", [False, True], ids=["grouped", "linear"])
@@ -1158,7 +1380,17 @@ def _formal_bindings(index, cells=None):
 
 
 def _completed_runtime_collection(
-    tmp_path, capsys, *, tp=2, worker_type=None, model=None, resource_overrides=None, block_tokens=(16, 16)
+    tmp_path,
+    capsys,
+    *,
+    tp=2,
+    worker_type=None,
+    model=None,
+    resource_overrides=None,
+    block_tokens=(16, 16),
+    layout="attention",
+    decode_prefix_caching=True,
+    warmup_iterations=None,
 ):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
@@ -1180,6 +1412,9 @@ def _completed_runtime_collection(
         model=model,
         resource_overrides=resource_overrides,
         block_tokens=block_tokens,
+        layout=layout,
+        decode_prefix_caching=decode_prefix_caching,
+        warmup_iterations=warmup_iterations,
     )
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
@@ -1224,7 +1459,7 @@ def _completed_runtime_collection(
             "cell_id": cell.cell_id,
             "plan_sha256": plan.sha256,
             "attempt_id": f"native-{cell.workload_kind}",
-            "runtime": {"backend": "vllm", "backend_version": "0.28.0"},
+            "runtime": {"backend": "vllm", "backend_version": request.identity.framework_version},
         }
         _write(raw / "collector-provenance.json", provenance)
         _write(raw / "benchmark.json", _native(cell.workload_kind))
@@ -1547,6 +1782,19 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
     assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
 
 
+def test_formal_collection_and_finalization_keep_the_request_warmup_iterations(tmp_path, capsys):
+    from aisim.support.finalization import finalize
+
+    # The plan takes its count from the collector command, and the plan builder compares it with the probe launch.
+    # Finalization compares the saved options with the options of the reviewed request, so the count reaches both.
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, warmup_iterations=0)
+    saved = json.loads(next((root / "fpm-artifacts").glob("*/collection-plan.json")).read_text())
+    assert saved["options"]["global_warmup_iterations"] == 0
+    target = tmp_path / "finalized"
+    finalize(request, root, target)
+    assert SupportRequest.from_yaml(target / "request.yaml").collection.warmup_iterations == 0
+
+
 @pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
 def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, capsys, worker_type):
     import pyarrow.parquet as pq
@@ -1579,6 +1827,266 @@ def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, ca
     assert set(pq.read_table(parquet).column("workload_kind").to_pylist()) == set(request.collection_phases)
     verify_runtime_profile(resolved)
     check_plan(resolved, target)
+
+
+def _run_decode_with_prefix_caching(index):
+    """Give the decode phase of an observation index the records of a run with prefix caching on.
+
+    With prefix caching on, vLLM 0.33.0 resolves the Mamba cache mode to align and the Mamba block to the attention
+    block (models/config.py:763-779, platforms/interface.py:1114-1115). The engine core then gives the scheduler the
+    LCM and the GCD of the group blocks as its block and hash block sizes (v1/core/kv_cache_utils.py:860-891). The
+    prefill records of the same run hold these values, so each decode record takes the cache and the cache settings of
+    the prefill record of its rank.
+    """
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    for reference in phase["artifacts"]:
+        if reference.get("kind") != "observation":
+            continue
+        path = index.parent / reference["path"]
+        assert path.parent.name == "decode"
+        record = json.loads(path.read_text())
+        prefill = json.loads((path.parent.parent / "prefill" / path.name).read_text())
+        assert (record["kind"], record["dp_rank"], record["tp_rank"]) == (
+            prefill["kind"],
+            prefill["dp_rank"],
+            prefill["tp_rank"],
+        )
+        record["cache"] = prefill["cache"]
+        record["resolved_config"]["cache_config"] = prefill["resolved_config"]["cache_config"]
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+def test_formal_collection_compares_prefix_caching_of_every_phase(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime
+
+    # Both records hold the prefill phase's settings, and both first worker records belong to prefill. Decode runs
+    # without prefix caching, so its Mamba groups hold max_model_len tokens per block.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=False
+    )
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(checkpoint["runtime_observations"])
+    compatibility = verify_collection_runtime(request, index, collection_checkpoint=checkpoint)["compatibility"]
+    assert compatibility["status"] == "compatible"
+    # The probe's decode phase runs without prefix caching and hashes 4096-token blocks. A formal decode phase that ran
+    # with prefix caching on is refused too, although its records agree with each other.
+    _run_decode_with_prefix_caching(index)
+    with pytest.raises(ValueError, match="decode: runtime prefix-caching settings differ from the accepted probe"):
+        verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
+
+
+def _formal_phase_bindings(tmp_path, capsys, *, decode_prefix_caching=False):
+    """A completed formal campaign of the mamba_hybrid probe, its observation index and a binding builder."""
+    from collector.fpm_forward.cli import _parser
+    from collector.fpm_forward.entry import _load_generator_overrides
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    # By default decode runs without prefix caching: its Mamba groups hold max_model_len tokens per block in none
+    # mode, while the accepted record holds the prefill phase's align mode and 64-token blocks.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=decode_prefix_caching
+    )
+    checkpoint_path = root / "fpm-checkpoint/fpm_forward.json"
+    checkpoint = json.loads(checkpoint_path.read_text())
+    campaign = root / "fpm-artifacts" / checkpoint["plan_sha256"][:16]
+    args = _parser().parse_args(json.loads((root / "commands.json").read_text())["fpm_plan_local"][3:])
+    _write(campaign / "generator-overrides.json", _load_generator_overrides(args))
+    plan = load_repeatability_source(campaign)
+    index = Path(checkpoint["runtime_observations"])
+
+    def bindings():
+        # One binding per phase of the formal campaign, as collection readiness selects them.
+        return [
+            {
+                "phase": cell.workload_kind,
+                "plan": {"path": str(campaign / "collection-plan.json"), "sha256": plan.sha256},
+                "checkpoint": {
+                    "path": str(checkpoint_path),
+                    "sha256": hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
+                },
+                "observations": {"path": str(index), "sha256": hashlib.sha256(index.read_bytes()).hexdigest()},
+                "attempt_id": checkpoint["runtime_observation_attempt_id"],
+                "collector_attempt_id": checkpoint["cells"][cell.cell_id]["attempt_id"],
+            }
+            for cell in plan.cells
+        ]
+
+    return request, index, bindings
+
+
+def _resolve_decode_prefix_match_unit(index, tokens):
+    """Give every decode process of an observation index a prefix-match unit of ``tokens``.
+
+    With prefix caching on, the vLLM 0.33.0 engine core then hashes in that many tokens
+    (v1/core/kv_cache_utils.py:890-898). No block size follows the unit, so only the resolved setting and both copies
+    of the scheduler's hash block size change.
+    """
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    for reference in phase["artifacts"]:
+        if reference.get("kind") != "observation":
+            continue
+        path = index.parent / reference["path"]
+        record = json.loads(path.read_text())
+        record["resolved_config"]["cache_config"]["prefix_match_unit"] = tokens
+        if record["kind"] == "scheduler":
+            record["cache"]["hash_block_size"] = record["cache"]["prefix_caching"]["hash_block_size"] = tokens
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+@pytest.mark.parametrize(
+    "decode_prefix_caching,change,error",
+    [
+        # Both runs hash 64-token blocks in decode with prefix caching on. The formal decode processes resolve a
+        # 32-token prefix-match unit, which changes their hash block size and no cache group, so only the
+        # prefix-caching settings of the phase differ from the accepted probe.
+        (True, "prefix_match_unit", "decode: runtime prefix-caching settings differ from the accepted probe"),
+        # The probe's decode phase runs without prefix caching. A formal decode phase that ran with prefix caching on
+        # holds align-mode Mamba groups of 64-token blocks. vLLM changes these groups together with the prefix-caching
+        # mode, and the binding compares the raw groups of the phase first, so the cache geometry check refuses it.
+        (False, "prefix_caching_mode", "decode: runtime cache group geometry differs from the accepted probe"),
+    ],
+    ids=["prefix_match_unit", "prefix_caching_mode"],
+)
+def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys, decode_prefix_caching, change, error):
+    from aisim.support.runtime import verify_collection_runtime_bindings
+
+    request, index, bindings = _formal_phase_bindings(tmp_path, capsys, decode_prefix_caching=decode_prefix_caching)
+    result = verify_collection_runtime_bindings(request, bindings())
+    assert result["status"] == "complete"
+    assert result["phases"]["decode"]["provenance"]["prefix_caching"]["decode"] == (
+        {"enable_prefix_caching": True, "mamba_cache_mode": "align", "hash_block_size_tokens": 64}
+        if decode_prefix_caching
+        else {"enable_prefix_caching": False, "mamba_cache_mode": "none", "hash_block_size_tokens": 4096}
+    )
+    if change == "prefix_match_unit":
+        _resolve_decode_prefix_match_unit(index, 32)
+    else:
+        _run_decode_with_prefix_caching(index)
+    with pytest.raises(ValueError, match=error):
+        verify_collection_runtime_bindings(request, bindings())
+
+
+def test_reversed_phase_bindings_merge_into_the_record_of_the_first_collection_phase(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime_bindings
+
+    request, _, bindings = _formal_phase_bindings(tmp_path, capsys)
+    # The record holds the role's first collection phase, prefill, in whatever order the caller binds.
+    resources = verify_collection_runtime_bindings(request, bindings()[::-1])["resources"]
+    runtime = resources["runtime_memory"]
+    assert (runtime["enable_prefix_caching"], runtime["mamba_cache_mode"], runtime["hash_block_size_tokens"]) == (
+        True,
+        "align",
+        64,
+    )
+    assert [group["block_size_tokens"] for group in resources["cache_groups"]] == [64, 64, 64]
+    assert resources == verify_collection_runtime_bindings(request, bindings())["resources"]
+
+
+def _record_decode_state_block_size(index, tokens):
+    """Give every Mamba group in the decode records of an observation index a block of ``tokens`` tokens.
+
+    The decode phase must run with prefix caching on. Every record of the phase changes together: the resolved
+    mamba_block_size, the block of each Mamba group that vLLM 0.33.0 builds from it (mamba/abstract.py:72-80), the
+    kernel block of its views and of the runner (v1/worker/utils.py:614-625, :677-679), and the scheduler's block and
+    hash block sizes (v1/core/kv_cache_utils.py:860-891).
+    Each Mamba view keeps one kernel block per pool block, so the phase still validates on its own.
+    """
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    for reference in phase["artifacts"]:
+        path = index.parent / reference["path"]
+        record = json.loads(path.read_text())
+        cache = record["cache"]
+        groups = cache["groups"]
+        mamba = [position for position, group in enumerate(groups) if group["spec_type"].endswith(".MambaSpec")]
+        assert mamba
+        for position in mamba:
+            groups[position]["block_size_tokens"] = tokens
+            if record["kind"] == "worker":
+                cache["model_runner"]["kernel_block_sizes"][position] = tokens
+                for name in groups[position]["layer_names"]:
+                    for view in cache["layer_tensors"][name]:
+                        view["kernel_block_size_tokens"] = tokens
+        record["resolved_config"]["cache_config"]["mamba_block_size"] = tokens
+        if record["kind"] == "scheduler":
+            # The fixture sets no prefix-match unit, and every one of its groups takes part in prefix caching. With
+            # prefix caching on in align mode, the scheduler block is the LCM of the group blocks and the hash block
+            # is their GCD.
+            evidence = cache["prefix_caching"]
+            assert evidence["enable_prefix_caching"] and evidence["mamba_cache_mode"] == "align"
+            assert record["resolved_config"]["cache_config"]["prefix_match_unit"] is None
+            blocks = [group["block_size_tokens"] for group in groups]
+            cache["block_size"] = evidence["block_size"] = math.lcm(*blocks)
+            cache["hash_block_size"] = evidence["hash_block_size"] = math.gcd(*blocks)
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+def test_formal_phase_binding_compares_the_raw_block_size_of_a_state_group(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime_bindings
+
+    # Decode runs with prefix caching on, so the accepted probe's decode Mamba groups hold the 64-token block of align
+    # mode. The formal decode Mamba groups hold 2048-token blocks, which breaks only vLLM's align rule that the Mamba
+    # block size equals the block size (vLLM 0.33.0 platforms/interface.py:1114-1115). The import does not check that
+    # rule.
+    request, index, bindings = _formal_phase_bindings(tmp_path, capsys, decode_prefix_caching=True)
+    # The whole-record comparison leaves out the block sizes of state groups, so the raw groups of the bound phase
+    # are the only check of the decode Mamba block.
+    _record_decode_state_block_size(index, 2048)
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+        verify_collection_runtime_bindings(request, bindings())
+
+
+def test_formal_collection_compares_the_cache_geometry_of_every_phase(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime
+
+    # Decode runs with prefix caching on, so the accepted probe's decode Mamba groups hold 64-token blocks. The first
+    # worker records and the resource records belong to prefill, so only a per-phase comparison sees the decode block.
+    # The formal decode Mamba groups hold 2048-token blocks: the scheduler still hashes in their GCD with the
+    # attention block, 64 tokens, so the prefix-caching settings of the phase stay equal. The records break only
+    # vLLM's align rule that the Mamba block size equals the block size (vLLM 0.33.0 platforms/interface.py:1114-1115),
+    # which the import does not check.
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, layout="mamba_hybrid")
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(checkpoint["runtime_observations"])
+    _record_decode_state_block_size(index, 2048)
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+        verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
+
+
+@pytest.mark.parametrize("decode_block", [None, 2048])
+def test_finalization_compares_the_cache_geometry_of_every_formal_phase(tmp_path, capsys, decode_block):
+    from aisim.support.finalization import finalization_manifest, finalize
+    from aisim.support.runtime import verify_runtime_profile
+
+    # Without an edit, decode runs without prefix caching, so its Mamba blocks differ from those of prefill in the
+    # probe and in the formal run alike, and finalization accepts the role. The edited case runs decode with prefix
+    # caching on, where 2048-token Mamba blocks keep the scheduler's 64-token hash block and break only vLLM's align
+    # rule (vLLM 0.33.0 platforms/interface.py:1114-1115), which the import does not check.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=decode_block is not None
+    )
+    target = tmp_path / "finalized"
+    if decode_block is None:
+        finalize(request, root, target)
+        resolved = SupportRequest.from_yaml(target / "request.yaml")
+        assert finalization_manifest(resolved)["runtime_compatibility"]["status"] == "compatible"
+        # Re-verification of the finalized profile runs the formal comparison again.
+        verify_runtime_profile(resolved)
+        return
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    _record_decode_state_block_size(Path(checkpoint["runtime_observations"]), decode_block)
+    # Finalization verifies the formal observations against the accepted probe before it writes anything.
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+        finalize(request, root, target)
+    assert not target.exists()
 
 
 def _reviewed_capacity_revision(tmp_path, capsys, resource_overrides=None):

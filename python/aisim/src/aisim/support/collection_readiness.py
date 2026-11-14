@@ -179,6 +179,8 @@ def _cell_report(plan, cell, campaign: Path, entry: Any) -> dict[str, Any]:
 
 
 def _matches_request(request: SupportRequest, plan) -> bool:
+    from collector.fpm_forward.config import FPM_WARMUP_ITERATIONS
+
     if (
         plan.model_path != request.identity.model
         or plan.system != request.identity.gpu
@@ -193,6 +195,7 @@ def _matches_request(request: SupportRequest, plan) -> bool:
         return False
     scheduler = request.scheduler_limits()
     parallel = request.parallelism()
+    warmup = request.collection.warmup_iterations
     return (
         plan.options.vllm_max_model_len == request.search.context_length
         and plan.options.max_num_batched_tokens == scheduler["max_batched_tokens"]
@@ -209,6 +212,7 @@ def _matches_request(request: SupportRequest, plan) -> bool:
         )
         and plan.options.max_cudagraph_capture_size == request.collection.max_cudagraph_capture_size
         and (plan.options.gpu_memory_utilization or 0.9) == request.collection.memory_fraction
+        and plan.options.warmup_iterations == (FPM_WARMUP_ITERATIONS if warmup is None else warmup)
         and all(
             cell.topology.tp == parallel["tensor"]
             and cell.topology.dp == parallel["attention_data"]

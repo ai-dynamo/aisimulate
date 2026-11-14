@@ -142,12 +142,13 @@ aisim --help
 To repair an existing source-checkout environment after installing a legacy distribution, run these commands from that same checkout:
 
 ```bash
-uv pip uninstall --python python/aisim/.venv/bin/python aisimulate && \
+project_python="$(uv run --project python/aisim --no-sync python -c 'import sys; print(sys.executable)')" && \
+uv pip uninstall --python "$project_python" aisimulate && \
 uv sync --project python/aisim --extra dev --frozen --inexact --reinstall-package aisim && \
-uv pip check --python python/aisim/.venv/bin/python
+uv pip check --python "$project_python"
 ```
 
-The explicit interpreter selects the checkout's project environment. The sync command reinstalls this checkout and its CLI entry points using the existing lockfile, including shared files removed by the uninstall. `--inexact` retains unselected packages, including dependencies of other installed extras such as `service` or `learned`; the final check validates the resulting environment.
+The first command locates the checkout's existing project interpreter without syncing or importing AISim. It honors `UV_PROJECT_ENVIRONMENT`, including paths relative to `python/aisim`; otherwise, uv uses `python/aisim/.venv`. Keep that setting unchanged for the whole block so uninstall, sync, and check select the same environment. The sync command reinstalls this checkout and its CLI entry points using the existing lockfile, including shared files removed by the uninstall. `--inexact` retains unselected packages, including dependencies of other installed extras such as `service` or `learned`; the final check validates the resulting environment.
 
 Install `uv`, a Rust toolchain with Cargo, and a C/C++ compiler plus platform
 linker before syncing: Maturin compiles the native extension. On macOS, install

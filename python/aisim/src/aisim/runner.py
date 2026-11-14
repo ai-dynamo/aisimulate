@@ -134,7 +134,13 @@ class EngineReplayRuntime(Protocol):
     """Serialized execution seam used by the engine-only Runner."""
 
     def run_replay_json(self, execution_spec_json: str) -> str:
-        """Run one serialized execution spec and return serialized report JSON."""
+        """Run one serialized execution spec and return serialized report JSON.
+
+        A payload with a replay-valued ``spec`` key or any configured key (such
+        as ``capture_telemetry``) is a configured payload, and its field errors
+        are reported. Any other payload runs as a bare ``ReplaySpec``. See
+        ``docs/replay/api/python.md`` (Lifecycle and errors).
+        """
 
 
 @dataclass(frozen=True)

@@ -64,6 +64,16 @@ pub struct FpmCacheGroup {
     /// for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocks_per_request: Option<u32>,
+    /// The `num_prefill_checkpoint_blocks` of a Mamba spec: 0 or 1, and only
+    /// in a `state` group. In vLLM 0.33.0, a KDA layer that prefills with
+    /// FlashKDA has one checkpoint block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_checkpoint_blocks: Option<u32>,
+    /// The `prefill_checkpoint_alignment` of a Mamba spec, in tokens: 16 for
+    /// FlashKDA in vLLM 0.33.0. Positive, and only with
+    /// `prefill_checkpoint_blocks` of 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_checkpoint_alignment: Option<u32>,
 }
 
 impl FpmCacheGroup {
@@ -94,6 +104,22 @@ impl FpmCacheGroup {
         } else if self.blocks_per_request.is_some() {
             return Err(invalid(
                 "blocks_per_request applies only to state cache groups",
+            ));
+        }
+        if self
+            .prefill_checkpoint_blocks
+            .is_some_and(|blocks| self.kind != FpmCacheKind::State || blocks > 1)
+        {
+            return Err(invalid(
+                "prefill_checkpoint_blocks requires a state group and must be 0 or 1",
+            ));
+        }
+        if self
+            .prefill_checkpoint_alignment
+            .is_some_and(|alignment| self.prefill_checkpoint_blocks != Some(1) || alignment == 0)
+        {
+            return Err(invalid(
+                "prefill_checkpoint_alignment requires prefill_checkpoint_blocks=1 and must be positive",
             ));
         }
         Ok(())
@@ -750,6 +776,8 @@ mod tests {
             page_size_bytes: 160,
             sliding_window: window,
             blocks_per_request: None,
+            prefill_checkpoint_blocks: None,
+            prefill_checkpoint_alignment: None,
         }
     }
 
@@ -1376,6 +1404,38 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_fields_need_a_state_group_and_each_other() {
+        let blocks_text = "prefill_checkpoint_blocks requires a state group and must be 0 or 1";
+        let alignment_text = "prefill_checkpoint_alignment requires prefill_checkpoint_blocks=1 and must be positive";
+        let checkpoint = |blocks, alignment| FpmCacheGroup {
+            prefill_checkpoint_blocks: blocks,
+            prefill_checkpoint_alignment: alignment,
+            ..state_group(Some(1))
+        };
+        for (blocks, alignment) in [(Some(0), None), (Some(1), None), (Some(1), Some(16))] {
+            checkpoint(blocks, alignment).validate().unwrap();
+        }
+        let attention = FpmCacheGroup {
+            prefill_checkpoint_blocks: Some(0),
+            ..group(None)
+        };
+        assert_eq!(rejection(&attention), blocks_text);
+        assert_eq!(rejection(&checkpoint(Some(2), None)), blocks_text);
+        for (blocks, alignment) in [(None, Some(16)), (Some(0), Some(16)), (Some(1), Some(0))] {
+            assert_eq!(rejection(&checkpoint(blocks, alignment)), alignment_text);
+        }
+        // The kind checks run first, so an invalid group keeps its first error.
+        let unusable = FpmCacheGroup {
+            prefill_checkpoint_blocks: Some(2),
+            ..state_group(None)
+        };
+        assert_eq!(
+            rejection(&unusable),
+            "state cache groups require a positive blocks_per_request"
+        );
+    }
+
+    #[test]
     fn state_group_holds_a_fixed_range_for_any_length() {
         let state = state_group(Some(2));
         // No tokens, no state; any positive target holds the same two blocks.
@@ -1415,6 +1475,8 @@ mod tests {
             page_size_bytes: 13_045_120,
             sliding_window: None,
             blocks_per_request,
+            prefill_checkpoint_blocks: None,
+            prefill_checkpoint_alignment: None,
         };
         let attention = pool_group("mla_indexer", FpmCacheKind::Attention, 22, None);
         let states = [
@@ -1458,7 +1520,28 @@ mod tests {
         let saved = serde_json::to_value(&state).unwrap();
         assert_eq!(saved["kind"], "state");
         assert_eq!(saved["blocks_per_request"], 1);
-        for original in [attention, state] {
+        // A group saved without the checkpoint fields loads with both absent and saves unchanged.
+        let earlier = r#"{"name":"state","kind":"state","num_layers":2,"block_size_tokens":16,"page_size_bytes":160,"sliding_window":null,"blocks_per_request":1}"#;
+        let loaded = serde_json::from_str::<FpmCacheGroup>(earlier).unwrap();
+        assert_eq!(loaded, state);
+        assert_eq!(
+            (
+                loaded.prefill_checkpoint_blocks,
+                loaded.prefill_checkpoint_alignment
+            ),
+            (None, None)
+        );
+        assert_eq!(serde_json::to_string(&loaded).unwrap(), earlier);
+        // Set fields follow the block count in declaration order.
+        let marked = FpmCacheGroup {
+            prefill_checkpoint_blocks: Some(1),
+            prefill_checkpoint_alignment: Some(16),
+            ..state_group(Some(1))
+        };
+        assert!(serde_json::to_string(&marked).unwrap().ends_with(
+            r#""blocks_per_request":1,"prefill_checkpoint_blocks":1,"prefill_checkpoint_alignment":16}"#
+        ));
+        for original in [attention, state, marked] {
             let saved = serde_json::to_string(&original).unwrap();
             assert_eq!(
                 serde_json::from_str::<FpmCacheGroup>(&saved).unwrap(),

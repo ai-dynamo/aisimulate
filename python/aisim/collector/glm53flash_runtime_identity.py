@@ -12,8 +12,8 @@ import hashlib
 import json
 from pathlib import Path
 
-# Stock vLLM v0.31.0 (tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6), no local patch.
-BASELINE_VERSIONS = {"vllm": "0.31.0", "sglang": "0.5.20"}
+# Stock vLLM v0.33.0 (tag commit 4ba787ec9959e566d3b587a796dff07673324da5), no local patch.
+BASELINE_VERSIONS = {"vllm": "0.33.0", "sglang": "0.5.20"}
 
 
 def validate_backend_version(backend: str, version: str) -> str:

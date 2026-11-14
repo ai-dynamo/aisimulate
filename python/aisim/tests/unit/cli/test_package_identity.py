@@ -135,7 +135,7 @@ def test_every_command_and_option_is_available_under_both_names(monkeypatch):
             }
         )
     assert signatures[0] == signatures[1]
-    assert {(), ("predict",), ("recommend",), ("onboard",)} <= signatures[0].keys()
+    assert {(), ("predict",), ("recommend",), ("onboard",), ("perf-model",)} <= signatures[0].keys()
 
 
 @pytest.mark.parametrize("path", COMMAND_PATHS, ids=lambda p: " ".join(p) or "root")
@@ -182,7 +182,9 @@ def test_real_launchers_report_the_distribution_version(command, mode, tmp_path)
 
 
 @pytest.mark.parametrize(
-    "path", [(), ("predict",), ("recommend",), ("onboard",)], ids=["root", "predict", "recommend", "onboard"]
+    "path",
+    [(), ("predict",), ("recommend",), ("onboard",), ("perf-model",)],
+    ids=["root", "predict", "recommend", "onboard", "perf-model"],
 )
 @pytest.mark.parametrize("command", ["aisim", "aisimulate"])
 @pytest.mark.parametrize("mode", ["console", "module"])

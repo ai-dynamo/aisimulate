@@ -49,7 +49,7 @@ use crate::engine::config::ConnectorRules;
 use crate::engine::host_offload::{
     CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
     HostOffloadObservationData, HostStoreBlockMapping, HostTierHandle, LoadOutcome, Lookup,
-    StoreOutcome, TransferId,
+    ReversedTouch, StoreOutcome, TransferId,
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
@@ -116,6 +116,18 @@ impl RestoreRounds {
     }
 }
 
+/// A lookup's walk over G2: the `matched` leading blocks of `range` that G2
+/// holds, and whether any of them waits for a store or load in flight. The
+/// default is a walk of no blocks.
+#[derive(Debug, Default, PartialEq)]
+struct HitWalk {
+    /// [`HostTier::lookup_epoch`] and the adapter's `load_keys_epoch`.
+    epochs: (u64, u64),
+    range: (usize, usize),
+    matched: usize,
+    deferred: bool,
+}
+
 /// Request-local connector cursor and transient load ownership.
 pub(super) struct VllmHostRequestState {
     owner: Uuid,
@@ -131,6 +143,8 @@ pub(super) struct VllmHostRequestState {
     kv_hint: Option<KvHintSource>,
     /// G3 or KVCR restore rounds; the two are exclusive in v1.
     restore_rounds: RestoreRounds,
+    /// What the latest G3 staging found in G2.
+    g3_held: super::g3_offload::HeldPrefix,
     next_store_block: usize,
     latest_store: Option<TransferId>,
     load: Option<LoadState>,
@@ -143,6 +157,12 @@ pub(super) struct VllmHostRequestState {
     /// With `reranks_at_finish`: blocks stored, offered or loaded, re-ranked
     /// when the request finishes.
     accessed_blocks: BTreeSet<usize>,
+    /// With `touches_prompt`: the latest prompt touch.
+    prompt_touch: Option<ReversedTouch>,
+    /// The latest lookup's walk. A blocked queue head looks up again on
+    /// every pass and reuses it while G2 and the keys being loaded are
+    /// unchanged.
+    hit_walk: HitWalk,
 }
 
 impl VllmHostRequestState {
@@ -186,6 +206,7 @@ impl VllmHostRequestState {
             block_meta,
             kv_hint,
             restore_rounds: RestoreRounds::default(),
+            g3_held: Default::default(),
             next_store_block: 0,
             latest_store: None,
             load: None,
@@ -193,6 +214,8 @@ impl VllmHostRequestState {
             confirmed_tokens: 0,
             lookup_pin: None,
             accessed_blocks: BTreeSet::new(),
+            prompt_touch: None,
+            hit_walk: HitWalk::default(),
         }
     }
 
@@ -311,6 +334,8 @@ pub(super) struct VllmHostOffloadAdapter {
     /// Keys being loaded, which defer a peer's lookup. Tracked only when the
     /// connector `waits_for_loads`.
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
+    /// Bumped whenever `load_by_key` changes.
+    load_keys_epoch: u64,
     compute_not_before_ms: f64,
     /// Present only for detailed artifact capture. Ordinary runs neither retain
     /// request-local mapping state nor allocate mapping payloads.
@@ -392,6 +417,7 @@ impl VllmHostOffloadAdapter {
             kvcr: None,
             load_epoch: 0,
             load_by_key: FxHashMap::default(),
+            load_keys_epoch: 0,
             compute_not_before_ms: 0.0,
             observer: None,
         })
@@ -441,6 +467,7 @@ impl VllmHostOffloadAdapter {
             g3,
             kvcr,
             load_by_key,
+            load_keys_epoch,
             ..
         } = self;
         let mut tier = host.lock();
@@ -480,6 +507,7 @@ impl VllmHostOffloadAdapter {
                 host.id(),
                 request.owner,
                 &mut request.restore_rounds,
+                &mut request.g3_held,
                 &request.block_keys[base_g1_blocks..request.prompt_blocks],
                 request
                     .block_meta
@@ -508,16 +536,33 @@ impl VllmHostOffloadAdapter {
         {
             HostLookup::Deferred
         } else {
-            let mut matched = 0usize;
-            let mut deferred = false;
-            for key in request.block_keys[base_g1_blocks..end].iter().copied() {
-                match tier.lookup(key) {
-                    Lookup::Hit => deferred |= load_by_key.contains_key(&key),
-                    Lookup::Pending { .. } if rules.waits_for_stores => deferred = true,
-                    Lookup::Pending { .. } | Lookup::Miss => break,
+            let epochs = (tier.lookup_epoch(), *load_keys_epoch);
+            let range = (base_g1_blocks, end);
+            let walk = || {
+                let mut matched = 0usize;
+                let mut deferred = false;
+                for key in request.block_keys[base_g1_blocks..end].iter().copied() {
+                    match tier.lookup(key) {
+                        Lookup::Hit => deferred |= load_by_key.contains_key(&key),
+                        Lookup::Pending { .. } if rules.waits_for_stores => deferred = true,
+                        Lookup::Pending { .. } | Lookup::Miss => break,
+                    }
+                    matched += 1;
                 }
-                matched += 1;
+                HitWalk {
+                    epochs,
+                    range,
+                    matched,
+                    deferred,
+                }
+            };
+            if (request.hit_walk.epochs, request.hit_walk.range) != (epochs, range) {
+                request.hit_walk = walk();
             }
+            debug_assert_eq!(request.hit_walk, walk());
+            let HitWalk {
+                matched, deferred, ..
+            } = request.hit_walk;
             let keys = &request.block_keys[base_g1_blocks..base_g1_blocks + matched];
             if matched == 0 {
                 HostLookup::Miss
@@ -536,13 +581,10 @@ impl VllmHostOffloadAdapter {
         if rules.touches_prompt {
             // vLLM 0.24 passes this ordered logical list after lookup to
             // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
-            for key in request.block_keys[..request.prompt_blocks]
-                .iter()
-                .rev()
-                .copied()
-            {
-                tier.touch(key);
-            }
+            tier.touch_reversed(
+                &request.block_keys[..request.prompt_blocks],
+                &mut request.prompt_touch,
+            );
         }
         if rules.pins_hits
             && let HostLookup::Hit(hit) = &outcome
@@ -620,6 +662,7 @@ impl VllmHostOffloadAdapter {
             for key in &hit.keys {
                 assert!(self.load_by_key.insert(*key, transfer_id).is_none());
             }
+            self.load_keys_epoch += 1;
         }
         if self.rules.reranks_at_finish {
             request
@@ -695,6 +738,7 @@ impl VllmHostOffloadAdapter {
                 for key in &blocks {
                     assert_eq!(self.load_by_key.remove(key), Some(transfer_id));
                 }
+                self.load_keys_epoch += 1;
             }
             loads.push(CompletedLoad { uuid, transfer_id });
         }
@@ -953,13 +997,13 @@ impl VllmHostOffloadAdapter {
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = resume;
                 if rules.touches_prompt {
-                    for key in request.block_keys[..request.prompt_blocks]
-                        .iter()
-                        .rev()
-                        .copied()
-                    {
-                        tier.touch(key);
+                    if let Some(touch) = &mut request.prompt_touch {
+                        touch.stored(stored_blocks, end);
                     }
+                    tier.touch_reversed(
+                        &request.block_keys[..request.prompt_blocks],
+                        &mut request.prompt_touch,
+                    );
                 }
             }
         }
@@ -1074,6 +1118,7 @@ impl VllmHostOffloadAdapter {
             for key in &load.keys {
                 assert_eq!(self.load_by_key.remove(key), Some(load.transfer_id));
             }
+            self.load_keys_epoch += 1;
         }
         assert!(self.host.lock().cancel_load(
             self.host.id(),
@@ -1338,6 +1383,71 @@ mod tests {
         core.execute_pass(&mut collector, now_ms);
 
         assert_eq!(evictions.take(), vec![a]);
+    }
+
+    #[test]
+    fn lookup_touches_the_prompt_again_after_other_stores() {
+        let mut adapter = adapter(8);
+        let manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let (sequence, lease, mut host) = request(Uuid::from_u128(1), (1..=16).collect());
+        let cost = raw_cost(&manager, &sequence, &lease);
+        let [a0, a1, a2, a3] = host.block_keys[..] else {
+            panic!("the prompt has four blocks")
+        };
+        let other = HostBlockKey::new(77);
+
+        let now = seed_host(&mut adapter, a0).max(seed_host(&mut adapter, a1));
+        adapter.lookup(&mut host, &sequence, &cost, 4, now);
+        assert_eq!(adapter.host.lock().lru_order(), [a1, a0]);
+
+        // Other requests store the tail the tier lacked, then their own block.
+        for key in [a2, a3, other] {
+            seed_host(&mut adapter, key);
+        }
+        adapter.lookup(&mut host, &sequence, &cost, 4, now);
+        assert_eq!(adapter.host.lock().lru_order(), [other, a3, a2, a1, a0]);
+    }
+
+    #[test]
+    fn a_waiting_request_s_repeated_lookup_follows_g2_and_peer_loads() {
+        // A blocked queue head looks up on every pass. Each lookup must see
+        // the blocks G2 gained and the loads peers started or finished since
+        // the one before.
+        let mut adapter = adapter(2);
+        let mut manager = G1Manager::new_with_caching(8, 4, KvEventPublishers::default(), 0, true);
+        let prompt = (1..=9).collect::<Vec<u32>>();
+        let (sequence, lease, mut waiting) = request(Uuid::from_u128(1), prompt.clone());
+        let (peer_sequence, peer_lease, mut peer) = request(Uuid::from_u128(2), prompt);
+        let [first, second] = [0, 1].map(|index| waiting.block_keys[index]);
+        let mut hit_blocks = |adapter: &mut VllmHostOffloadAdapter, manager: &G1Manager, now| {
+            let cost = raw_cost(manager, &sequence, &lease);
+            match adapter.lookup(&mut waiting, &sequence, &cost, 4, now) {
+                HostLookup::Miss => Some(0),
+                HostLookup::Hit(hit) => Some(hit.keys.len()),
+                HostLookup::Deferred => None,
+            }
+        };
+
+        let now = seed_host(&mut adapter, first);
+        for _ in 0..2 {
+            assert_eq!(hit_blocks(&mut adapter, &manager, now), Some(1));
+        }
+        let now = seed_host(&mut adapter, second);
+        assert_eq!(hit_blocks(&mut adapter, &manager, now), Some(2));
+
+        // A peer's load changes no G2 entry, yet defers the hit until it ends.
+        let cost = raw_cost(&manager, &peer_sequence, &peer_lease);
+        let HostLookup::Hit(hit) = adapter.lookup(&mut peer, &peer_sequence, &cost, 4, now) else {
+            panic!("both seeded blocks must hit")
+        };
+        assert!(matches!(
+            adapter.start_load(peer.owner, &mut peer, &peer_lease, hit, &mut manager, now),
+            StartLoad::Queued
+        ));
+        assert_eq!(hit_blocks(&mut adapter, &manager, now), None);
+        let now = adapter.next_deadline().expect("the load is in flight");
+        assert_eq!(adapter.advance(&mut manager, now).completed_loads.len(), 1);
+        assert_eq!(hit_blocks(&mut adapter, &manager, now), Some(2));
     }
 
     #[test]
@@ -1683,6 +1793,45 @@ mod tests {
             "generated/lookahead tokens are never stored"
         );
         assert!(!adapter.has_work());
+    }
+
+    #[test]
+    fn chunk_stores_keep_the_prompt_in_touch_order() {
+        let mut adapter = adapter(12);
+        let owner = Uuid::from_u128(34);
+        let (mut sequence, mut lease, mut host) = request(owner, (0..48).collect());
+        let mut manager = G1Manager::new_with_caching(16, 4, KvEventPublishers::default(), 0, true);
+        for chunk in 0..3 {
+            // A four-block store takes 4 ms, so each lands before the next.
+            let now_ms = 4.0 * chunk as f64;
+            adapter.advance(&mut manager, now_ms);
+            let computed = 16 * (chunk + 1);
+            assert!(matches!(
+                manager.allocate_native(owner, &mut lease, computed, 0),
+                NativeAllocation::Ready { .. }
+            ));
+            manager.finalize_native_computed_prefix(
+                owner,
+                computed - 16,
+                computed,
+                &mut sequence,
+                &mut lease,
+            );
+            adapter.observe_completed_blocks(
+                owner,
+                &mut host,
+                &lease,
+                computed,
+                48,
+                4,
+                &mut manager,
+                now_ms,
+            );
+            adapter.complete_engine_boundary(&mut manager, now_ms);
+            // The landed chunks, the prompt's first block newest.
+            let landed: Vec<_> = host.block_keys[..4 * chunk].iter().rev().copied().collect();
+            assert_eq!(adapter.host.lock().lru_order(), landed);
+        }
     }
 
     #[test]

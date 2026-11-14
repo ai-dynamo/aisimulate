@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -19,6 +20,7 @@ from aisim.fpm_contract import (
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
 )
 from aisim_core.sdk.fpm_identity import EXECUTION_COLUMNS
+from collector.glm53flash_runtime_identity import BASELINE_VERSIONS
 
 from .planner import FPMCell
 from .types import KVWARM_STRATEGIES
@@ -40,6 +42,8 @@ class NativePointMeasurement:
 # Distinguishes "no artifact seen yet" from a legitimately absent (legacy)
 # kvwarm block during cross-rank consistency checking.
 _KVWARM_UNSEEN = object()
+# The value of a rank whose serving configuration holds no checkpoint evidence, so that it differs from any record.
+_NO_CHECKPOINT_EVIDENCE = object()
 
 
 def _validate_seed_regime(row: dict[str, Any], path: Path) -> str | None:
@@ -120,6 +124,10 @@ class NativeCollection:
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | None = None
+    # The execution mode of the producer contract that the frozen cell selected: "eager" for DeepSeek V4.1,
+    # "native_graph_policy" for GLM-5.3-Flash, None for a cell without an execution identity. Readers of the
+    # measurement records apply the contract's rules by this value, never by the artifact's own fields.
+    execution_mode: str | None = None
 
 
 def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> NativePointMeasurement | None:
@@ -211,14 +219,35 @@ def select_native_measurements(collection: NativeCollection, *, cell_id: str) ->
 
 
 def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
-    """Config-bound curves require engine evidence for execution and real input."""
+    """Config-bound curves require engine evidence for execution and real input.
+
+    The frozen cell selects the producer contract, never the artifact. The planner computes the cell's execution
+    identity from the model configuration, and the cell ID and the plan hash cover it. A DeepSeek V4.1 cell accepts
+    only the ``eager`` mode of its producer and a GLM-5.3-Flash cell only ``native_graph_policy``. A mode that no
+    contract audits is refused, never read as one of them.
+    """
     if not cell.execution_identity[0]:
         return None
+    # The execution mode of each contract, by the Engram residency of the cell's execution identity.
+    # aisim_core.sdk.fpm_identity.execution_identity gives DeepSeek V4.1 "hbm_tp_sharded" and GLM-5.3-Flash
+    # "none", and every other model the legacy identity, which has no configuration hash and returned above.
+    contract_modes = {"hbm_tp_sharded": "eager", "none": "native_graph_policy"}
+    mode = payload.get("execution_mode")
+    if mode not in contract_modes.values():
+        raise ValueError(f"native execution identity cell has an unaudited execution mode: {mode!r}: {path}")
+    residency = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))["engram_residency"]
+    expected_mode = contract_modes.get(residency)
+    if expected_mode is None:
+        raise ValueError(f"native execution identity cell has no audited producer contract: {residency!r}: {path}")
+    if mode != expected_mode:
+        raise ValueError(
+            f"native execution identity cell expects execution mode {expected_mode!r}, found {mode!r}: {path}"
+        )
+    if mode == "native_graph_policy":
+        return _validate_glm_provenance(cell, payload, path)
     expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
     if payload.get("execution_identity") != expected:
         raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
-    if payload.get("execution_mode") != "eager":
-        raise ValueError(f"V4.1 native data requires verified eager execution: {path}")
     evidence = payload.get("input_provenance")
     if not isinstance(evidence, dict) or evidence.get("source") != "tokenizer_text":
         raise ValueError(f"V4.1 native result requires tokenizer-generated text provenance: {path}")
@@ -235,6 +264,175 @@ def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path:
         raise ValueError(f"V4.1 native input corpus must contain multiple tokenizer-generated tokens: {path}")
     if counts[1] > counts[0]:
         raise ValueError(f"V4.1 native input corpus token counts are inconsistent: {path}")
+    return evidence
+
+
+def _same(value: object, expected: object) -> bool:
+    """Equality that does not let 1, 1.0 and True stand in for one another."""
+    return type(value) is type(expected) and value == expected
+
+
+def _is_hex(value: object, digits: int) -> bool:
+    return isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{digits}}}", value) is not None
+
+
+_GLM_RUNTIME = Path(__file__).parent / "runtime" / "glm53flash"
+
+
+@functools.cache
+def _glm_producer_record() -> dict[str, Any]:
+    """The ``producer`` record that the supported GLM-5.3-Flash vLLM producer writes.
+
+    The producer (``_glm_enrich`` of runtime/glm53flash/glm53flash_prefix_scheduler.py) imports Dynamo and vLLM, so the
+    reader cannot import its constants. The reader keeps them here, and a test keeps them equal to the record that the
+    producer writes. The vLLM version is the exact supported runtime. The two digests are those of the pin manifest and
+    of the producer file that this collector ships and that a launch of this collector mounts; the producer computes
+    both the same way. A campaign of another producer revision is therefore refused.
+    """
+    return {
+        "instrumentation_revision": "54960177085413259859c88bd34ed0734d4c2ea9",
+        "runtime_scheduler_revision": "9abd2ef0d908c4bb323e1b8956ea76a5772a1d41",
+        "runtime_distribution": "ai-dynamo 1.7.0.dev20261109",
+        "real_seed_port_source": (
+            "ai-dynamo/dynamo@99dae1f53e5a0534c274223ff9daa97f0b1fc2ea instrumented_scheduler._bench_realseed_*"
+        ),
+        "queued_metrics_port_source": (
+            "ai-dynamo/dynamo@9abd2ef0d908c4bb323e1b8956ea76a5772a1d41 instrumented_scheduler._compute_queued"
+        ),
+        "vllm_package_version": BASELINE_VERSIONS["vllm"],
+        "reviewed_scheduler_api_revision": "4ba787ec9959e566d3b587a796dff07673324da5",
+        "runtime_source_manifest_sha256": hashlib.sha256(
+            (_GLM_RUNTIME / "runtime-source-sha256.json").read_bytes()
+        ).hexdigest(),
+        "overlay_sha256": hashlib.sha256((_GLM_RUNTIME / "glm53flash_prefix_scheduler.py").read_bytes()).hexdigest(),
+        "context_policy_version": 1,
+        "warmup_repeats": 5,
+        "measurement_repeats": 10,
+    }
+
+
+def _validate_glm_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Require the evidence that the GLM-5.3-Flash vLLM producer writes beside its graph-timed measurements.
+
+    The producer builds every prefix and decode state from seeded tokens through vLLM's own scheduler, repeats each
+    point and keeps the evidence of the repetitions in a sidecar file next to the artifact. Its ``producer`` record
+    must equal the record of the supported producer (``_glm_producer_record``). A refusal names the first item that is
+    absent or malformed. The caller has already checked that the rows are mappings with mapping points.
+    """
+
+    def lacks(field: str) -> ValueError:
+        return ValueError(f"native GLM-5.3-Flash result lacks valid {field}: {path}")
+
+    if payload.get("execution_identity") != dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True)):
+        raise lacks("execution_identity")
+    evidence = payload.get("input_provenance")
+    if not isinstance(evidence, dict):
+        raise lacks("input_provenance")
+    if not _same(evidence.get("source"), "seeded_tokens"):
+        raise lacks("input_provenance.source")
+    for key in ("generator", "sampling"):
+        if not isinstance(evidence.get(key), str) or not evidence[key]:
+            raise lacks(f"input_provenance.{key}")
+    # The generator version is an integer in the producer's record, like the seed and the token count.
+    for key in ("generator_version", "seed", "count"):
+        if type(evidence.get(key)) is not int:
+            raise lacks(f"input_provenance.{key}")
+    # The producer draws a nonempty token stream, so a count below 1 contradicts the input that it records.
+    if evidence["count"] < 1:
+        raise lacks("input_provenance.count")
+    # The generator encodes the seed with int(seed).to_bytes(8, "big") (collector/glm53flash_attention_tokens.py:72), so
+    # an unsigned 64-bit integer is the only seed that can have drawn the stream.
+    if not 0 <= evidence["seed"] < 2**64:
+        raise lacks("input_provenance.seed")
+    # The generator draws ids from the half-open range [vocab_low, vocab_high_exclusive). It requires
+    # 0 <= vocab_low < vocab_high_exclusive and at most 2**63 ids in the range
+    # (collector/glm53flash_attention_tokens.py:68, 80), so the range holds vocab_high_exclusive - vocab_low ids. The
+    # producer records both bounds in every artifact.
+    low, high = evidence.get("vocab_low"), evidence.get("vocab_high_exclusive")
+    if type(low) is not int or low < 0:
+        raise lacks("input_provenance.vocab_low")
+    if type(high) is not int or not 0 < high - low <= 2**63:
+        raise lacks("input_provenance.vocab_high_exclusive")
+    # A stream holds at most as many distinct tokens as tokens and as ids to draw from, and a nonempty one holds at
+    # least one. The producer records this number in every artifact, so a record without it is refused like any other
+    # absent item.
+    unique = evidence.get("unique_token_count")
+    if type(unique) is not int or not 1 <= unique <= min(evidence["count"], high - low):
+        raise lacks("input_provenance.unique_token_count")
+    for key in ("tokenizer_json_sha256", "token_ids_sha256"):
+        if not _is_hex(evidence.get(key), 64):
+            raise lacks(f"input_provenance.{key}")
+    if not _is_hex(evidence.get("tokenizer_revision"), 40):
+        raise lacks("input_provenance.tokenizer_revision")
+    if not _same(evidence.get("chunk_start_alignment"), 4):
+        raise lacks("input_provenance.chunk_start_alignment")
+
+    # The sidecar is bound by its name, its digest and its record count, one record per measured point.
+    sidecar = path.with_name(f"{path.stem}.repetitions.jsonl")
+    manifest = evidence.get("repetition_evidence_manifest")
+    raw = sidecar.read_bytes() if sidecar.is_file() else None
+    if (
+        not isinstance(manifest, dict)
+        or raw is None
+        or not _same(manifest.get("schema_version"), 1)
+        or manifest.get("file") != sidecar.name
+        or manifest.get("sha256") != hashlib.sha256(raw).hexdigest()
+        or manifest.get("records") != len(raw.splitlines())
+        or manifest.get("records") != len(payload["results"])
+    ):
+        raise lacks("repetition_evidence_manifest")
+
+    kvwarm = payload.get("kvwarm")
+    kvwarm = kvwarm if isinstance(kvwarm, dict) else {}
+    expected_kvwarm = (
+        ("enabled", True),
+        ("warm_eligible", True),
+        ("skip_reason", None),
+        ("method", "native_prefix_cache_real_seed"),
+        ("state_protocol", "glm53flash_prefix_cache_real_seed_v1"),
+    )
+    if any(not _same(kvwarm.get(key), value) for key, value in expected_kvwarm):
+        raise lacks("kvwarm")
+    if not _same(payload.get("timing_boundary"), "dynamo_vllm_instrumented_scheduler_fpm_wall_time"):
+        raise lacks("timing_boundary")
+    serving = payload.get("serving_config")
+    serving = serving if isinstance(serving, dict) else {}
+    for key, value in (("enable_prefix_caching", True), ("async_scheduling", False)):
+        if not _same(serving.get(key), value):
+            raise lacks(f"serving_config.{key}")
+    # The producer record must be the one that the supported producer writes, field by field and with the same JSON
+    # types. A field that the record lacks or adds is refused too.
+    producer = payload.get("producer")
+    if not isinstance(producer, dict):
+        raise ValueError(
+            f"native GLM-5.3-Flash result lacks valid producer: expected a mapping, found {producer!r}: {path}"
+        )
+    expected_producer = _glm_producer_record()
+    for key, value in expected_producer.items():
+        if not _same(producer.get(key), value):
+            raise ValueError(
+                f"native GLM-5.3-Flash result lacks valid producer.{key}: expected {value!r}, "
+                f"found {producer.get(key)!r}: {path}"
+            )
+    added = sorted(set(producer) - set(expected_producer))
+    if added:
+        raise ValueError(
+            f"native GLM-5.3-Flash result lacks valid producer.{added[0]}: expected no such field, "
+            f"found {producer[added[0]]!r}: {path}"
+        )
+
+    for row in payload["results"]:
+        point = row["point"]
+        if not _is_hex(row.get("repetition_evidence_sha256"), 64):
+            raise lacks("repetition_evidence_sha256")
+        if point.get("point_type") == "decode":
+            regime = "real_kv"
+        elif _require_int(point, "total_kv_read_tokens") > 0:
+            regime = "real_prefix"
+        else:
+            regime = "not_applicable"
+        if row.get("kv_seed_regime") != regime:
+            raise lacks("kv_seed_regime")
     return evidence
 
 
@@ -332,6 +530,18 @@ def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
         expected_prompt = expected_seed + (0 if decode else _require_int(point, "total_prefill_tokens"))
         if prompt_total != expected_prompt:
             raise ValueError(f"V4.1 token-stream prompt history differs from the measured point: {path}")
+
+
+def _without_sidecar_names(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Input evidence without the file names of its sidecar manifests, which differ per rank.
+
+    The rest of each manifest, such as its digest and its record count, still has to agree across ranks.
+    """
+    sidecar_manifests = ("token_stream_manifest", "repetition_evidence_manifest")
+    return {
+        key: {name: item for name, item in value.items() if name != "file"} if key in sidecar_manifests else value
+        for key, value in evidence.items()
+    }
 
 
 def _validate_collector_provenance(
@@ -514,7 +724,9 @@ def validate_native_collection(
     run_identity: tuple[str, str] | None = None
     kvwarm_meta: dict[str, Any] | None = None
     kvwarm_seen: object = _KVWARM_UNSEEN
+    checkpoint_evidence: list[object] = []
     input_provenance: dict[str, Any] | None = None
+    execution_mode: str | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
     seed_regimes: dict[int, str | None] = {}
     rank_timings: list[tuple[int, float, float]] = []
@@ -548,16 +760,30 @@ def validate_native_collection(
         if any(not isinstance(row, dict) or not isinstance(row.get("point"), dict) for row in rows):
             raise ValueError(f"native result has malformed result points: {path}")
         evidence = _validate_execution_provenance(cell, payload, path)
-        if evidence is not None:
+        # The validation above has proven that the artifact's mode is the mode of the cell's contract.
+        execution_mode = payload.get("execution_mode") if evidence is not None else None
+        if execution_mode == "eager":
             _validate_token_streams(payload, path)
+        elif execution_mode == "native_graph_policy" and payload["producer"]["vllm_package_version"] != backend_version:
+            # The producer reports the vLLM that it ran on. The Collector provenance binds the launch to its runtime.
+            raise ValueError(
+                "native GLM-5.3-Flash producer.vllm_package_version differs from the Collector provenance runtime: "
+                f"expected {backend_version!r}, found {payload['producer']['vllm_package_version']!r}: {path}"
+            )
         if input_provenance is None:
             input_provenance = evidence
-        elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
-            k: v for k, v in input_provenance.items() if k != "token_stream_manifest"
-        } or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"} != {
-            k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"
-        }:
+        elif _without_sidecar_names(evidence) != _without_sidecar_names(input_provenance):
             raise ValueError(f"native DP ranks disagree on input provenance: {path}")
+        # One launch shares one scheduler configuration, so the ranks must agree on the checkpoint evidence of it.
+        serving = payload.get("serving_config")
+        checkpoint = (
+            serving.get("mamba_prefill_checkpoint", _NO_CHECKPOINT_EVIDENCE)
+            if isinstance(serving, dict)
+            else _NO_CHECKPOINT_EVIDENCE
+        )
+        checkpoint_evidence.append(checkpoint)
+        if checkpoint != checkpoint_evidence[0]:
+            raise ValueError(f"native ranks disagree on serving_config.mamba_prefill_checkpoint: {path}")
         expected = coverage.get("expected_points")
         if (
             not isinstance(expected, int)
@@ -733,4 +959,5 @@ def validate_native_collection(
         runtime_grid_digest=run_identity[1],
         kvwarm_meta=kvwarm_meta,
         input_provenance=input_provenance,
+        execution_mode=execution_mode,
     )

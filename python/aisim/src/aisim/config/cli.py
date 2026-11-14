@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field, model_validator
 
+from .ais_perf_model import anchor_paths, reject_repeated_keys, warn_old_keys
 from .common import (
     Choices,
     EvaluationConfig,
@@ -18,7 +20,7 @@ from .common import (
     OptimizationConfig,
     OptimizerConfig,
     StrictModel,
-    load_yaml,
+    load_yaml_with_text,
 )
 from .engine import EnginePredictionConfig, EngineRecommendationConfig, has_afd, require_native_vl_parallelism
 from .traffic import (
@@ -28,6 +30,32 @@ from .traffic import (
     TrafficPredictionConfig,
     TrafficRecommendationConfig,
 )
+
+
+def config_folder(path: str | os.PathLike[str]) -> str:
+    """Return the folder that relative paths written in a config file start from.
+
+    Symbolic links in the folder are resolved first, so ``..`` in such a path
+    means the parent of the folder that really holds the file, whichever
+    link the file was opened through.
+    """
+    # realpath walks the folder part the way the file is opened. Making the path
+    # absolute first would drop "link/.." as text and name a folder the file is not in.
+    return os.path.realpath(os.path.dirname(path) or os.curdir)
+
+
+def _read_config_file(path: str | os.PathLike[str], kind: str) -> dict[str, Any]:
+    """Read a config file and make the relative paths in ``ais_perf_model`` absolute.
+
+    The file then loads the same way from any working directory.
+    ``ais_perf_model`` written twice, its section written twice next to it,
+    or a key written twice inside it is an error (see
+    ``reject_repeated_keys``).
+    ``kind`` is ``predict`` or ``recommend``.
+    """
+    raw, text = load_yaml_with_text(path)
+    reject_repeated_keys(text, kind, path)
+    return anchor_paths(raw, config_folder(path), kind)
 
 
 class CorePredictionConfig(StrictModel):
@@ -53,7 +81,18 @@ class CorePredictionConfig(StrictModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> CorePredictionConfig:
-        return cls.model_validate(load_yaml(path))
+        """Load a prediction config file.
+
+        Relative paths inside ``engine.ais_perf_model`` start at the folder of
+        the file. The key written twice, or a key written twice inside it, is
+        an error (see ``reject_repeated_keys``). Old estimator fields in the
+        file give one deprecation warning, raised only after the file
+        validated.
+        """
+        raw = _read_config_file(path, "predict")
+        config = cls.model_validate(raw)
+        warn_old_keys(raw, "predict", source=path)
+        return config
 
 
 class CoreRecommendationConfig(StrictModel):
@@ -118,7 +157,18 @@ class CoreRecommendationConfig(StrictModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> CoreRecommendationConfig:
-        return cls.model_validate(load_yaml(path))
+        """Load a recommendation config file.
+
+        Relative paths inside ``engine.ais_perf_model`` start at the folder of
+        the file. The key written twice, or a key written twice inside it, is
+        an error (see ``reject_repeated_keys``). Old estimator fields in the
+        file give one deprecation warning, raised only after the file
+        validated.
+        """
+        raw = _read_config_file(path, "recommend")
+        config = cls.model_validate(raw)
+        warn_old_keys(raw, "recommend", source=path)
+        return config
 
 
 def _only(value: Any, expected: str) -> bool:

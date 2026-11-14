@@ -25,6 +25,7 @@ engine:
       timing: {}              # forward-pass timing provider
   # kv_transfer: {...}        # P/D only
   # speculation: {...}        # optional ngram speculative decoding
+  # ais_perf_model: {...}     # optional perf model of each worker type
 ```
 
 The smallest valid block sets `model`, `hardware` and an empty worker role:
@@ -74,7 +75,8 @@ domains instead of the single values above; see
 | `engine.speculation`, `engine.nextn`, `engine.nextn_accepted` | [Speculative decoding](speculation.md) |
 | `engine.workers.<role>.afd`, `engine.workers.encoder` | [Analytical AFD and EPD](analytical.md) |
 | `engine.workers.{aggregated,prefill}.{host_loop, frontend, host_profile, vision}` | [Workers](workers.md#sglang-host-loop-frontend-and-vision); design on [SGLang VL host loop](sglang-vl-host-loop.md) |
-| `engine.workers.<role>.timing`, `estimation_mode`, `estimator_config`, `database_mode`, quantization and kernel selectors | [Performance-model configuration](../../perf-model/configuration.md) |
+| `engine.ais_perf_model` | [This page](#ais-perf-model); the value format is on [Performance-model configuration](../../perf-model/configuration.md#unified-perf-model-input) |
+| `engine.workers.<role>.timing`, quantization and kernel selectors, and the deprecated estimator fields (`estimation_mode`, `database_mode` and the others listed under [Perf model](#ais-perf-model)) | [Performance-model configuration](../../perf-model/configuration.md) |
 
 Engine prediction and recommendation accept `auto`, `op_level`,
 `fpm_interpolation`, `fpm_regression`, and `fpm_learned` in their global and
@@ -107,6 +109,7 @@ Field tables on these pages use the following columns:
 | `engine.backend_version` | `current` | fixed | Selects performance data only. It does not change scheduler behavior. Must be a queryable version for the hardware and backend: `current`, `previous` when configured, `next` when newer data is available, or a version one of those available aliases resolves to. See [backend versions](#backend-versions). |
 | `engine.context_length` | `max` | fixed | Positive prompt-plus-output token limit, or `max`. With a number, prompts at or above the limit are rejected and generation stops at the limit. `max` applies the model config's maximum on vLLM; SGLang and TensorRT-LLM then run without a limit. |
 | `engine.workers` | Required | Per mode | Role mappings; see [Worker roles](#worker-roles). A role may be `{}` to use all defaults. |
+| `engine.ais_perf_model` | Unset | fixed | One perf-model config, or a list with one config per worker type. Sets the estimator of each worker and replaces the deprecated estimator fields; see [Perf model](#ais-perf-model). Rejected with AFD, an encoder pool, and `fixed` or `polynomial` timing. |
 | `engine.tokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_input_token_us` (finite and non-negative, default `0`). Tokenizes each request on its worker before the engine; see [Request tokenization](#tokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, worker scaling, AFD, encoder pools and SGLang frontend stages (which already price the tokenizer) are rejected. |
 | `engine.detokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_output_us` (finite and non-negative, default `0`). Detokenizes each pass's outputs on the worker that emits tokens before the client receives them; see [Response detokenization](#detokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, worker scaling, AFD, encoder pools and `traffic.load.agentic_profile` are rejected. |
 
@@ -287,6 +290,111 @@ per-role overrides of these fields are rejected. Only disaggregated `prefill`
 and `decode` workers may override `hardware`.
 Workers may override the shared `context_length`; see
 [context limits](workers.md#context-limits) for prediction and recommendation rules.
+
+<a id="ais-perf-model"></a>
+
+## Perf model
+
+`engine.ais_perf_model` sets the perf model that times each worker's forward
+passes. It replaces the estimator fields under `engine` and under
+`engine.workers.<role>.timing`.
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode: {}
+  ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      fallback_policy: deny
+      systems_paths: [./fpm-data, default]
+    - worker_type: decode
+      estimation_mode: op_level
+```
+
+When every worker uses the same settings, write one config without
+`worker_type`:
+
+```yaml
+engine:
+  ais_perf_model:
+    estimation_mode: op_level
+    fallback_policy: deny
+```
+
+- **Worker types.** Aggregated mode uses `aggregated`. Disaggregated mode uses
+  `prefill` and `decode`. In `recommend`, a mode domain uses the worker types
+  of every listed mode, and an omitted mode uses all three. A list needs an
+  entry for each of these worker types and none for another.
+- **Estimator keys.** An entry sets `estimation_mode`, `fallback_policy`,
+  `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy` and
+  `fpm_profile`.
+- **Other keys.** Keys such as `model`, `system` or `tp` are only checked
+  against the engine section. A different value is an error. `recommend` can
+  check only a few of them. In `predict`, a key that is not a perf-model field
+  is an error when the configuration is validated.
+- **`from`.** An entry can start from a template file (`from: ./base.yaml`) or
+  from a state snapshot (`from: {state_snapshot: {path: ...}}`). A string as
+  the whole value is an error; write `from: <file>` to reuse a file.
+- **Relative paths.** In a configuration file they start at that file's
+  folder. Given with `--set`, they start at the working directory. Symbolic
+  links are followed the way the system follows them; see
+  [Relative paths](../../perf-model/configuration.md#relative-paths).
+- **Repeated keys.** A key written twice inside `engine.ais_perf_model`, at
+  any depth, is an error in a configuration file:
+  `engine.ais_perf_model in predict.yaml: the key 'estimation_mode' is written twice (lines 9 and 11); write it once`.
+  So is `ais_perf_model` written twice in the `engine` section, and an
+  `engine` section written twice when one of them writes `ais_perf_model`;
+  the error then names `the key 'ais_perf_model'` or `the key 'engine'`.
+  `predict` and `recommend` exit with code `2` before they touch the output
+  directory. A value given with `--set` is not checked, and any other
+  repeated key in the file keeps its last value.
+
+In this release the key is another spelling of the estimator fields. Entries
+that agree are the engine-level spelling, entries that differ the per-worker
+spelling. The example above is the same as the three prefill keys under
+`engine.workers.prefill.timing` and `estimation_mode: op_level` under
+`engine.workers.decode.timing`. Saved configurations and the candidate YAML
+of `recommend` show those fields, not `ais_perf_model`.
+
+Limits in this release:
+
+- An AFD worker (`engine.workers.<role>.type: afd`), an encoder pool
+  (`engine.workers.encoder`), and `timing.type: fixed` or `polynomial` on an
+  active worker reject the key. They keep the estimator fields.
+- A dataset entry (`from: {dataset: ...}`) is rejected in `predict` and
+  `recommend`.
+- A snapshot entry in `predict` still needs every saved estimator control
+  written out.
+
+The full rules, with the checks for each command, are in
+[Unified perf-model input](../../perf-model/configuration.md#unified-perf-model-input).
+
+### Deprecated estimator fields
+
+These fields are deprecated. They work as before in this release, and the next
+release removes them. Use `engine.ais_perf_model`.
+
+| Deprecated field | In an entry of `engine.ais_perf_model` |
+|---|---|
+| `engine.estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy`, `fpm_profile` | The same key, in one config or in every entry. |
+| `engine.workers.<role>.timing.estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy` | The same key, in the entry for that worker type. |
+| `engine.systems_path`, `engine.workers.<role>.timing.forward_model`, `engine.workers.<role>.timing.fpm_parquet_path` | See the [list of old fields](../../perf-model/configuration.md#old-estimator-fields). |
+
+- A configuration file that writes one of them prints one deprecation warning
+  that lists the fields. A field that only repeats its default does not count.
+- `aisim perf-model migrate prediction.yaml` shows the converted block
+  and writes nothing. Add `--output prediction.yaml` to convert the file in
+  place; comments and formatting of the file are not kept. See
+  [perf-model tools](../../reference/cli.md#perf-model).
+- An old field next to `engine.ais_perf_model` is an error, unless it holds
+  the value the entries produce.
+- `timing.type`, `timing.prefill_ms` and `timing.decode_ms` are not
+  deprecated.
 
 ## A complete P/D example
 

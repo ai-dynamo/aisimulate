@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lifecycle hooks shared by the two source-audited adapters."""
+"""Lifecycle hooks shared by the three source-audited adapters."""
 
 import logging
 

@@ -18,6 +18,7 @@ from aisim import main as cli
 from aisim.support import fpm
 from aisim.support.collection_readiness import assess_readiness, resume_without_workers
 
+from .collector.test_fpm_glm53flash_native_collection import _glm_producer_shape
 from .collector.test_fpm_measurement_evidence import _add_measurement_protocol
 from .test_support_serving_validation import materialized_workload  # noqa: F401
 from .test_support_validation import validation_case  # noqa: F401
@@ -348,13 +349,15 @@ def test_consistent_but_wrong_observed_runtime_version_is_blocked(quality_case):
     assert all(item["status"] == "blocked" for item in report["selected_cells"])
 
 
-def _bounded_source(case, tmp_path, *, explicit=False):
+def _bounded_source(case, tmp_path, *, explicit=False, warmup_iterations=None):
     from aisim.support.plan import create_plan
     from aisim.support.schema import SupportRequest
 
     request_payload = case["request"].model_dump(mode="json")
     if explicit:
         request_payload["collection"].update(prefill_cudagraph_policy="explicit", max_prefill_cudagraph_size=16)
+    if warmup_iterations is not None:
+        request_payload["collection"]["warmup_iterations"] = warmup_iterations
     request = SupportRequest.model_validate(request_payload)
     root = tmp_path / "bounded"
     create_plan(request, root)
@@ -377,6 +380,7 @@ def _bounded_source(case, tmp_path, *, explicit=False):
             benchmark_points_sha256=None,
             prefill_cudagraph_policy=request.collection.prefill_cudagraph_policy,
             max_prefill_cudagraph_size=request.collection.max_prefill_cudagraph_size,
+            **({"warmup_iterations": warmup_iterations} if warmup_iterations is not None else {}),
         ),
     )
     return request, root, plan, overrides
@@ -455,6 +459,22 @@ def test_public_smoke_covers_both_phases_then_matching_full_collection_can_start
     assert all(
         item["campaign"] == "formal" for item in json.loads((root / "fpm-readiness.json").read_text())["selected_cells"]
     )
+
+
+def test_readiness_matches_the_request_warmup_iterations(quality_case, tmp_path):
+    request, root, plan, overrides = _bounded_source(quality_case, tmp_path, warmup_iterations=0)
+    assert plan.options.warmup_iterations == 0
+    _write_bounded_native(plan, root, overrides, smoke=True)
+    assert assess_readiness(request, root, root / "fpm-checkpoint")["ready_for_full_collection"]
+    # A request without the field asks for the default count, and a request with a count asks for that count, so
+    # neither one matches the saved plan of the other.
+    differs = "saved collection differs from the reviewed onboarding request"
+    report = assess_readiness(quality_case["request"], root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    assert f"smoke: {differs}" in report["blockers"]
+    report = assess_readiness(request, quality_case["root"], quality_case["checkpoint"].parent)
+    assert not report["ready_for_full_collection"]
+    assert f"formal: {differs}" in report["blockers"]
 
 
 def test_old_explicit_smoke_with_missing_or_changed_capture_flags_is_blocked(quality_case, tmp_path):
@@ -581,3 +601,262 @@ def test_malformed_native_regime_remains_json_reportable(quality_case, regime):
     assert not report["ready_for_full_collection"]
     assert _decode(report)["rank_diagnostics"][0]["regime_counts"]["invalid"] == 1
     assert json.loads(json.dumps(report, sort_keys=True))["status"] == "blocked"
+
+
+def _glm_smoke(tmp_path, monkeypatch, shape=None):
+    """Write the smoke campaign of a probe-backed GLM-5.3-Flash collection plan, as a vLLM 0.33.0 runtime fills it.
+
+    Each cell has its generated launch, the producer's rank artifact of the smoke points and one execution record per
+    TP rank, which the execution observer writes from a stand-in vLLM 0.33.0 configuration of that launch. The rank
+    artifacts have no measurement protocol, benchmark measurement or warm-up evidence. The producer's scheduler base,
+    ai-dynamo 1.7.0.dev20261109, writes them, and ``_glm_producer_shape`` adds them. The profile names no probe
+    provenance, so readiness does not bind the runtime memory to probe observations here. ``shape``, if given, rewrites
+    each rank artifact before it is written. Return the request and the onboarding root.
+    """
+    from types import SimpleNamespace
+
+    from collector.fpm_forward.config import with_kv_warmup_defaults
+    from collector.fpm_forward.runtime import fpm_memory_observer as observer
+
+    from aisim.support.schema import SupportRequest
+
+    from .collector.test_fpm_glm53flash_native_collection import (
+        DECODE_POINTS,
+        PREFILL_CACHED,
+        PREFILL_COLD,
+        glm_native_payload,
+        write_glm_rank,
+    )
+    from .collector.test_fpm_runner import _write_provenance
+    from .collector.test_fpm_runtime_memory import (
+        _mamba_group,
+        _probe_backed_glm_plan,
+        _typed,
+        _uniform_mla_group,
+        _vllm_config,
+    )
+
+    plan, overrides = _probe_backed_glm_plan(tmp_path)
+    revision = plan.runtime_launch["identity"]["model_revision"]
+    root = tmp_path / "onboarding"
+    campaign = root / "fpm-artifacts" / plan.sha256[:16] / "smoke"
+    runner._atomic_json(campaign / "collection-plan.json", plan.to_dict())
+    runner._atomic_json(campaign / "generator-overrides.json", with_kv_warmup_defaults(overrides))
+    config = _vllm_config(tp=4, dp=1)
+    config.model_config = SimpleNamespace(
+        model=plan.model_path,
+        revision=revision,
+        dtype="torch.bfloat16",
+        quantization="fp8",
+        max_model_len=plan.options.vllm_max_model_len,
+        enforce_eager=False,
+        # transformers stores the commit of the loaded configuration on the configuration object.
+        hf_config=SimpleNamespace(_commit_hash=revision),
+    )
+    config.quant_config = _typed("vllm.model_executor.layers.quantization.fp8", "Fp8Config")
+    vars(config.quant_config).update(activation_scheme="dynamic", weight_block_size=[128, 128])
+    vars(config.cache_config).update(
+        cache_dtype="fp8_e4m3",
+        num_gpu_blocks_override=None,
+        block_size=2176,
+        mamba_cache_mode="align",
+        prefix_match_unit=None,
+    )
+    vars(config.scheduler_config).update(max_num_batched_tokens=8192, max_num_seqs=256)
+    vars(config.parallel_config).update(
+        enable_expert_parallel=False, enable_eplb=False, data_parallel_size_local=1, data_parallel_external_lb=False
+    )
+    group = SimpleNamespace(
+        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+        layer_names=["model.layers.3.self_attn.attn"],
+        kv_cache_group_id=0,
+    )
+    # The packed GLM-5.3-Flash groups: sparse attention and KDA state, each a UniformTypeKVCacheSpecs group.
+    cache = SimpleNamespace(kv_cache_groups=[_uniform_mla_group(), _mamba_group()])
+    worker = SimpleNamespace(
+        vllm_config=config, model_runner=SimpleNamespace(attn_groups=[[group]], kv_cache_config=cache)
+    )
+    points = {"prefill": [PREFILL_COLD, PREFILL_CACHED], "decode": DECODE_POINTS}
+    checkpoint = {"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}
+    for cell in plan.cells:
+        directory = campaign / "cells" / cell.cell_id
+        pod = directory / "raw" / "pod-0"
+        pod.mkdir(parents=True)
+        runner._render_cell(plan, cell, directory, overrides, smoke=True)
+        attempt = f"smoke-{cell.workload_kind}"
+        _write_provenance(
+            pod / "collector-provenance.json", cell_id=cell.cell_id, plan_sha256=plan.sha256, attempt_id=attempt
+        )
+        provenance = json.loads((pod / "collector-provenance.json").read_text())
+        provenance["runtime"]["backend_version"] = "0.33.0"
+        (pod / "collector-provenance.json").write_text(json.dumps(provenance))
+        payload = glm_native_payload(cell.workload_kind, points=points[cell.workload_kind])
+        # The producer records the revision that the engine loaded and the runtime context of the launch.
+        payload["input_provenance"]["tokenizer_revision"] = revision
+        payload["context_policy"]["runtime_context_length"] = plan.options.vllm_max_model_len
+        if shape is not None:
+            shape(cell.workload_kind, payload)
+        write_glm_rank(pod, payload)
+        with monkeypatch.context() as patch:
+            patch.setattr(observer, "RESULTS_DIR", pod)
+            patch.setattr(observer.importlib.metadata, "version", lambda _name: "0.33.0")
+            for name in ("FPM_EXECUTION_OUTPUT_DIR", "FPM_EXECUTION_PROVENANCE_FILE"):
+                patch.delenv(name, raising=False)
+            for tp_rank in range(cell.topology.tp):
+                observer.observe_execution(worker, dp_rank=0, tp_rank=tp_rank, pp_rank=0)
+        checkpoint["cells"][cell.cell_id] = {"status": "passed", "attempt_id": attempt}
+    runner._atomic_json(root / "fpm-checkpoint" / "fpm_forward_smoke.json", checkpoint)
+    request = SupportRequest.model_validate(
+        {
+            "identity": plan.runtime_launch["identity"],
+            "search": {
+                "tensor_parallel": 4,
+                "attention_data_parallel": 1,
+                "moe_tensor_parallel": 4,
+                "moe_expert_parallel": 1,
+                "context_length": 1_048_576,
+            },
+            "collection": {
+                "max_num_tokens": 8192,
+                "max_batch_size": 256,
+                "prefill_cudagraph_policy": "runtime",
+                "gpu_memory_utilization": 0.9,
+                "warmup_iterations": 0,
+            },
+            "fpm_profile": plan.to_dict()["fpm_profile"],
+        }
+    )
+    return request, root
+
+
+def test_readiness_blocks_a_glm_smoke_without_the_producer_protocol(tmp_path, monkeypatch):
+    # The producer's scheduler base writes the measurement protocol into every rank artifact, so an artifact without it
+    # is not the producer's.
+    request, root = _glm_smoke(tmp_path, monkeypatch)
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    message = "measurement_protocol of a GLM-5.3-Flash producer artifact must be present"
+    assert {item["cell"]["workload_kind"] for item in report["selected_cells"]} == {"prefill", "decode"}
+    for item in report["selected_cells"]:
+        assert item["status"] != "ready"
+        assert any(message in blocker for blocker in item["blockers"]), item["blockers"]
+
+
+def test_readiness_qualifies_a_glm_smoke_of_dynamo_17_producer_artifacts(tmp_path, monkeypatch):
+    request, root = _glm_smoke(tmp_path, monkeypatch, shape=_glm_producer_shape(tmp_path))
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert report["blockers"] == []
+    assert report["ready_for_full_collection"]
+    cells = {item["cell"]["workload_kind"]: item for item in report["selected_cells"]}
+    assert set(cells) == {"prefill", "decode"}
+    # The cold prefill point has no KV to label. The cached prefill and the decode points were seeded with real KV.
+    assert cells["prefill"]["formal_regime_counts"] == {"n/a": 1, "real_kv": 1}
+    assert cells["decode"]["formal_regime_counts"] == {"real_kv": 2}
+    for item in cells.values():
+        assert (item["campaign"], item["status"], item["blockers"]) == ("smoke", "ready", [])
+        assert item["kvwarm"]["method"] == "native_prefix_cache_real_seed"
+        # vLLM 0.33.0 execution is audited, and the observed configuration agrees with the plan and its launch.
+        assert item["execution"]["failures"] == []
+        assert [reason for reason in item["execution"]["missing_evidence"] if "unaudited" in reason] == []
+        # The measurement record of every point is read, so no legacy note remains.
+        missing = item["execution"]["missing_evidence"]
+        assert not [reason for reason in missing if "legacy" in reason or "warmup evidence is unreported" in reason]
+
+
+@pytest.mark.parametrize(
+    ("breakage", "message"),
+    [
+        ("interval", "benchmark_sample contradicts its local timing interval"),
+        # The artifact's timing totals stay consistent, so the reduction check of the measurement record refuses it.
+        ("median", "benchmark_measurement reduction disagrees with retained timing"),
+    ],
+)
+def test_readiness_blocks_a_glm_smoke_with_a_broken_producer_record(tmp_path, monkeypatch, breakage, message):
+    request, root = _glm_smoke(tmp_path, monkeypatch, shape=_glm_producer_shape(tmp_path, breakage))
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    for item in report["selected_cells"]:
+        assert item["status"] != "ready"
+        assert any(message in blocker for blocker in item["blockers"]), item["blockers"]
+
+
+def _then(shape, change):
+    """``shape``, then ``change`` on the same rank artifact."""
+
+    def both(phase, payload):
+        shape(phase, payload)
+        change(phase, payload)
+
+    return both
+
+
+def _other_vllm(_phase, payload):
+    # A patch release of vLLM is another runtime. The producer runs only on vLLM 0.33.0.
+    payload["producer"]["vllm_package_version"] = "0.33.1"
+
+
+def test_readiness_blocks_a_glm_smoke_whose_producer_names_another_vllm(tmp_path, monkeypatch):
+    request, root = _glm_smoke(tmp_path, monkeypatch, shape=_then(_glm_producer_shape(tmp_path), _other_vllm))
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    message = "lacks valid producer.vllm_package_version: expected '0.33.0', found '0.33.1'"
+    assert {item["cell"]["workload_kind"] for item in report["selected_cells"]} == {"prefill", "decode"}
+    for item in report["selected_cells"]:
+        assert item["status"] != "ready"
+        assert any(message in blocker for blocker in item["blockers"]), item["blockers"]
+
+
+def _nine_repetitions(_phase, payload):
+    """Rewrite the producer's record of each point into a consistent record of nine measured repetitions.
+
+    The protocol names nine repetitions and random content, and each point keeps its first nine raw samples, the
+    indices of samples 1 to 8 and their upper median. The record still expects ten internal samples.
+    """
+    protocol = payload["measurement_protocol"]
+    protocol["producer"]["measurement_repeats"] = 9
+    protocol["synthetic_content"] = "random"
+    for row, group in zip(payload["results"], payload["iteration_groups"], strict=True):
+        fpm = row["fpms"][0]
+        measurement = fpm["benchmark_measurement"]
+        del measurement["raw_fpms"][9:]
+        measurement["estimate"]["raw_sample_indices"] = list(range(1, 9))
+        walls = sorted(sample["wall_time"] for sample in measurement["raw_fpms"][1:])
+        fpm["wall_time"] = group["wall_time"] = walls[len(walls) // 2]
+        assert measurement["expected_internal_samples"] == 10
+    payload["timing"]["measured_iteration_seconds"] = sum(group["wall_time"] for group in payload["iteration_groups"])
+
+
+def test_readiness_blocks_a_glm_smoke_whose_protocol_names_nine_repetitions(tmp_path, monkeypatch):
+    request, root = _glm_smoke(tmp_path, monkeypatch, shape=_then(_glm_producer_shape(tmp_path), _nine_repetitions))
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert not report["ready_for_full_collection"]
+    message = "measurement_protocol.producer must be the GLM-5.3-Flash producer's record: expected "
+    assert {item["cell"]["workload_kind"] for item in report["selected_cells"]} == {"prefill", "decode"}
+    for item in report["selected_cells"]:
+        assert item["status"] != "ready"
+        assert any(message in blocker and "'measurement_repeats': 9" in blocker for blocker in item["blockers"]), item[
+            "blockers"
+        ]
+
+
+def test_measurement_reader_holds_each_glm_cell_to_the_producer_protocol(tmp_path, monkeypatch):
+    # The readers of a frozen GLM-5.3-Flash plan, without readiness around them.
+    from collector.fpm_forward.measurement_evidence import extract_measurement_evidence
+    from collector.fpm_forward.native_artifact import validate_native_collection
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    _request, root = _glm_smoke(tmp_path, monkeypatch, shape=_then(_glm_producer_shape(tmp_path), _nine_repetitions))
+    (campaign,) = [path / "smoke" for path in (root / "fpm-artifacts").iterdir()]
+    plan = load_repeatability_source(campaign)
+    assert {cell.workload_kind for cell in plan.cells} == {"prefill", "decode"}
+    for cell in plan.cells:
+        raw = campaign / "cells" / cell.cell_id / "raw"
+        collection = validate_native_collection(
+            cell, raw, expected_plan_sha256=plan.sha256, expected_attempt_id=f"smoke-{cell.workload_kind}"
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"^measurement_protocol\.producer must be the GLM-5\.3-Flash producer's record: expected \{.+\}, "
+            r"found \{.+'measurement_repeats': 9.+\}: .+benchmark\.json$",
+        ):
+            extract_measurement_evidence(raw, collection)

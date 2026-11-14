@@ -87,8 +87,21 @@ def _loaded_config(owner: Any, payload: dict) -> None:
     elif not candidate.is_file():
         # Resolve only the already-loaded immutable HF revision. Never download
         # another config during observation or hash a caller-supplied host copy.
-        commit = getattr(getattr(model, "hf_config", None), "_commit_hash", None)
+        # Read the commit that the loaded config object holds itself. A config that
+        # forwards attribute reads to a nested text config can report that config's
+        # _commit_hash, which is the commit of another configuration, not of the loaded
+        # one, so only the own instance dictionary counts.
+        # transformers 5.19.0 sets no _commit_hash at all; then take the commit of the
+        # pinned snapshot that holds the loaded config.json.
+        hf_config = getattr(model, "hf_config", None)
+        try:
+            attributes = object.__getattribute__(hf_config, "__dict__")
+        except AttributeError:
+            attributes = {}
+        commit = attributes.get("_commit_hash")
         if not isinstance(commit, str) or len(commit) != 40:
+            commit = legacy._cached_config_commit(model)
+        if commit is None:
             raise ValueError("loaded remote config has no immutable cache commit")
         from huggingface_hub import try_to_load_from_cache
 
@@ -121,9 +134,9 @@ def _loaded_config(owner: Any, payload: dict) -> None:
             observed[name] = hashlib.sha256((candidate.parent / name).read_bytes()).hexdigest()
 
 
-def _resolved(owner: Any) -> dict:
+def _resolved(owner: Any, *, hybrid_evidence: bool = False) -> dict:
     config = owner.vllm_config
-    value = legacy.resolved_config(config)
+    value = legacy.resolved_config(config, hybrid_evidence=hybrid_evidence)
     for key in ("speculative_config", "kv_transfer_config"):
         value[key] = _json(getattr(config, key, None))
     for key in ("hf_config_path", "hf_overrides", "config_format"):
@@ -134,13 +147,14 @@ def _resolved(owner: Any) -> dict:
 
 def _worker_cache(owner: Any) -> dict:
     cache = legacy.worker_memory(owner)
-    # This route reads shared_by with vLLM 0.27.0 meaning and has bundles for 0.27.0 and 0.28.0 only.
+    # Only a version without hybrid evidence reaches this route; it reads shared_by with vLLM 0.27.0 meaning.
+    # Of such versions only 0.27.0 has an audited bundle; 0.28.0 has an example campaign-local manifest.
     if any("layers" in item or "layer_stride" in item for item in cache.get("tensor_allocations", [])):
         raise ValueError("layer-strided cache tensor records need an audited instrumentation adapter")
     return cache
 
 
-def _raw_cache(config: Any) -> dict:
+def _raw_cache(config: Any, *, hybrid_evidence: bool = False) -> dict:
     fields = (
         "block_size",
         "storage_block_size",
@@ -154,30 +168,102 @@ def _raw_cache(config: Any) -> dict:
         "head_size",
         "kv_quant_mode",
     )
-    return {
+    tensor_fields = ("size", "shared_by", "block_stride", "offset")
+    if hybrid_evidence:
+        # vLLM 0.33.0 token-state, MLA role and Mamba state spec fields
+        # (kv_cache_interface.py:569, :737, :1095-1102) and layer placement (:1490-1494).
+        fields += (
+            "mamba_cache_mode",
+            "num_speculative_blocks",
+            "num_prefill_checkpoint_blocks",
+            "prefill_checkpoint_alignment",
+            "tokens_per_state",
+            "cache_role",
+            "shapes",
+            "dtypes",
+        )
+        tensor_fields += ("layers", "layer_stride")
+    # A vLLM 0.33.0 UniformTypeKVCacheSpecs inherits the abstract KVCacheSpec.tokens_per_state, which
+    # raises NotImplementedError (kv_cache_interface.py:251-252, :1291-1389). The layer specs of its
+    # cache group record the value of each layer (fpm_memory_observer._layer_spec).
+    uniform_fields = tuple(key for key in fields if key != "tokens_per_state")
+    record = {
         "num_blocks": config.num_blocks,
         "groups": [
             {
                 "layer_names": list(group.layer_names),
                 "spec_type": legacy._class_name(group.kv_cache_spec),
                 **{
-                    key: _json(getattr(group.kv_cache_spec, key)) for key in fields if hasattr(group.kv_cache_spec, key)
+                    key: _json(getattr(group.kv_cache_spec, key))
+                    for key in (
+                        uniform_fields if legacy._class_name(group.kv_cache_spec) == legacy._UNIFORM_SPEC else fields
+                    )
+                    if hasattr(group.kv_cache_spec, key)
                 },
             }
             for group in config.kv_cache_groups
         ],
         "tensor_allocations": [
-            {
-                key: _json(getattr(tensor, key))
-                for key in ("size", "shared_by", "block_stride", "offset")
-                if hasattr(tensor, key)
-            }
+            {key: _json(getattr(tensor, key)) for key in tensor_fields if hasattr(tensor, key)}
             for tensor in config.kv_cache_tensors
         ],
     }
+    if hybrid_evidence and hasattr(config, "kv_cache_layout"):
+        # The layout name that the engine core resolves for every worker (engine/core.py:324-325).
+        record["kv_cache_layout"] = _json(config.kv_cache_layout)
+    return record
+
+
+def _layer_specs(spec: Any) -> list[Any]:
+    """The spec of every layer of a cache group: the inner specs of a uniform group."""
+    return list(spec.kv_cache_specs.values()) if legacy._class_name(spec) == legacy._UNIFORM_SPEC else [spec]
+
+
+def _retention(spec: Any) -> tuple[Any, Any]:
+    # vLLM 0.33.0 SlidingWindowSpec and its subclasses declare extra_retained_tokens
+    # with the default 0 (kv_cache_interface.py:908); its absence there is an
+    # incompatible runtime API. Other spec classes have no such field.
+    window = legacy._class_name(spec).removeprefix(legacy._SPEC_MODULE) in legacy._WINDOW_SPECS
+    return getattr(spec, "extra_retained_tokens", None if window else 0), getattr(spec, "attention_chunk_size", None)
+
+
+def _block_pool_groups(cache: dict, config: Any, pool_id: str) -> None:
+    """Apply the vLLM 0.33.0 retention and placement rules."""
+    errors = []
+    for raw, group in zip(config.kv_cache_groups, cache["groups"], strict=True):
+        names = group["layer_names"]
+        specs = _layer_specs(raw.kv_cache_spec)
+        retention = [_retention(spec) for spec in specs]
+        extra, chunk = retention[0]
+        group.update(pool_id=pool_id, extra_retained_tokens=extra, attention_chunk_size=chunk)
+        if any(value != retention[0] for value in retention):
+            errors.append(f"cache group layers disagree on retention: {names}")
+        if type(extra) is not int or extra != 0 or chunk is not None:
+            errors.append(f"unsupported cache retention for {names}: extra={extra!r}, chunk={chunk!r}")
+        # HiSparse places groups in a host pool or outside the transferable state
+        # (kv_cache_interface.py:1505-1522, v1/hisparse/layout.py). One device pool is modeled.
+        host, role, transfer = (
+            getattr(raw, "host_resident", None),
+            _json(getattr(raw, "role", None)),
+            getattr(raw, "enable_kv_transfer", None),
+        )
+        if host is not False or role != "DEFAULT" or transfer is not True:
+            errors.append(
+                f"unsupported cache group placement for {names}: "
+                f"host_resident={host!r}, role={role!r}, enable_kv_transfer={transfer!r}"
+            )
+    for tensor in config.kv_cache_tensors:
+        host = getattr(tensor, "host_resident", None)
+        if host is not False:
+            errors.append(f"unsupported cache tensor placement for {list(tensor.layers)}: host_resident={host!r}")
+    if errors:
+        raise ValueError("; ".join(errors))
 
 
 def _groups(cache: dict, config: Any, version: str, pool_id: str) -> None:
+    if version == legacy.HYBRID_EVIDENCE_VERSION:
+        _block_pool_groups(cache, config, pool_id)
+        return
     errors = []
     for raw, group in zip(config.kv_cache_groups, cache["groups"], strict=True):
         spec = raw.kv_cache_spec
@@ -197,7 +283,63 @@ def _groups(cache: dict, config: Any, version: str, pool_id: str) -> None:
         raise ValueError("; ".join(errors))
 
 
-def _layer_views(owner: Any, cache: dict, source_files: dict) -> None:
+def _view_kernel_block(group: Any, spec: Any, kernel: int, block: int) -> tuple[int, int]:
+    """The kernel block and the kernel block stride of the views of one vLLM 0.33.0 attention group.
+
+    A Mamba layer keeps the group block size (v1/worker/utils.py:677-679). Any other layer takes the
+    group's kernel_block_size when its backend set one, else the runner's kernel block, and the stride
+    of the group's kernel-block view (utils.py:261-273). The stride stays 0 when vLLM binds the
+    manager view unchanged (utils.py:402-403). Both fields are read without a default.
+    """
+    if legacy._class_name(spec) == legacy._MAMBA_SPEC:
+        return block, 0
+    stride = group.kernel_block_stride
+    if type(stride) is not int or stride < 0:
+        raise ValueError("kernel block stride must be a nonnegative integer")
+    if group.kernel_block_size is not None:
+        kernel = legacy._positive(group.kernel_block_size, "kernel block size")
+    return kernel, stride
+
+
+def _block_first_views(
+    name: str, kv_cache: Any, storage_ids: dict, kernel: int, stride: int, block: int, num_blocks: int
+) -> list[dict]:
+    """Record every view of one vLLM 0.33.0 layer: one tensor, or each tensor of a tuple.
+
+    create_kv_cache_views gives each layer a [B, H, N, C] view, block axis first
+    (kv_cache_interface.py:418-482). The layer's bind_kv_cache keeps it first: MLA
+    and the indexer drop H (mla_attention.py:748-750, deepseek_v2.py:653-656), and
+    a Mamba layer cuts one view per state from the page (mamba/abstract.py:28-42).
+    AttentionBackend.get_kv_cache_block_dim no longer exists, so no axis is
+    searched by its length. A manager view holds num_blocks * (block // kernel)
+    kernel blocks. A kernel-block view with a positive stride holds
+    (num_blocks - 1) * stride + block // kernel of them: kernel block j of block b
+    is b * stride + j (v1/worker/utils.py:419-430).
+    """
+    blocks = (num_blocks - 1) * stride + block // kernel if stride else num_blocks * (block // kernel)
+    views = []
+    for tensor in kv_cache if isinstance(kv_cache, (tuple, list)) else (kv_cache,):
+        key, _ = legacy._storage(tensor)
+        width = legacy._positive(tensor.element_size(), "tensor element size")
+        shape = list(tensor.shape)
+        if shape[0] != blocks:
+            raise ValueError(f"cache view block axis does not hold its kernel blocks: {name}")
+        views.append(
+            {
+                "storage_id": storage_ids[key],
+                "storage_offset_bytes": tensor.storage_offset() * width,
+                "shape": shape,
+                "stride_bytes": [stride * width for stride in tensor.stride()],
+                "element_size_bytes": width,
+                "block_axis": 0,
+                "kernel_block_size_tokens": kernel,
+                "kernel_block_stride": stride,
+            }
+        )
+    return views
+
+
+def _layer_views(owner: Any, cache: dict, source_files: dict, version: str) -> None:
     runner = owner.model_runner
     runner_class = legacy._class_name(runner)
     # Worker.init_device selects either native runner. Each initialize_kv_cache
@@ -223,7 +365,11 @@ def _layer_views(owner: Any, cache: dict, source_files: dict) -> None:
         storage["storage_id"] = f"storage-{index}"
         storage_ids[(storage["device"], storage["pointer"])] = storage["storage_id"]
     for allocation in cache["tensor_allocations"]:
-        key, _ = legacy._storage(layers[allocation["shared_by"][0]].kv_cache)
+        # worker_memory proved that the layers of an allocation use one storage;
+        # a vLLM 0.33.0 Mamba layer binds a tuple of state views on it.
+        # A layer-strided allocation names its layers; a vLLM 0.27.0 or 0.28.0 one names them in shared_by.
+        names = allocation["layers"] if "layers" in allocation else allocation["shared_by"]
+        (key,) = legacy._layer_storages(layers[names[0]].kv_cache)
         allocation["storage_id"] = storage_ids[key]
     views = cache["layer_tensors"] = {}
     groups = []
@@ -232,25 +378,30 @@ def _layer_views(owner: Any, cache: dict, source_files: dict) -> None:
         for group in attention_groups:
             spec = group.kv_cache_spec
             kernel = kernel_block_sizes[group.kv_cache_group_id]
-            if getattr(spec, "storage_block_size", spec.block_size) != spec.block_size:
-                raise ValueError("compressed kernel cache blocks are unsupported")
-            # Both audited runners use auto for an unquantized group's shape.
-            # Read KVQuantMode by its public enum name; do not infer from dtype.
-            mode = getattr(spec, "kv_quant_mode", None)
-            if mode is None:
-                raise ValueError("cache spec has no observed KV quantization mode")
-            dtype = (
-                "auto"
-                if getattr(mode, "name", None) == "NONE"
-                else (getattr(spec, "cache_dtype_str", None) or owner.vllm_config.cache_config.cache_dtype)
-            )
+            if version == legacy.HYBRID_EVIDENCE_VERSION:
+                block = cache["groups"][group.kv_cache_group_id]["block_size_tokens"]
+                kernel, stride = _view_kernel_block(group, spec, kernel, block)
+            else:
+                if getattr(spec, "storage_block_size", spec.block_size) != spec.block_size:
+                    raise ValueError("compressed kernel cache blocks are unsupported")
+                # Both audited runners use auto for an unquantized group's shape.
+                # Read KVQuantMode by its public enum name; do not infer from dtype.
+                mode = getattr(spec, "kv_quant_mode", None)
+                if mode is None:
+                    raise ValueError("cache spec has no observed KV quantization mode")
+                dtype = (
+                    "auto"
+                    if getattr(mode, "name", None) == "NONE"
+                    else (getattr(spec, "cache_dtype_str", None) or owner.vllm_config.cache_config.cache_dtype)
+                )
             backend = group.backend
             backend_source = backend.__module__.replace(".", "/") + ".py"
             if backend_source not in source_files:
                 raise ValueError(f"selected backend source has not been audited: {backend_source}")
-            axis = backend.get_kv_cache_block_dim(kernel, spec.num_kv_heads, spec.head_size, cache_dtype_str=dtype)
-            if type(axis) is not int or axis < 0:
-                raise ValueError("backend returned an invalid cache block dimension")
+            if version != legacy.HYBRID_EVIDENCE_VERSION:
+                axis = backend.get_kv_cache_block_dim(kernel, spec.num_kv_heads, spec.head_size, cache_dtype_str=dtype)
+                if type(axis) is not int or axis < 0:
+                    raise ValueError("backend returned an invalid cache block dimension")
             backends.add(backend.get_name())
             groups.append(
                 {
@@ -259,9 +410,18 @@ def _layer_views(owner: Any, cache: dict, source_files: dict) -> None:
                     "layer_names": list(group.layer_names),
                 }
             )
+            if version == legacy.HYBRID_EVIDENCE_VERSION:
+                groups[-1].update(
+                    kernel_block_size=group.kernel_block_size, kernel_block_stride=group.kernel_block_stride
+                )
             for name in group.layer_names:
                 if name in views:
                     raise ValueError(f"duplicate attention group layer: {name}")
+                if version == legacy.HYBRID_EVIDENCE_VERSION:
+                    views[name] = _block_first_views(
+                        name, layers[name].kv_cache, storage_ids, kernel, stride, block, cache["num_blocks"]
+                    )
+                    continue
                 tensor = layers[name].kv_cache
                 key, _ = legacy._storage(tensor)
                 width = legacy._positive(tensor.element_size(), "tensor element size")
@@ -339,6 +499,18 @@ def _hardware(owner: Any, gpu: str) -> dict:
     }
 
 
+def _prefix_caching(owner: Any, cache: dict, kind: str) -> dict:
+    """The vLLM 0.33.0 prefix-caching settings of one process; None where absent.
+
+    The scheduler adds its block size and hash block size (core/sched/scheduler.py:218, :348-350).
+    """
+    settings = owner.vllm_config.cache_config
+    value = {key: _json(getattr(settings, key, None)) for key in ("enable_prefix_caching", "mamba_cache_mode")}
+    if kind == "scheduler":
+        value.update(block_size=cache.get("block_size"), hash_block_size=cache.get("hash_block_size"))
+    return value
+
+
 def observe(
     kind: str,
     owner: Any,
@@ -393,28 +565,38 @@ def observe(
         from fpm_runtime_instrumentation import observed_binding
 
         capture("instrumentation_binding", lambda: payload.update(instrumentation_binding=observed_binding()))
+    # Only vLLM 0.33.0 records carry the hybrid cache evidence; older records keep their keys.
+    hybrid = version == legacy.HYBRID_EVIDENCE_VERSION
     capture("runtime", lambda: _runtime(payload, manifest, version))
     capture("model_config_sha256", lambda: _loaded_config(owner, payload))
-    capture("resolved_config", lambda: payload.update(resolved_config=_resolved(owner)))
+    capture("resolved_config", lambda: payload.update(resolved_config=_resolved(owner, hybrid_evidence=hybrid)))
     pool_id = f"dp{dp_rank}-shared-pool"
     if kind == "worker":
         capture("hardware", lambda: payload.update(hardware=_hardware(owner, payload["identity"]["gpu"])))
         capture("effective_offloader", lambda: payload.update(effective_offloader=legacy._offloader_type()))
         if hasattr(owner, "_fpm_initial_compilation_config"):
             payload["initial_compilation_config"] = owner._fpm_initial_compilation_config
-        capture("cache", lambda: payload.update(cache=_worker_cache(owner)))
+        if hybrid:
+            capture("cache", lambda: payload.update(cache=legacy.worker_memory(owner, hybrid_evidence=True)))
+        else:
+            capture("cache", lambda: payload.update(cache=_worker_cache(owner)))
         config = getattr(getattr(owner, "model_runner", None), "kv_cache_config", None)
     else:
         config = cache_config
-        capture("cache", lambda: payload.update(cache=legacy.scheduler_memory(owner, config)))
-    capture("raw_cache_config", lambda: payload.update(raw_cache_config=_raw_cache(config)))
+        capture("cache", lambda: payload.update(cache=legacy.scheduler_memory(owner, config, hybrid_evidence=hybrid)))
+    capture("raw_cache_config", lambda: payload.update(raw_cache_config=_raw_cache(config, hybrid_evidence=hybrid)))
     if "cache" in payload:
         cache = payload["cache"]
         cache["pool_id"] = pool_id
+        if hybrid:
+            capture("cache.prefix_caching", lambda: cache.update(prefix_caching=_prefix_caching(owner, cache, kind)))
         capture("cache.groups", lambda: _groups(cache, config, version, pool_id))
         if kind == "worker":
             capture("cache.semantics", lambda: _semantics(owner, payload))
-            capture("cache.layer_tensors", lambda: _layer_views(owner, cache, manifest["runtime"]["source_files"]))
+            capture(
+                "cache.layer_tensors",
+                lambda: _layer_views(owner, cache, manifest["runtime"]["source_files"], version),
+            )
             if "attention_groups" in cache:
                 payload["attention_groups"] = cache.pop("attention_groups")
                 names = cache.pop("attention_backends")

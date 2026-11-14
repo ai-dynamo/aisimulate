@@ -22,7 +22,11 @@ from aisim.support.fpm import fpm_cli_args
 from aisim.support.plan import MEMORY_OBSERVATION_VERSIONS, check_plan, request_id
 from aisim.support.schema import SupportRequest
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 # Synthetic geometry and explicit illustrative bounds, not checkpoint measurements.
 _CONFIG = {
@@ -785,6 +789,62 @@ def test_grouped_automatic_intake_defers_rank_resources_until_after_topology(tmp
     assert prompts[0].startswith("Choose topology")
     assert prompts[1].startswith("cache_block_sizes")
     assert SupportRequest.from_yaml(output).profile_deployment().resources.cache_layout == "grouped"
+
+
+# Collection observes pending memory on the vLLM versions of support/plan.py MEMORY_OBSERVATION_VERSIONS, also for a
+# grouped cache of full and sliding attention, whose specs the memory reader of the collection accepts. A draft whose
+# cache geometry is pending the runtime probe stops with the probe guidance before this review.
+_PENDING_MEMORY_LINES = {
+    "0.27.0": [
+        "  Memory is observed during initialized vLLM 0.27.0 collection.",
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
+    ],
+    "0.33.0": [
+        "  Memory is observed during initialized vLLM 0.33.0 collection.",
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
+    ],
+    "0.28.0": [
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+    ],
+}
+
+
+@pytest.mark.parametrize("version", list(_PENDING_MEMORY_LINES))
+def test_grouped_review_states_where_pending_memory_is_observed(tmp_path, monkeypatch, capsys, version):
+    source, resources = _files(
+        tmp_path,
+        config={**_CONFIG, "sliding_window": 128},
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    _terminal(monkeypatch, ['{"sliding_attention": 16}', "accept"])
+    args = _args(tmp_path / "request.yaml", source, resources, framework_version=version) + ["--interactive"]
+    assert cli.main(args) == 0
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1].splitlines()
+    assert "  Grouped pages retain full history or the declared window, with separate convolution state." in review
+    assert not [line for line in review if "State groups" in line]
+    assert "  Memory source: pending." in review
+    memory_lines = {line for lines in _PENDING_MEMORY_LINES.values() for line in lines}
+    assert [line for line in review if line in memory_lines] == _PENDING_MEMORY_LINES[version]
+
+
+def test_grouped_review_names_state_groups_only_when_the_draft_holds_one(tmp_path, monkeypatch, capsys):
+    # Without a layer count in the config, a complete cache_groups override resolves the grouped geometry, so a
+    # declared state group reaches the review.
+    config = {key: value for key, value in _CONFIG.items() if key != "num_hidden_layers"}
+    page = {"block_size_tokens": 16, "page_size_bytes": 4096}
+    groups = [
+        {"name": "full", "kind": "attention", "num_layers": 1, **page},
+        {"name": "kda", "kind": "state", "num_layers": 1, "blocks_per_request": 1, **page},
+    ]
+    overrides = {"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"}
+    source, resources = _files(tmp_path, config=config, overrides={**overrides, "cache_groups": groups})
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(tmp_path / "request.yaml", source, resources) + ["--interactive"]) == 0
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1].splitlines()
+    grouped = review.index(
+        "  Grouped pages retain full history or the declared window, with separate convolution state."
+    )
+    assert review[grouped + 1] == "  State groups hold a fixed block count per request."
 
 
 def _files(tmp_path, *, config=None, overrides=None, suffix="yaml"):
@@ -1893,6 +1953,80 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
     assert json.loads((plan / "fpm-model-profile.json").read_text()) == request.fpm_profile.model_dump(mode="json")
 
 
+_GLM_LAUNCH_TEXT = (
+    "AISim launches and manages benchmark workers when collection is executed; no separately "
+    "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; the "
+    "GLM-5.3-Flash producer measures the point list that the collection plan freezes. Initialization and "
+    "planning do not launch GPUs."
+)
+
+
+def _requests_of_both_architectures(tmp_path, *extra, **changes):
+    """One written request, and the same request with GLM-5.3-Flash as the architecture of its profile."""
+    from collector.fpm_forward.glm53flash_points import GLM_ARCHITECTURE
+
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert cli.main([*_args(output, source, resources, **changes), *extra]) == 0
+    request = SupportRequest.from_yaml(output)
+    profile = request.fpm_profile.model_copy(update={"architecture": GLM_ARCHITECTURE})
+    return request, request.model_copy(update={"fpm_profile": profile})
+
+
+def test_plan_says_who_generates_the_points_of_a_glm_5_3_flash_collection(tmp_path):
+    from aisim.support.plan import create_plan
+    from aisim.support.schema import CollectionSpec
+
+    request, glm = _requests_of_both_architectures(tmp_path)
+    ordinary = create_plan(request, tmp_path / "ordinary")["fpm"]
+    generated = create_plan(glm, tmp_path / "glm")["fpm"]
+    # Every other model keeps the texts that leave the exact points to the runtime.
+    assert ordinary["sampling"] == (
+        "Dynamo self-benchmark generates the prefill/decode grid from CUDA graph sizes and the reviewed "
+        "runtime limits. The new-token budget, per-request context, scheduler sequence bound and total KV "
+        "capacity are separate quantities. Exact points resolve at runtime; validation traffic and SLAs "
+        "do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
+    )
+    assert ordinary["launch"] == (
+        "AISim launches and manages benchmark workers when collection is executed; no separately "
+        "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; Dynamo "
+        "self-benchmark generates and measures the feasible grid. Initialization and planning do not launch GPUs."
+    )
+    # The GLM-5.3-Flash collection plan freezes a list that the planner generates, so its count is known at plan time.
+    assert generated["sampling"] == (
+        "The GLM-5.3-Flash producer measures a point list that the collection plan generates from the "
+        "reviewed runtime limits and the accepted profile's hash block size and cache capacity. The new-token "
+        "budget, per-request context, scheduler sequence bound and total KV capacity are separate quantities. "
+        "The list is frozen into the plan, so the point count is fixed at plan time; validation traffic and "
+        "SLAs do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
+    )
+    assert generated["launch"] == _GLM_LAUNCH_TEXT
+    # A request that leaves the capture policy implicit has no launch text, and the GLM text adds none.
+    legacy = glm.model_copy(update={"collection": CollectionSpec()})
+    assert "launch" not in create_plan(legacy, tmp_path / "legacy")["fpm"]
+
+
+@pytest.mark.parametrize("role,graph", [("prefill", "PIECEWISE"), ("decode", "FULL_DECODE_ONLY")])
+def test_role_plan_says_who_generates_the_points_of_a_glm_5_3_flash_role(tmp_path, role, graph):
+    from aisim.support.plan import create_plan
+
+    captures = ["--cudagraph-capture-sizes", "1", "2", "4", "8", "--max-cudagraph-capture-size", "8"]
+    request, glm = _requests_of_both_architectures(tmp_path, *captures, worker_type=role, cudagraph_mode=graph)
+    assert create_plan(request, tmp_path / "ordinary")["fpm"]["sampling"] == (
+        f"Dynamo self-benchmark generates only the {role} grid for this accepted role. "
+        "The other role is collected independently. Decode initializes representative state locally; actual "
+        "P/D transfer is not required. Timing collection and qualification do not establish replay readiness."
+    )
+    generated = create_plan(glm, tmp_path / "glm")["fpm"]
+    assert generated["sampling"] == (
+        f"The GLM-5.3-Flash producer measures only the {role} points of the list that the "
+        "collection plan generates and freezes for this accepted role. The other role is collected "
+        "independently. Decode initializes representative state locally; actual P/D transfer is not required. "
+        "Timing collection and qualification do not establish replay readiness."
+    )
+    assert generated["launch"] == _GLM_LAUNCH_TEXT
+
+
 # Issue #475: the packaged GLM-5.3-Flash config mixes linear-attention and sparse-attention layers, so config.json
 # cannot establish its cache geometry. Intake reports it as pending the runtime probe instead of asking for bytes.
 _GLM = Path(__file__).parents[2] / "src/aisim_core/model_configs/zai-org--GLM-5.3-Flash_config.json"
@@ -1941,8 +2075,8 @@ def _glm_precision(tmp_path):
 def _stops_with_guidance(command, capsys, *, import_limit=True):
     """Run init to its nonzero exit and return its (stdout, stderr).
 
-    ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop warns
-    that observation import cannot take cache groups other than full or sliding attention yet.
+    ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop says
+    which vLLM version observation import maps state cache groups for.
     """
     with pytest.raises(SystemExit) as result:
         cli.main(command)
@@ -1951,8 +2085,10 @@ def _stops_with_guidance(command, capsys, *, import_limit=True):
     assert "Cache geometry: pending runtime probe" in captured.err
     assert "model config did not produce a complete FPM profile" not in captured.err
     limit = (
-        "Importing cache groups other than full or sliding attention (for example recurrent state) is not supported "
-        "yet. Import reports such probes as incomplete."
+        "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from vLLM "
+        "0.33.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, as "
+        "unsupported runtime cache specs (guide: "
+        "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
     )
     assert (limit in captured.err) is import_limit
     return captured.out, captured.err
@@ -2116,6 +2252,18 @@ def test_runtime_resolved_interactive_never_prompts_for_geometry(tmp_path, monke
     assert not [prompt for prompt in prompts if "cache_layout" in prompt or "kv_bytes_per_token" in prompt]
     assert "onboard probe-runtime" in stderr and "fmha_quant_mode: resolve" not in stderr
     assert explicit_topology or "explicit topology" in stderr
+    assert not out.exists()
+
+
+def test_runtime_resolved_interactive_stops_before_the_memory_review(tmp_path, monkeypatch, capsys):
+    # vLLM 0.33.0 has a bundled probe instrumentation, and the draft still stops with the probe guidance before the
+    # review that states where pending memory is observed.
+    _terminal(monkeypatch)
+    out = tmp_path / "request.yaml"
+    command = [*_ISSUE_ARGS, "--framework-version", "0.33.0", "--model-config", str(_GLM), *_glm_precision(tmp_path)]
+    stdout, stderr = _stops_with_guidance([*command, "--interactive", "--output", str(out)], capsys)
+    assert "Review FPM profile before saving:" not in stdout + stderr
+    assert "Memory is observed" not in stdout + stderr
     assert not out.exists()
 
 
