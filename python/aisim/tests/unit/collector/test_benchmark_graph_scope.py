@@ -5,6 +5,7 @@
 
 import ast
 import logging
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -19,8 +20,12 @@ COLLECTOR = Path(__file__).resolve().parents[3] / "collector"
 SOURCE = COLLECTOR / "helper.py"
 
 
-def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, eager=False, fallback=False, **extra):
+def trace_benchmark(
+    monkeypatch, *, source=SOURCE, failure=None, explicit=None, eager=False, fallback=False, tracing=False, **extra
+):
     """Execute a helper source snapshot; retain graph references like a traceback."""
+    from collector.helper import TRACE_CHILD_DIR_ENV, TRACE_MEASURED_RANGE, TRACE_TIMED_RANGE
+
     events, graphs = [], []
     state = {"stream": "caller", "replays": 0, "fault_fired": False}
     error = RuntimeError(f"{failure} failed")
@@ -97,15 +102,32 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
         empty_cache=lambda: events.append("empty_cache"),
         Event=Event,
     )
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
+
+    @contextmanager
+    def record_function(name):
+        tag = {TRACE_TIMED_RANGE: "timed", TRACE_MEASURED_RANGE: "measured"}[name]
+        events.append(f"{tag}:enter")
+        yield
+        events.append(f"{tag}:exit")
+
+    profiler = SimpleNamespace(record_function=record_function)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda, profiler=profiler))
+    if tracing:
+        monkeypatch.setenv(TRACE_CHILD_DIR_ENV, "/tmp/children")
+    else:
+        monkeypatch.delenv(TRACE_CHILD_DIR_ENV, raising=False)
     tree = ast.parse(source.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "benchmark_with_power")
     namespace = {
         "contextmanager": contextmanager,
         "get_device_module": lambda device=None: cuda,
         "logging": logging,
+        "os": os,
         "time": time,
         "worker_heartbeat": lambda: events.append("heartbeat"),
+        "TRACE_CHILD_DIR_ENV": TRACE_CHILD_DIR_ENV,
+        "TRACE_TIMED_RANGE": TRACE_TIMED_RANGE,
+        "TRACE_MEASURED_RANGE": TRACE_MEASURED_RANGE,
     }
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
     kwargs = {
@@ -151,6 +173,36 @@ def test_success_preserves_timing_body_and_scopes_cleanup(monkeypatch, explicit)
         ["caller:body", "graph:reset", "empty_cache"] if explicit else ["caller:body", "synchronize", "empty_cache"]
     )
     assert ("stream:set:caller" in observed["events"]) is explicit
+
+
+@pytest.mark.parametrize("eager", [False, True])
+def test_a_trace_marks_exactly_the_timed_work(monkeypatch, eager):
+    """probe.trace_case keeps the kernels inside this range: the warmups, capture and timed runs,
+    not the caller's module build before it nor its body after; a collection never opens it."""
+    events = trace_benchmark(monkeypatch, eager=eager, tracing=True)["events"]
+    assert events.count("timed:enter") == events.count("timed:exit") == 1
+    assert events.index("timed:enter") < events.index("kernel")
+    assert events.index("event:elapsed") < events.index("timed:exit") < events.index("caller:body")
+    assert "timed:enter" not in trace_benchmark(monkeypatch, eager=eager)["events"]
+    failed = trace_benchmark(monkeypatch, failure="capture_body", tracing=True)
+    assert failed["error"]["original_error"] and failed["events"].count("timed:exit") == 1
+
+
+@pytest.mark.parametrize("eager", [False, True])
+def test_the_measured_range_holds_exactly_the_timed_runs(monkeypatch, eager):
+    """Inside the timed range, the runs latency_ms averages and nothing before them: the gates
+    check its auxiliary kernels, and a warmup's one-time work is not paid per call."""
+    events = trace_benchmark(monkeypatch, eager=eager, tracing=True)["events"]
+    assert events.count("measured:enter") == events.count("measured:exit") == 1
+    inside = events[events.index("measured:enter") + 1 : events.index("measured:exit")]
+    assert inside[0] == "event:record" and inside[-2:] == ["event:record", "synchronize"]
+    assert inside.count("kernel" if eager else "graph:replay") == 3  # num_runs, no warmup
+    assert events.index("timed:enter") < events.index("measured:enter") < events.index("measured:exit")
+    assert events.index("measured:exit") < events.index("timed:exit")
+    assert "measured:enter" not in trace_benchmark(monkeypatch, eager=eager)["events"]
+    # a timed run that raises still closes the range
+    failed = trace_benchmark(monkeypatch, failure="timed_replay", tracing=True)
+    assert failed["events"].count("measured:enter") == failed["events"].count("measured:exit") == 1
 
 
 @pytest.mark.parametrize("failure", ["capture_begin", "capture_body", "capture_end"])

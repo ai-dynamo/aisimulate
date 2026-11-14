@@ -135,6 +135,29 @@ def _die_with_worker_preexec():
     return _preexec
 
 
+TRACE_CHILD_DIR_ENV = "AIS_TRACE_CHILD_DIR"
+# While probe.trace_case runs, benchmark_with_power marks what it times with this profiler
+# range, so the trace keeps the measured kernels and drops the module build and the cache
+# fill before them (the DSA decode case fills its indexer cache with a kernel serving fuses).
+TRACE_TIMED_RANGE = "ais::timed"
+# Inside it, the timed runs alone: what latency_ms averages. The first calls' one-time work
+# (JIT, autotune inputs, lazy caches) stays out, so every kernel in this range is per-call
+# work the row pays; the opharness gates check its auxiliary kernels against serving.
+TRACE_MEASURED_RANGE = "ais::measured"
+
+
+def trace_child_argv(argv: list[str]) -> list[str]:
+    """``argv`` unchanged, except while probe.trace_case runs (``AIS_TRACE_CHILD_DIR`` set):
+    a ``python -c ...`` / ``python -m ...`` measurement child then runs under
+    collector/probes/_traced_child.py, which records its kernels in that directory. The
+    probe discards the rows of the run, so no table row depends on the variable."""
+    out_dir = os.environ.get(TRACE_CHILD_DIR_ENV)
+    if not out_dir or len(argv) < 3 or argv[1] not in ("-c", "-m"):
+        return list(argv)
+    wrapper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probes", "_traced_child.py")
+    return [argv[0], wrapper, out_dir, *argv[1:]]
+
+
 def run_measurement_subprocess(argv, *, env, cwd, timeout=None, poll_sec: float = 60.0) -> tuple[int, bytes]:
     """Run a measurement child; beat the executor's stall watchdog while it makes progress.
 
@@ -146,6 +169,7 @@ def run_measurement_subprocess(argv, *, env, cwd, timeout=None, poll_sec: float 
     ``subprocess.TimeoutExpired`` (with the output so far) after ``timeout`` seconds.
     """
     env = {**env, "PYTHONUNBUFFERED": "1"}
+    argv = trace_child_argv(argv)
     with tempfile.TemporaryFile() as out:
         proc = subprocess.Popen(
             argv, env=env, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, preexec_fn=_die_with_worker_preexec()
@@ -450,6 +474,11 @@ def benchmark_with_power(
     dev_mod = get_device_module(device)
     # One beat per measurement: the executor's stall watchdog counts it as progress.
     worker_heartbeat()
+    # probe.trace_case only: the warmups, capture and timed runs are the measured path. A warmup
+    # that raises leaves the range open, and the failed case's trace keeps the whole run.
+    timed = torch.profiler.record_function(TRACE_TIMED_RANGE) if os.environ.get(TRACE_CHILD_DIR_ENV) else None
+    if timed is not None:
+        timed.__enter__()
 
     # Auto-detect configuration from environment if not explicitly provided
     if measure_power is None:
@@ -599,17 +628,24 @@ def benchmark_with_power(
         # ═══════════════════════════════════════════════════════════════════
         start_event = dev_mod.Event(enable_timing=True)
         end_event = dev_mod.Event(enable_timing=True)
-        start_event.record()
-        for _ in range(actual_num_runs):
-            if use_graph:
-                g.replay()
-            else:
-                # Fallback: Direct execution
-                # This matches SGLang/VLLM pattern where kernel_func handles internal loops
-                for _ in range(repeat_n):
-                    kernel_func()
-        end_event.record()
-        dev_mod.synchronize()
+        measured = torch.profiler.record_function(TRACE_MEASURED_RANGE) if timed is not None else None
+        if measured is not None:
+            measured.__enter__()
+        try:
+            start_event.record()
+            for _ in range(actual_num_runs):
+                if use_graph:
+                    g.replay()
+                else:
+                    # Fallback: Direct execution
+                    # This matches SGLang/VLLM pattern where kernel_func handles internal loops
+                    for _ in range(repeat_n):
+                        kernel_func()
+            end_event.record()
+            dev_mod.synchronize()
+        finally:
+            if measured is not None:
+                measured.__exit__(None, None, None)
         _close_phase("timed")
 
         # Check for throttling
@@ -636,6 +672,9 @@ def benchmark_with_power(
         # Calculate latency
         latency_ms = start_event.elapsed_time(end_event) / actual_num_runs / repeat_n
 
+        if timed is not None:
+            timed.__exit__(None, None, None)
+            timed = None
         # Return results
         yield {
             "latency_ms": latency_ms,
@@ -646,6 +685,8 @@ def benchmark_with_power(
             "phase_seconds": phase_seconds,
         }
     finally:
+        if timed is not None:
+            timed.__exit__(None, None, None)
         # Preserve default cleanup after timing starts. Explicit cleanup also
         # resets graphs retained by capture tracebacks; framework-owned tensors
         # must still be released by the collector to reclaim their pool memory.
