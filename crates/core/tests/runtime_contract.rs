@@ -6,9 +6,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use aisimulate_core::engine::{Backend, EngineConfig, TimingModel, TimingModelConfig};
-use aisimulate_core::replay::loadgen::ReplayRequestPayload;
-use aisimulate_core::replay::{
+use aisim_core::engine::{Backend, EngineConfig, SglangConfig, TimingModel, TimingModelConfig};
+use aisim_core::replay::loadgen::ReplayRequestPayload;
+use aisim_core::replay::{
     AggregatedRoundRobinPlacement, AuthoredKvHints, NoEngineEvents, NoReplayMetadata, Placement,
     PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters,
     ReplayCaptureOptions, ReplayComposition, ReplayDeterminism, ReplayEngineConfig,
@@ -26,6 +26,7 @@ fn request(
     output_tokens: usize,
 ) -> ReplayRequest {
     ReplayRequest {
+        cache_salt: None,
         id: id.to_string(),
         arrival_time_ms,
         input_tokens,
@@ -52,6 +53,10 @@ fn aggregated_spec(
         block_size: 4,
         max_num_seqs: 4,
         max_num_batched_tokens: 64,
+        sglang: SglangConfig {
+            num_reserved_decode_tokens: 0,
+            ..SglangConfig::default()
+        },
         timing_model: TimingModelConfig::Fixed {
             prefill_ms: 10.0,
             decode_ms: 2.0,
@@ -342,7 +347,7 @@ fn replay_accept_length_ignores_overlapping_prefill_and_rejection() {
             .per_request
             .iter()
             .filter(|request| request.terminal_status
-                == aisimulate_core::replay::ReplayTerminalStatus::Rejected)
+                == aisim_core::replay::ReplayTerminalStatus::Rejected)
             .count(),
         1
     );
@@ -599,6 +604,7 @@ fn telemetry_heartbeats_do_not_advance_agg_through_a_capped_idle_gap() {
 }
 
 struct GeneralRoundRobinComposition {
+    session_affinity: bool,
     scaling: Option<Box<dyn ReplayScalingPolicy>>,
     scaling_construction_error: Option<&'static str>,
 }
@@ -608,6 +614,7 @@ impl GeneralRoundRobinComposition {
         Self {
             scaling: None,
             scaling_construction_error: None,
+            session_affinity: false,
         }
     }
 
@@ -615,6 +622,7 @@ impl GeneralRoundRobinComposition {
         Self {
             scaling: Some(Box::new(scaling)),
             scaling_construction_error: None,
+            session_affinity: false,
         }
     }
 
@@ -622,6 +630,7 @@ impl GeneralRoundRobinComposition {
         Self {
             scaling: None,
             scaling_construction_error: Some(message),
+            session_affinity: false,
         }
     }
 }
@@ -637,7 +646,8 @@ impl ReplayComposition for GeneralRoundRobinComposition {
         dp_size: u32,
         topology: Vec<WorkerTopology>,
     ) -> anyhow::Result<Self::AggregatedPlacement> {
-        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology))
+        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)
+            .with_session_affinity(self.session_affinity))
     }
 
     fn create_disaggregated_placements(
@@ -648,8 +658,10 @@ impl ReplayComposition for GeneralRoundRobinComposition {
         decode_topology: Vec<WorkerTopology>,
     ) -> anyhow::Result<(Self::DisaggregatedPlacement, Self::DisaggregatedPlacement)> {
         Ok((
-            PoolRoundRobinPlacement::new(prefill_topology),
-            PoolRoundRobinPlacement::new(decode_topology),
+            PoolRoundRobinPlacement::new(prefill_topology)
+                .with_session_affinity(self.session_affinity),
+            PoolRoundRobinPlacement::new(decode_topology)
+                .with_session_affinity(self.session_affinity),
         ))
     }
 
@@ -698,10 +710,10 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
         };
         let decision = if self.selected && (!self.committed || self.queue_on_clock) {
             self.pending.push(placement);
-            aisimulate_core::replay::PlacementDecision::Queued
+            aisim_core::replay::PlacementDecision::Queued
         } else {
             self.selected = true;
-            aisimulate_core::replay::PlacementDecision::Immediate(placement)
+            aisim_core::replay::PlacementDecision::Immediate(placement)
         };
         Ok(PlacementEffects {
             decision,
@@ -1239,14 +1251,14 @@ impl PlacementPolicy<ReplayRequestPayload> for ReleaseOnTopologyCallbacks {
             .push_back(request.metadata().uuid.expect("test request UUID"));
         if self.place_immediately {
             return Ok(PlacementEffects {
-                decision: aisimulate_core::replay::PlacementDecision::Immediate(
+                decision: aisim_core::replay::PlacementDecision::Immediate(
                     self.release_next(self.stable_scheduler_id).pop().unwrap(),
                 ),
                 released: Vec::new(),
             });
         }
         Ok(PlacementEffects {
-            decision: aisimulate_core::replay::PlacementDecision::Queued,
+            decision: aisim_core::replay::PlacementDecision::Queued,
             released: Vec::new(),
         })
     }
@@ -1703,6 +1715,139 @@ fn round_robin_session_affinity_routes_turns_through_the_public_replayer() {
             .map(|record| record.decode_worker_idx)
             .collect();
         assert_eq!(workers, expected);
+    }
+}
+
+#[rstest::rstest]
+fn session_affinity_survives_pool_retirement_and_growth(
+    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
+    #[values(WorkerPool::Agg, WorkerPool::Prefill, WorkerPool::Decode)] pool: WorkerPool,
+    #[values(false, true)] busy: bool,
+) {
+    struct RetireThenGrow {
+        pool: WorkerPool,
+        retirement_at_ms: f64,
+        retired: bool,
+    }
+
+    impl ReplayScalingPolicy for RetireThenGrow {
+        fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+            Ok(self.retirement_at_ms)
+        }
+
+        fn on_tick(
+            &mut self,
+            _snapshot: ReplayScalingSnapshot,
+        ) -> anyhow::Result<ReplayScalingDecision> {
+            let target = if self.retired { 2 } else { 1 };
+            let decision = ReplayScalingDecision {
+                target_prefill: (self.pool == WorkerPool::Prefill).then_some(target),
+                target_decode: (self.pool != WorkerPool::Prefill).then_some(target),
+                next_tick_ms: (!self.retired).then_some(600.0),
+            };
+            self.retired = true;
+            Ok(decision)
+        }
+    }
+
+    let retirement_at_ms = if !busy {
+        300.0
+    } else if pool == WorkerPool::Decode {
+        112.0
+    } else {
+        105.0
+    };
+    let requests = [
+        ("a", 0.0),
+        ("b", 100.0),
+        ("b", 400.0),
+        ("a", 500.0),
+        ("b", 700.0),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (session, arrival))| {
+        let mut req = request(&format!("turn-{i}"), arrival, 12, 3);
+        req.session_id = Some(session.into());
+        req.prefill_dp_rank = (pool != WorkerPool::Agg).then_some(1);
+        req.dp_rank = Some(1);
+        req
+    })
+    .collect();
+    let mut spec = aggregated_spec(backend, 2, 0.0, requests);
+    spec.engine["dp_size"] = 2.into();
+    if pool != WorkerPool::Agg {
+        spec.topology = ReplayTopology::Disaggregated {
+            prefill: WorkerPoolSpec {
+                initial_workers: 2,
+                startup_delay_ms: 0.0,
+            },
+            decode: WorkerPoolSpec {
+                initial_workers: 2,
+                startup_delay_ms: 0.0,
+            },
+            handoff_latency_ms: 1.0,
+        };
+        let rank = spec.engine["rank"].clone();
+        spec.engine["prefill"] = serde_json::json!({"dp_size": 2, "rank": rank});
+        spec.engine["decode"] = serde_json::json!({"dp_size": 3, "rank": rank});
+    }
+    let mut composition = GeneralRoundRobinComposition::with_scaling(RetireThenGrow {
+        pool,
+        retirement_at_ms,
+        retired: false,
+    });
+    composition.session_affinity = true;
+    let report = Replayer::with_composition(spec, ReplayEngineFactory::new(), composition)
+        .unwrap()
+        .with_capture_options(ReplayCaptureOptions {
+            capture_lifecycle_evidence: true,
+            ..ReplayCaptureOptions::default()
+        })
+        .run()
+        .unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 5);
+    assert_eq!(report.request_counts.total_output_tokens, 15);
+    assert_eq!(report.per_request.len(), 5);
+    let retirement = report
+        .runtime_evidence
+        .lifecycle_operations
+        .iter()
+        .find(|operation| operation.pool == pool && operation.at_ms == retirement_at_ms)
+        .unwrap();
+    assert_eq!(
+        retirement.state_after_batch.draining,
+        if busy { vec![1] } else { vec![] }
+    );
+    if busy {
+        // B's first turn is the only request on worker 1 at scale-down.
+        let request = &report.per_request[1];
+        assert_eq!(request.request_id.as_deref(), Some("turn-1"));
+        assert!(request.first_admit_ms.unwrap() <= retirement_at_ms);
+        assert!(retirement_at_ms < request.terminal_time_ms);
+    }
+    for (i, record) in report.per_request.iter().enumerate() {
+        assert_eq!(
+            record.routing_history.len(),
+            if pool == WorkerPool::Agg { 1 } else { 2 }
+        );
+        for placement in &record.routing_history {
+            let affected_pool = match placement.pool {
+                ReplayRequestPool::Agg => WorkerPool::Agg,
+                ReplayRequestPool::Prefill => WorkerPool::Prefill,
+                ReplayRequestPool::Decode => WorkerPool::Decode,
+            } == pool;
+            // Only B's retired pool must repin; surviving pins remain stable,
+            // including after a fresh worker joins at 600 ms.
+            let expected_worker = if affected_pool {
+                [0, 1, 0, 0, 0][i]
+            } else {
+                [0, 1, 1, 0, 1][i]
+            };
+            assert_eq!(placement.logical_worker_id, Some(expected_worker));
+            assert_eq!(placement.dp_rank, Some(1));
+        }
     }
 }
 

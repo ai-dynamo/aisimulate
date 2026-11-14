@@ -428,6 +428,37 @@ def test_public_comparison_keeps_point_request_denominators_and_unscored_prepara
     assert all(len(r["uuid"]) == 16 for r in rows)
 
 
+def test_portable_preparation_joins_source_keys_instead_of_measured_uuids():
+    from test_agentx_accuracy import observation
+
+    from scripts.e2e_accuracy.agentx_contract import score
+    from scripts.e2e_accuracy.run_agentx_accuracy import normalize_native
+
+    dataset, silicon = fixture()
+    dataset["requests"] = [native(1, end=1000), native(2, start=2000, end=4000)]
+    measured = [
+        reference(1, phase="preparation", end=1000, key=dataset["requests"][0]["request_id"]),
+        reference(2, phase="profile", start=2000, end=4000, key=dataset["requests"][1]["request_id"]),
+    ]
+    observations = [observation(row["key"], phase=row["phase"]) for row in measured]
+    normalized = normalize_native({"telemetry": {"requests": dataset["requests"]}}, observations, "self_collected")
+    scores = score(observations, normalized, "complete_finite_cohort")
+    assert scores["coverage"]["predicted"] == 1
+    report = {
+        "samples": dataset["samples"],
+        "telemetry": dataset["telemetry"],
+        "phases": {"preparation": {"start_ms": 0, "end_ms": 2000}, "profile": {"start_ms": 2000, "end_ms": 4000}},
+    }
+    value = build({"reference": measured, "silicon": silicon, "namespace_map": {}}, report, dataset, scores)
+    validate(value)
+    for phase in ("preparation", "profile"):
+        rows = value["phases"][phase]["requests"]
+        assert len(rows) == 2
+        assert rows[0]["counterpart"] == rows[1]["uuid"]
+        assert rows[1]["counterpart"] == rows[0]["uuid"]
+    assert all(s["mape_percent"] is None for chart in value["phases"]["preparation"]["charts"] for s in chart["scores"])
+
+
 def test_public_comparison_rejects_private_fields_and_wrong_scores():
     value = public_comparison()
     value["phases"]["profile"]["requests"][0]["prompt"] = "private"

@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior adapted from SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::collections::BTreeSet;
 
@@ -271,6 +274,9 @@ pub struct ReplayRequest {
     /// replay may omit it; adapters must never invent tokens when it is needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_token_ids: Option<Vec<u32>>,
+    /// Optional SGLang cache namespace. Empty is equivalent to absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
     pub output_tokens: usize,
     /// Optional exact generated-token plan. When present, its length controls
     /// native generation while `output_tokens` remains the authored maximum.

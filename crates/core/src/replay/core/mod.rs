@@ -53,7 +53,7 @@ pub trait AdmissionSource {
         now_ms: f64,
         cluster_in_flight: usize,
     ) -> Result<Vec<ReadyArrival<Self::Request, Self::Metadata>>>;
-    fn on_output_token(&mut self, request_id: Uuid, token_id: u32) -> Result<()>;
+    fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()>;
     fn on_terminal(
         &mut self,
         request_id: Uuid,
@@ -162,6 +162,29 @@ pub trait PlacementPolicy<Request> {
     /// Discard all request state, including tentative placement state when
     /// cancellation precedes engine dispatch.
     fn request_terminal(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
+    /// The request's prefill started: the engine that prefills it admitted it
+    /// into a forward pass for the first time. That engine is the aggregated
+    /// worker, or the prefill-pool worker in P/D mode; decode-pool admissions
+    /// never call this. Like `prefill_completed`, it fires at most once per
+    /// request, so readmission after a preemption or retraction does not call
+    /// it again.
+    ///
+    /// `now_ms` is the start of that pass, reported as `first_admit_ms`, and
+    /// `reused_input_tokens` is the prompt prefix the admission served from
+    /// cache, reported as `first_admission_reused_input_tokens`. The call
+    /// follows the pass's start-of-pass KV observations and precedes the
+    /// request's `prefill_completed`. A request that ends before its prefill
+    /// completes, or an aggregated request whose first output also ends it,
+    /// gets `request_terminal` without `prefill_completed`. Returned
+    /// placements are dispatched like those from `prefill_completed`.
+    fn prefill_started(
+        &mut self,
+        _request_id: Uuid,
+        _reused_input_tokens: usize,
+        _now_ms: f64,
+    ) -> Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
     fn prefill_completed(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
     fn pending_count(&self) -> usize;
     fn worker_ready(&mut self, worker: WorkerTopology, now_ms: f64) -> Result<Vec<Placement>>;

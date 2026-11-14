@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # AISim E2E Accuracy
 
-View the [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/).
+View the [E2E Accuracy Overview](https://ai-dynamo.org/aisim/e2e-accuracy/).
 It compares **AISim** and **AIC (legacy CLI)** against measured silicon
 so users can assess whether the new CLI is comparable during migration. The AIC
 comparison series is temporary and will be removed when the AIC (legacy CLI) is deprecated.
@@ -146,6 +146,14 @@ local preview directory rather than replacing a checked-in qualified snapshot.
 When refreshing a preview with a branch catalog, update both `summary.json`
 and the selected catalog entry's summary path so the browser loads the new data.
 
+## Public summary versions
+
+New InfX dashboard summaries use `schema_version: 2`, with `aisim` as the predictor series key at every aggregate and operating point. Snapshot metadata uses `aisim_completed_at`, `aisim_method`, `aisim_packages`, and `aisim_sot_sha256`. Recorded distribution names inside `aisim_packages`, measurement values, evaluated revisions, URLs, and evidence hashes keep their original identities.
+
+Historical v1 summaries retain their `aisimulate` series and `aisimulate_*` snapshot fields. The updated dashboard, Pages validators, and accuracy notifications accept both versions and normalize v1 to the canonical representation in memory. Source documents are not modified, and qualification checks verify the hash of the original summary bytes before normalization. Unknown versions and mixed v1/v2 field names are rejected. A generated site may contain normalized representations; its bytes are not the checksum-bound original campaign artifact.
+
+This migration changes only the public dashboard summary. Raw InfX prediction rows and metadata, the v1 campaign qualification envelope, AgentX schemas, and the branch catalog remain unchanged. Older consumers that only accept summary v1 must be upgraded before reading v2; dual-read support in the new readers does not make old readers accept a new schema.
+
 ## Branch selection
 
 The Pages build publishes a `branches.json` catalog containing `main` and every
@@ -192,7 +200,7 @@ than displaying another branch's results. A missing catalog permits direct
 source preview, whose label is derived from the loaded summary itself.
 
 The refreshed `summary.json` evaluates AISim main at
-[`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisimulate/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
+[`e46be717175acf06bdbbdeadb7aaf9bb2afdae8d`](https://github.com/ai-dynamo/aisim/commit/e46be717175acf06bdbbdeadb7aaf9bb2afdae8d)
 against the public [InferenceX db-dump/2026-09-14 release](https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-09-14).
 Its legacy AIC baseline uses the `aiconfigurator` CLI bundled in the **same
 AISim wheel and revision**. The page records the baseline's AISim
@@ -247,7 +255,7 @@ Manual execution uses the workflow on **main**, with an explicit evaluated
 branch and full source SHA:
 
 ```bash
-gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref main \
+gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisim --ref main \
   -f branch=release/0.12.0 \
   -f expected_sha=FULL_40_CHARACTER_COMMIT_SHA
 ```
@@ -267,7 +275,7 @@ revision's wheel and runs the same measurement, source-resolution, estimate,
 and replay pipeline. It does not publish to Pages.
 
 ```bash
-gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref pull-request/372 \
+gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisim --ref pull-request/372 \
   -f branch=simonec/fix-inferencex-ep-gpu-count \
   -f expected_sha=FULL_40_CHARACTER_PR_HEAD_SHA -f preview=true
 ```
@@ -370,7 +378,7 @@ Completed bundles are retained for seven days as
 `e2e-accuracy-results-<branch-key>-shard-<index>`. Retry within that window:
 
 ```bash
-gh run rerun RUN_ID --repo ai-dynamo/aisimulate --failed
+gh run rerun RUN_ID --repo ai-dynamo/aisim --failed
 ```
 
 GitHub reruns failed jobs and their dependent qualification job, reusing successful
@@ -457,8 +465,8 @@ metadata, and a coverage report. For a branch-qualified snapshot, both
 
 All three producer documents must also carry the same completed `aic_run`.
 Its `runtime.source_checkout` records the same branch, full commit SHA, and
-`clean: true`, plus `repository: "https://github.com/ai-dynamo/aisimulate"`.
-Its `runtime.cli_entry_point` is `"aisimulate.legacy_cli.entrypoint:main"` or
+`clean: true`, plus `repository: "https://github.com/ai-dynamo/aisim"`.
+Its `runtime.cli_entry_point` is `"aisim.legacy_cli.entrypoint:main"` or
 `"aiconfigurator.main:main"` for 0.12 wheels. New producer records include the
 matching `baseline_api` and `config_adapter`; the public `aic_source` retains
 `cli_entry_point`. Both the site builder and browser validate the supported
@@ -482,7 +490,7 @@ Commit the generated summary on the evaluated branch. Use `--branch main` for
 main. The builder rejects missing, dirty, mismatched, or mixed incremental run
 provenance. Omitting `--branch` preserves the legacy unqualified export path;
 it cannot assert branch accuracy. Both export paths include sanitized topology
-details. The existing aggregate schema stays compatible.
+details. New exports use the v2 public summary contract; updated readers also accept historical v1 summaries.
 
 ## Validate and preview
 
@@ -510,7 +518,7 @@ a successful main-only campaign does not establish release compatibility.
 ## Adapter parity audit (2026-10-02)
 
 The adapter and public CI are **not equivalent to recipe-resolved e2e-gym**.
-This audit compared AISimulate PR #372 (`b78fb6bdadf87e013fc0a89f5277024ac888a294`)
+This audit compared AISim PR #372 (`b78fb6bdadf87e013fc0a89f5277024ac888a294`)
 with e2e-gym main at `2ad1ec4287ad9fb5857680901eb65b4ff0cb4098`.
 The local September 28 dump contains 2,564 configs, 85,309 benchmark rows, and
 1,238 workflow runs. This is a mapping/selection audit, not a latency rerun.
@@ -529,7 +537,7 @@ four physical GPUs. All 85,309 inputs now equal selected points plus exclusions:
 33,140 incomplete runs, 6,104 multinode, 2,261 nonstandard/error, 28,024 stale,
 and 10,942 superseded. Adding valid recent EP evidence also moves some families'
 freshness cutoff; the difference is not simply a union of the old cohort and EP rows.
-The [October 2 accuracy run](https://github.com/ai-dynamo/aisimulate/actions/runs/36995581041)
+The [October 2 accuracy run](https://github.com/ai-dynamo/aisim/actions/runs/36995581041)
 independently confirms the old 4,130-point selection and the same filter counts.
 Its main artifact publishes 1,137 baseline-success points, with 2,468 adapter
 exclusions, 218 recipe-required exclusions, and 307 baseline failures. It evaluates
@@ -538,10 +546,10 @@ exclusions, 218 recipe-required exclusions, and 307 baseline failures. It evalua
 A differential check against gym's older `mapping.py` helper used its 180-day
 window and 2,209 retained points. Of those, 209 were rejected by that helper.
 Before these fixes, 507 accepted mappings differed and seven Kimi-K2.6 points
-were rejected only by AISimulate. Afterward, those seven adapt and 306 attention-DP
+were rejected only by AISim. Afterward, those seven adapt and 306 attention-DP
 mismatches disappear. The remaining 201 differences are non-vLLM single-node EP
 rows for which the older helper still trusts TP × EP. They must not be copied
-back into AISimulate. Gym's production `predict.py` instead requires
+back into AISim. Gym's production `predict.py` instead requires
 `deployment.py::resolve_deployment` and immutable recipe evidence.
 
 ### Source-resolved policy follow-up
@@ -602,7 +610,7 @@ both row labels and numeric cells, including grouped serving rows.
 
 New campaigns declare `metric_contract: serving-metrics-v1` in both the summary
 and qualification record. Each operating point contains `measured`, `aic`, and
-`aisimulate` series with:
+`aisim` series with:
 
 - `ttft_ms`, `tpot_ms`, and `e2e_ms`: mean request latencies in milliseconds.
 - `interactivity_tok_s`: `1000 / tpot_ms`, in tokens/s/user.
@@ -662,8 +670,23 @@ as well as the selected filter.
 
 ## AgentX beta
 
+Artifact paths allow symlinks above the trusted input root while rejecting
+symlinked bundle components and resolved paths outside that root. Timeline status
+values are escaped before rendering.
+
+The Hardware / backend column shows the recorded measured framework version,
+such as `sglang 0.5.20`. Grouped rows retain all distinct measured versions; missing
+versions stay unrecorded. The Performance model column identifies the prediction
+database version separately.
+
+Model and concurrency rows show a dedicated Performance model column, such as `Op-based
+(vllm 0.31.0)`. The detail page uses the full `Op-based perf model (vllm 0.31.0)`
+label after the run/lane/request counts.
+Labels use the recorded estimator and prediction database version; missing values
+stay unrecorded, and grouped runs retain each distinct model/version label.
+
 The [Qwen Weka collection protocol](../../benchmarks/evidence/accuracy/qwen-weka/README.md)
-defines the replacement six-profile campaign. It remains unpublished until all
+defines the replacement campaign. It remains unpublished until all
 six silicon profiles and the manifest-selected twelve GLM/Qwen replays qualify.
 Completed collections carry checksum-pinned `aisimulate.benchmark.features.v1`
 silicon records in HF. Evidence displays that saved record separately from
@@ -691,7 +714,7 @@ or satisfy the complete twelve-replay publication gate.
 
 The **AgentX NEW** tab uses a separate `aisimulate.agentx.accuracy.v1` publication.
 It does not change InfX snapshots or calculate shape errors. The beta notice links
-to the [AgentX support matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/#agentx).
+to the [AgentX support matrix](https://ai-dynamo.org/aisim/feature-support-matrix/#agentx).
 
 Initial coverage is explicitly selected in the reviewed private HF catalog
 `catalog/e2e/agentx.json`:
@@ -759,6 +782,26 @@ dataset, evaluated commit, and driver digests, and reconciled request accounting
 Raw traces, token arrays, local paths, and logs remain private. Only explicit
 numerical projections and approved source links enter the public payload.
 
+New `self_collected` publications require exactly the eight silicon feature rows
+from the [collection skill](../../.agents/skills/aisim-agentx-collect/SKILL.md).
+Configured states must be resolved, including evidenced `not_applicable` values;
+observed use may remain unknown. Enabled sub-block reuse requires positive
+`match_granularity_tokens` and `block_size`, hybrid caching requires `cache_types`,
+and speculation requires its actual method and positive integer `draft_length`.
+Disabled/N/A speculation uses `method: off` and `draft_length: null`.
+Enabled G2/G3 require `scope: local|shared` and a named `implementation`; G2 also
+requires positive integer capacity `size` in bytes. Off/N/A offload uses
+`scope: not_applicable`. Qualification checks the published receipt against the
+checksum-verified silicon input and resolves every retained evidence hash/pointer.
+
+The explicit compatibility allowlist is the original 36 finite Qwen identities
+`self-p{4096|32768}-l{1|4|16}-{cold|warm}-r{0|1|2}`, with matching workload fields,
+Qwen3.5-397B-A17B on B300/vLLM TP8 and `complete_finite_cohort`. Those historical
+records may retain missing or unknown receipts. A new ID, a Weka run, a failed
+prediction or a different boundary does not gain that exception. Unqualified
+silicon inputs may retain unknowns for investigation; they cannot pass this
+publication gate by declaring an all-unknown or evidence-free N/A inventory.
+
 The trusted Pages publisher checks the producer workflow and qualification job,
 branch ancestry, checksums, safe paths, allowed fields, and overview/detail
 agreement. Detail JSON loads on demand. The shared native renderer mounts directly
@@ -806,8 +849,10 @@ then reuses them for workload selection. No other concurrency's details are fetc
 On mobile, sample counts move below the error to keep the table within the screen.
 The separate selected-run accuracy table is omitted; changing the selected
 workload does not change the concurrency summary.
-A benchmark feature checklist sits to the left of the concurrency summary in
-one bordered row. Both panels stretch to the same height; the summary table fills
+A Feature Parity checklist sits to the left of the concurrency summary in
+one bordered row that fills the available width and aligns with the subplots.
+The panels share the row in a 1:1.1 ratio; the feature-name column uses 36% of
+its table, leaving 32% each for Silicon and AISim so notes wrap less. Both panels stretch to the same height; the summary table fills
 its panel. On smaller screens, they stack with the checklist first. The checklist
 follows the selected run and shows exactly eight fields: Prefix caching, Sub-block
 prefix reuse, Host offload (G2), Storage offload (G3), Hybrid KV/state cache,
@@ -821,30 +866,31 @@ question mark for Unrecorded, with text labels for accessibility. Unsupported is
 separate from Off. The explanatory footer is omitted; cell tooltips describe
 missing evidence, and the feature dataset revision remains visible.
 
-Silicon uses the existing `aisimulate.benchmark.features.v1` record.
-On, Off, N/A, and Unrecorded remain distinct. Missing values stay Unrecorded, with no
-inference from model names, replay settings, or the support matrix. The current
-schema does not record sub-block reuse separately and conflates Planner with
-KV-aware routing; neither field can establish router state, so routing stays
-Unrecorded even when legacy `routing.planner` is enabled or disabled. Offload scope,
-hybrid state-cache type, and speculative method/actual draft length are also
-unavailable in the current metadata contract. Replay configuration is not a
-substitute for those measured settings.
+Silicon uses the saved `aisimulate.benchmark.features.v1` record. On, Off,
+N/A, and Unrecorded remain distinct. Unrecorded means the retained evidence
+cannot establish a setting; N/A means the feature does not apply to the selected
+execution. Missing silicon settings never fall back to AISim settings or support
+matrix defaults. Legacy Planner metadata cannot establish KV-aware router state.
 
-AISim uses only the selected run's existing `config_summary` projection. An
-explicit boolean under the matching feature name means On/Off; an explicit
-`unsupported` value means Unsupported. For historical speculation records,
-`Speculative tokens` supplies On/Off and the unmodified draft length. Conflicting,
-duplicate, absent, or invalid settings remain Unrecorded. A failed/unsupported replay
-does not identify an unsupported feature. Existing published runs record only
-prefix caching and speculative token count for this checklist, so the other six
-AISim settings remain Unrecorded. No silicon state or model-specific default fills
-that gap, and the UI makes no general capability claim from an On setting.
-When speculation is On, both source columns show compact Method and Draft length
-badges with each label and value on one line. AISim's method comes only from an explicit `Speculative method` setting;
-the historical preview has no such field and displays Method: Unrecorded. A token
-count or model name never supplies a method. Off and Unsupported cells omit these
-badges. Missing draft lengths also retain an explicit Unrecorded badge.
+AISim uses the structured `aisimulate.agentx.simulation-features.v1` record
+exported by the evaluated wheel after defaults and compilation. All eight
+configured settings must be recorded for new completed runs; N/A is a resolved
+state, not a missing value. Native offline replay has no Dynamo router, so its
+KV-aware routing setting is N/A. Historical runs without this record show
+Legacy missing evidence. See Effective AISim feature evidence below for the
+qualification rules. Configured state and observed use remain separate: an On
+setting can have unknown observed use when attributable runtime counters are
+unavailable.
+
+Cell notes are generated by dashboard templates from recorded parameters and CI
+comparison results, without per-run agent-written annotations. They show details
+needed to interpret parity: offload scope, state-cache type, prefix match
+granularity, observed exercise, speculative token conventions, mismatches and
+unsupported bounds. Unknown observed use stays in Evidence and is omitted from
+Feature Parity cell notes; known observations remain visible. For example, the GLM seed-count note explains why silicon's
+raw draft value 4 matches AISim's three proposals. These notes remain automatic
+when collection and CI run unattended. Speculation badges retain method, draft
+length and AISim verification width; absent silicon parameters stay Unrecorded.
 
 The eight-feature checklist shows the selected run's settings together, without
 a separate Combination support section. On does not imply exercised or supported.
@@ -959,11 +1005,20 @@ order, and applies observed output-length substitutions. Finite token traces are
 reconstructed from recorded token equality and dependencies. Replay configuration,
 prediction database selection, and simulator cache geometry belong to CI rather
 than the HF bundles. The reviewed policies currently cover B300 TP8 GLM/SGLang and
-Qwen/vLLM. They retain the existing op-level policy, correction disabled, SGLang
-0.5.21 / vLLM 0.31.0 databases, and GLM verification depth 3 with acceptance 1.99.
-These simulator choices are distinct from the silicon's configured draft length.
-Qwen cache geometry is requalified from all recorded worker ranks using the
-collection probe's shared-pool mapping.
+Qwen/vLLM. They retain the existing op-level policy, correction disabled, and SGLang
+0.5.21 / vLLM 0.31.0 databases. SGLang verification depth comes from the resolved
+recipe. Each point's checksum-pinned `feature_point_receipt` must retain
+`metrics.speculative_acceptance` with `verification_depth` matching that recipe
+and finite `accepted_draft_tokens` between zero and the depth. Missing, invalid or
+depth-mismatched acceptance stops preparation; no other point's value is reused.
+Depth zero needs no acceptance receipt and supplies zero accepted draft tokens.
+These values are distinct from the silicon's configured draft length. Historical
+snapshots retain their original explicit prediction settings and provenance.
+Qwen cache geometry is requalified by `scripts/e2e_accuracy/agentx_inputs.py`
+from all recorded worker ranks using the shared-pool mapping. Receipts must contain
+each integer rank from zero through TP minus one exactly once. The accuracy driver
+loads no collection scripts from `benchmarks/evidence/`; historical producer
+fingerprints still use their original file closure.
 
 The HF feature inventory has eight entries: prefix caching, sub-block reuse,
 G2, G3, hybrid state cache, speculation, KVCR, and KV-aware routing. States, scopes,
@@ -1000,7 +1055,9 @@ The AISim column reads this structured record, never human-readable
 `config_summary` labels or the silicon column. Each role retains its own states
 and parameters. Enabled, disabled, N/A, unsupported and recording failure remain
 distinct. Configured enablement does not establish observed use: for example,
-KVCR may be enabled but unused without router hints. The current AgentX producer
+KVCR may be enabled but unused without router hints. Prefix-use observations
+cover the retained preparation and profile requests; other exercise states remain
+unknown unless the runtime provides attributable evidence. The current AgentX producer
 uses native offline replay without a Dynamo router adapter, so Dynamo KV-aware
 routing is N/A. Planner metadata cannot establish that routing setting.
 

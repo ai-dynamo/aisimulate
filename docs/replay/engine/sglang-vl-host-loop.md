@@ -11,7 +11,7 @@ deployment (see [Disaggregated prefill](#disaggregated-prefill)): requests
 cross the serving frontend, the scheduler receives and batches them at
 iteration boundaries, the vision encoder runs inside the prefill forward, and
 outputs become visible one scheduler iteration later. Configure it in an
-`aisimulate predict` configuration by pointing the host-aware worker's
+`aisim predict` configuration by pointing the host-aware worker's
 `host_profile` at a host cost table measured on the serving host, next to an
 image workload
 ([`examples/cli/vl-predict-aggregated.yaml`](../../../examples/cli/vl-predict-aggregated.yaml)):
@@ -41,23 +41,23 @@ engine:
 
 ```bash
 # Once per image workload, on the serving host; no GPU needed.
-python -m aisimulate.vl.collect --config prediction.yaml --sglang-python /path/to/serving/venv/bin/python
+python -m aisim.vl.collect --config prediction.yaml --sglang-python /path/to/serving/venv/bin/python
 # List the table's rows.
-python -m aisimulate.vl.collect --config prediction.yaml --show
+python -m aisim.vl.collect --config prediction.yaml --show
 # Predict the configured deployment.
-aisimulate predict --config prediction.yaml
+aisim predict --config prediction.yaml
 # Or search one and predict the best candidate.
-aisimulate recommend --config search.yaml --output-dir ./vl-recommend
-aisimulate predict --config ./vl-recommend/recommendations/0001.yaml
+aisim recommend --config search.yaml --output-dir ./vl-recommend
+aisim predict --config ./vl-recommend/recommendations/0001.yaml
 ```
 
 A saved recommendation carries the resolved frontend stages, so the last
 `predict` reads no host table.
 
-`collect` runs from an interpreter with aisimulate installed (Python 3.11 to
+`collect` runs from an interpreter with aisim installed (Python 3.11 to
 3.13) on the serving host and launches the measurement in the serving venv
 named by `--sglang-python`; the two are separate environments whenever the
-serving venv's Python is older than aisimulate supports. A relative
+serving venv's Python is older than aisim supports. A relative
 `host_profile.path` is resolved against the working directory `collect` and
 `predict` run in, so the examples assume one directory for both.
 
@@ -147,10 +147,11 @@ stages:
 Consequences the tests pin: a request's first token is observed one iteration
 after the forward that produced it; the radix cache learns a completed
 prefill's prefix only when that forward is observed, so a request selected one
-iteration later reuses nothing from it; a request that finished in forward `k`
-still occupies a slot in batch `k+1` and, when that batch is a decode, is
-allocated its row's KV slot, which is committed and cached with the request
-when the finish is observed (only an unaligned tail page is freed); a request
+iteration later reuses nothing from it. Following SGLang v0.5.22, aggregated
+non-speculative decode excludes rows whose queued result finishes them by
+length. Their KV stays owned until that result is observed; if survivors
+need that memory, the scheduler skips this decode without retraction or ratio
+decay. PD decode retains its ghost-row behavior. A request
 that needs no output token completes when its prefill is observed, not when it
 launches; a request retracted or cancelled while its forward is in flight
 neither receives that forward's token nor keeps it, while the device work stays
@@ -315,7 +316,7 @@ pools, not by the analytical overlay. On this path
 SGLang predictions keep their existing behavior. `recommend` accepts the same
 fields as fixed data; candidates search load, scheduling, tensor parallelism
 and replicas (not `mode`, which must be concrete), and their saved prediction
-YAML reproduces the scored metrics through `aisimulate predict`.
+YAML reproduces the scored metrics through `aisim predict`.
 
 Four fields read as parallelism and mean different things here.
 `parallelism.replicas` on the language worker counts independent workers, each
@@ -374,6 +375,11 @@ the worker.
 
 ## Behavior source and validation
 
+Finishing-row filtering and its overlap-loop handling follow SGLang v0.5.22 at
+immutable revision `baa9befa381511cd4d56f83980951e5a45fffc6d`:
+[`filter_batch`](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_batch.py)
+and the [overlap scheduler](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/scheduler.py).
+
 The host loop, embedding cache, and frontend pools are independent
 implementations of the observed behavior of sgl-project/sglang v0.5.19 at
 immutable revision `0bcd822377da7b5718e674eaf9c870d349424dd1`:
@@ -396,10 +402,10 @@ immutable revision `0bcd822377da7b5718e674eaf9c870d349424dd1`:
 
 No upstream source or tests are copied;
 [`THIRD_PARTY_NOTICES.md`](../../../THIRD_PARTY_NOTICES.md) records the
-attribution. The collector (`python -m aisimulate.vl.collect`) instantiates the
+attribution. The collector (`python -m aisim.vl.collect`) instantiates the
 pinned upstream frontend objects unmodified on the serving host and times them
 from the outside. Deterministic Rust tests cover the iteration structure,
-mid-iteration arrivals, ghost decode members and their KV slot, deferred
+mid-iteration arrivals, finishing-row filtering, PD ghost decode members, deferred
 prefix-cache commits, retraction and cancellation of forwards in flight, the
 equivalence with the pass model (`host_loop: false`), cache-miss selection per
 chunk, pool ownership and arrivals settling past completions, the

@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
+# Cache-salt normalization follows SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+# Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 import json
 import math
 
 import pytest
 
-from aisimulate.traffic import materialize_configured_traffic
+from aisim.traffic import materialize_configured_traffic
 
 pytestmark = [
     pytest.mark.pre_merge,
@@ -33,6 +36,7 @@ def test_materializes_canonical_inline_requests_without_trace_io():
                     "dp_rank": 3,
                     "prefill_dp_rank": 1,
                     "session_id": "session-a",
+                    "cache_salt": "tenant-a",
                     "metadata": {"source": "inline"},
                 },
                 {
@@ -52,6 +56,7 @@ def test_materializes_canonical_inline_requests_without_trace_io():
             "dp_rank": 3,
             "prefill_dp_rank": 1,
             "session_id": "session-a",
+            "cache_salt": "tenant-a",
             "metadata": {"source": "inline"},
         },
         {
@@ -62,6 +67,16 @@ def test_materializes_canonical_inline_requests_without_trace_io():
             "metadata": None,
         },
     ]
+
+
+@pytest.mark.parametrize("salt", [None, "", 1, ["tenant-a"]])
+def test_inline_request_cache_salt_normalization_and_type_validation(salt):
+    traffic = {"requests": [{"arrival_time_ms": 0, "input_tokens": 4, "output_tokens": 1, "cache_salt": salt}]}
+    if salt is None or salt == "":
+        assert "cache_salt" not in materialize_configured_traffic(traffic)[0]
+    else:
+        with pytest.raises(ValueError, match="cache_salt must be a string"):
+            materialize_configured_traffic(traffic)
 
 
 @pytest.mark.parametrize("field", ["dp_rank", "prefill_dp_rank"])

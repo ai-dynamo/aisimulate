@@ -23,11 +23,11 @@ use crate::operators::util_empirical::{DeltaLookupCache, ProvenanceTier, UtilGri
 
 /// The five known legacy/framework-agnostic backend directory names. Mirrors the
 /// SDK loader's `KNOWN_BACKEND_DIRS`
-/// (`python/aisimulate/src/aisimulate_core/sdk/perf_database.py`): any other
+/// (`python/aisim/src/aisim_core/sdk/perf_database.py`): any other
 /// first-level directory under a system's data dir is a family dir containing
 /// `<backend>/<version>` subtrees.
 /// Keep textually identical to the CANONICAL `_KNOWN_BACKEND_DIRS` in
-/// `python/aisimulate/src/aisimulate_core/sdk/operations/base.py`, which lists
+/// `python/aisim/src/aisim_core/sdk/operations/base.py`, which lists
 /// every copy that must stay in sync (Rust cannot import the Python set).
 const KNOWN_BACKEND_DIRS: [&str; 5] = ["trtllm", "sglang", "vllm", "nccl", "oneccl"];
 
@@ -76,22 +76,29 @@ fn global_shared_tables() -> &'static SharedTablesMemo {
 }
 
 /// Stop sharing the tables loaded for `system` from `systems_root`, under any
-/// spelling of that directory. Databases that hold them keep them; the next
-/// shared load parses the files again. A state snapshot fingerprints the data
-/// before its estimator loads it, so the estimator must not adopt tables that
-/// another engine parsed before that fingerprint.
-pub(crate) fn unshare_tables(systems_root: &Path, system: &str) {
-    unshare_tables_in(global_shared_tables(), systems_root, system);
+/// spelling of that directory, except `keep`. Databases that hold them keep
+/// them; the next shared load parses the files again. A state snapshot
+/// fingerprints the data before its estimator loads it, so the estimator must
+/// not adopt tables that another engine parsed before that fingerprint.
+pub(crate) fn unshare_tables(systems_root: &Path, system: &str, keep: &[Arc<PerfTables>]) {
+    unshare_tables_in(global_shared_tables(), systems_root, system, keep);
 }
 
-fn unshare_tables_in(memo: &SharedTablesMemo, systems_root: &Path, system: &str) {
+fn unshare_tables_in(
+    memo: &SharedTablesMemo,
+    systems_root: &Path,
+    system: &str,
+    keep: &[Arc<PerfTables>],
+) {
     let identity = |path: &Path| std::fs::canonicalize(path).or_else(|_| std::path::absolute(path));
     let Ok(target) = identity(systems_root) else {
         return;
     };
     memo.lock().unwrap().retain(|_, (root, tables)| {
         tables.upgrade().is_some_and(|tables| {
-            tables.system != system || identity(root).map_or(true, |root| root != target)
+            tables.system != system
+                || identity(root).map_or(true, |root| root != target)
+                || keep.iter().any(|kept| Arc::ptr_eq(kept, &tables))
         })
     });
 }
@@ -358,7 +365,7 @@ impl PerfDatabase {
     /// Resolve and parse the system YAML, locate the per-version data
     /// directory, and construct lazy table owners.
     ///
-    /// `systems_root` points at `python/aisimulate/src/aisimulate_core/systems`. `system` is a
+    /// `systems_root` points at `python/aisim/src/aisim_core/systems`. `system` is a
     /// basename like `b200_sxm`. `backend` is `vllm` / `sglang` / `trtllm`.
     /// `version` is the backend version directory name (e.g. `0.24.0`).
     pub fn load(
@@ -792,9 +799,8 @@ impl PerfDatabase {
         }
     }
 
-    /// The shared tables `Arc` (the load identity of the underlying data).
-    /// Exposed for the engine layer's table-sharing tests.
-    #[cfg(test)]
+    /// The shared tables `Arc` (the load identity of the underlying data),
+    /// for state snapshots that track which tables they verified.
     pub(crate) fn tables_arc(&self) -> &Arc<PerfTables> {
         &self.tables
     }
@@ -905,8 +911,8 @@ impl PerfDatabase {
 /// ```text
 /// cd <repo> && uv run python - <<'PY'
 /// import pandas as pd, yaml, tempfile, os
-/// from aisimulate_core.sdk.perf_database import PerfDatabase
-/// from aisimulate_core.sdk import common
+/// from aisim_core.sdk.perf_database import PerfDatabase
+/// from aisim_core.sdk import common
 /// root = tempfile.mkdtemp(); data = os.path.join(root, "data", "vllm", "1.0")
 /// os.makedirs(data)
 /// yaml.safe_dump({...the testsys spec below...},
@@ -1008,6 +1014,7 @@ pub(crate) mod energy_test_fixtures {
                 p2p_latency: 2e-6,
                 num_gpus_per_rack: None,
                 inter_rack_bw: None,
+                inter_rack_latency: None,
             },
             misc: MiscSpec::default(),
         }
@@ -1054,7 +1061,7 @@ mod tests {
     fn systems_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems")
+            .join("python/aisim/src/aisim_core/systems")
     }
 
     #[test]
@@ -1242,13 +1249,19 @@ mod tests {
         };
         let (b200, h200) = (load("b200_sxm"), load("h200_sxm"));
         // `systems_root()` is spelled with `..`; the canonical path is the same root.
+        let canonical = std::fs::canonicalize(systems_root()).unwrap();
+        unshare_tables_in(&memo, &canonical, "b200_sxm", &[]);
+        let reloaded = load("b200_sxm");
+        assert!(!Arc::ptr_eq(&reloaded.tables, &b200.tables));
+        assert!(Arc::ptr_eq(&load("h200_sxm").tables, &h200.tables));
+        // Kept tables stay shared.
         unshare_tables_in(
             &memo,
-            &std::fs::canonicalize(systems_root()).unwrap(),
+            &canonical,
             "b200_sxm",
+            &[Arc::clone(&reloaded.tables)],
         );
-        assert!(!Arc::ptr_eq(&load("b200_sxm").tables, &b200.tables));
-        assert!(Arc::ptr_eq(&load("h200_sxm").tables, &h200.tables));
+        assert!(Arc::ptr_eq(&load("b200_sxm").tables, &reloaded.tables));
     }
 
     #[test]

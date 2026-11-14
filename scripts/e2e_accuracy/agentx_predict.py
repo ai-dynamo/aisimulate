@@ -21,10 +21,10 @@ def predict(config_path, output):
     # Branch wheels have different capabilities. Import inside this isolated
     # boundary so an older wheel produces an explicit unsupported outcome.
     try:
-        api = importlib.import_module("aisimulate")
-        compiler = importlib.import_module("aisimulate.compiler")
-        database = importlib.import_module("aisimulate.sdk.perf_database")
-        dashboard = importlib.import_module("aisimulate.replay.dashboard")
+        api = importlib.import_module("aisim")
+        compiler = importlib.import_module("aisim.compiler")
+        database = importlib.import_module("aisim.sdk.perf_database")
+        dashboard = importlib.import_module("aisim.replay.dashboard")
         requirements = api.ReplayOutputRequirements(
             include_raw_report=True, capture_per_request=True, capture_telemetry=True
         )
@@ -38,7 +38,10 @@ def predict(config_path, output):
     if not version:
         return {"outcome": "unsupported", "reason": "database_unavailable"}
     engine["backend_version"] = version
-    data_root = importlib.resources.files("aisimulate_core") / "systems/data"
+    try:
+        data_root = importlib.resources.files("aisim_core") / "systems/data"
+    except ImportError:
+        return {"outcome": "unsupported", "reason": "database_unavailable", "prediction_backend_version": version}
     relative = (
         f"b300_sxm/sparse_attention/sglang/{version}/dsa_generation_module_perf.parquet"
         if engine["backend"] == "sglang"
@@ -64,9 +67,16 @@ def predict(config_path, output):
     context = json.loads(context_path.read_text()) if context_path.exists() else None
     architecture, dspark_architectures = None, None
     if context is not None:
-        utils = importlib.import_module("aisimulate_core.sdk.utils")
-        common = importlib.import_module("aisimulate_core.sdk.common")
-        architecture = utils.get_model_config_from_model_path(parsed.engine.model).get("architecture")
+        try:
+            utils = importlib.import_module("aisim_core.sdk.utils")
+            common = importlib.import_module("aisim_core.sdk.common")
+            architecture = utils.get_model_config_from_model_path(parsed.engine.model).get("architecture")
+        except (ImportError, AttributeError):
+            return {
+                "outcome": "unsupported",
+                "reason": "replay_telemetry_unavailable",
+                "prediction_backend_version": version,
+            }
         dspark_architectures = getattr(common, "DSPARK_ARCHITECTURES", None)
         features = build_features(
             parsed, spec, {}, context, architecture=architecture, dspark_architectures=dspark_architectures

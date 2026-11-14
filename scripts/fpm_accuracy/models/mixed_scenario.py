@@ -48,6 +48,10 @@ class MixedOriginalA:
         self.artifact = artifact
         self.manifests: dict[str, Path] = {}
         self.prepared = prepare_aic_fpm_database(engine_config, artifact)
+        # Bind staged compatibility declarations alongside the unchanged source
+        # hashes. They describe the adapter's temporary sidecar, not new facts
+        # about the producer or changes to the original measured artifact.
+        self.provenance["staging"] = deepcopy(self.prepared.diagnostics)
         engine_config["systems_path"] = str(self.prepared.systems_root)
 
     def configure_request(self, request):

@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from test_agentx_accuracy import bundle, result
 from test_benchmark_features import metadata as feature_fixture
+from test_benchmark_features import silicon_metadata
 
 from scripts.e2e_accuracy.agentx_comparison import build as build_comparison
 from scripts.e2e_accuracy.agentx_contract import canonical
@@ -69,8 +70,7 @@ def fixtures(site, weka=False):
         shutil.copyfile(source / "branches.json", archive / "branches.json")
         runs = [run for run in runs if run["category"] == "agentx"]
         for lanes in (1, 4, 8, 10, 13, 14):
-            feature = feature_fixture()
-            feature["benchmark_id"] = f"qwen-weka-l{lanes}"
+            feature = silicon_metadata(f"qwen-weka-l{lanes}")
             runs.append(
                 result(
                     id=feature["benchmark_id"],
@@ -179,6 +179,9 @@ def fixtures(site, weka=False):
     summary = json.loads(bundle()["summary.json"])
     summary["runs"] = []
     for run in runs:
+        run["config_summary"] = [{"name": "Estimation", "value": "op_level"}]
+        run["measured_backend_version"] = "0.31.0" if run["backend"] == "vllm" else "0.5.20"
+        run["prediction_backend_version"] = "0.31.0" if run["backend"] == "vllm" else "0.5.21"
         run["report"] = report
         entry = {k: v for k, v in run.items() if k not in {"pairs", "report"}}
         entry["detail_path"] = f"details/{run['id']}.json"
@@ -256,11 +259,16 @@ async def check_timeline_windows(page, site, port):
         if len(pair) == 2:
             pair[0]["counterpart"], pair[1]["counterpart"] = pair[1]["uuid"], pair[0]["uuid"]
         phase["requests"].extend(pair)
+    injected_status = 'completed" data-injected="yes'
+    phase["requests"][0]["terminal_status"] = injected_status
     path.write_bytes(canonical(detail))
     await page.goto(
         f"http://127.0.0.1:{port}/e2e-accuracy/agentx/point.html?branch=main&category=agentx&model=nvidia%2FGLM-5.3-NVFP4&lanes=1#view=timeline&stage=profile"
     )
     await expect(page.locator("#timeline-page-label")).to_contain_text("1 / 6")
+    interval = page.locator(f'.timeline-interval[data-request="{identities["early"]}"]')
+    await expect(interval).to_have_attribute("data-status", injected_status)
+    await expect(page.locator("[data-injected]")).to_have_count(0)
     scores = await page.locator("#timeline-summary .score-badges").text_content()
     for expected in [
         {"early", "crossing", "split", "spanning"},
@@ -316,10 +324,22 @@ async def check():
                 )
                 table = page.locator(".agentx-table")
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(9)
-                await expect(table.locator("thead th")).to_have_count(8)
+                await expect(table.locator("thead th")).to_have_count(9)
+                hardware = table.locator(".agentx-model td:first-of-type")
+                await expect(hardware.nth(0)).to_contain_text("B300 · sglang 0.5.20")
+                await expect(hardware.nth(0)).not_to_contain_text("sglang 0.5.21")
+                await expect(hardware.nth(1)).to_contain_text("B300 · vllm 0.31.0")
+                await expect(table.locator("tr[data-agentx-parent] .agentx-perf-model")).to_have_text(
+                    ["Op-based (sglang 0.5.21)"] * 6 + ["Op-based (vllm 0.31.0)"] * 3
+                )
+                await expect(table.locator("thead th").nth(2)).to_have_text("Performance model")
+                await expect(table.locator(".agentx-model .agentx-perf-model")).to_have_text(
+                    ["Op-based (sglang 0.5.21)", "Op-based (vllm 0.31.0)"]
+                )
+                await expect(table.locator("tr[data-agentx-parent] th .agentx-perf-model")).to_have_count(0)
                 info = page.get_by_role("button", name="About point TTFT and TPOT error")
                 tooltip = page.get_by_role("tooltip")
-                await expect(table.locator("thead th").nth(2)).to_have_text("Point TPOT error")
+                await expect(table.locator("thead th").nth(3)).to_have_text("Point TPOT error")
                 await info.hover()
                 await expect(tooltip).to_be_visible()
                 await expect(tooltip).to_contain_text(
@@ -362,6 +382,9 @@ async def check():
                 )
                 await expect(frame.locator("#profile-accuracy")).to_be_visible()
                 await expect(frame.locator(".agentx-summary-main h2")).to_have_text("Concurrency summary")
+                await expect(frame.locator(".agentx-summary-main > p").first).to_contain_text(
+                    "requests matched · Op-based perf model (vllm 0.31.0)"
+                )
                 await expect(frame.locator("#profile-accuracy .agentx-summary-table")).to_have_count(1)
                 await expect(frame.locator("#profile-accuracy .agentx-feature-table")).to_have_count(1)
                 await expect(frame.locator(".agentx-summary-table thead th")).to_have_text(
@@ -385,7 +408,7 @@ async def check():
                 await expect(frame.locator(".comparison-source-dot.aisim")).to_have_count(1)
                 concurrency_summary = await frame.locator(".agentx-summary-table").text_content()
                 await expect(frame.locator(".agentx-summary-main ul")).to_have_count(0)
-                await expect(frame.locator("#agentx-features-title")).to_have_text("Benchmark features")
+                await expect(frame.locator("#agentx-features-title")).to_have_text("Feature Parity")
                 await expect(frame.locator('[data-source="silicon"] .agentx-feature-status.unknown')).to_have_count(8)
                 await expect(frame.locator(".agentx-feature-table thead th")).to_have_text(
                     ["Feature", "Silicon", "AISim"]
@@ -657,7 +680,7 @@ async def check():
                 )
                 cache_feature = page.locator('[data-feature="cache.g1_prefix"]')
                 await expect(cache_feature.locator('[data-source="silicon"] .agentx-feature-status')).to_have_text("On")
-                await expect(cache_feature.locator('[data-source="aisim"] .agentx-feature-status')).to_have_text(
+                await expect(cache_feature.locator('[data-source="aisimulate"] .agentx-feature-status')).to_have_text(
                     "?Legacy missing evidence"
                 )
                 assert (

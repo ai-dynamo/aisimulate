@@ -9,13 +9,13 @@ exclude = ["crates/tests/public-api"]
 resolver = "3"
 
 [workspace.package]
-version = "0.13.0"
+version = "0.15.0"
 edition = "2024"
 description = "Backend-neutral inference simulation and deployment configuration search"
 authors = ["NVIDIA Inc. <sw-dl-dynamo@nvidia.com>"]
 license = "Apache-2.0"
-homepage = "https://github.com/ai-dynamo/aisimulate"
-repository = "https://github.com/ai-dynamo/aisimulate.git"
+homepage = "https://github.com/ai-dynamo/aisim"
+repository = "https://github.com/ai-dynamo/aisim.git"
 keywords = ["llm", "genai", "inference", "simulation", "nvidia"]
 
 [workspace.dependencies]

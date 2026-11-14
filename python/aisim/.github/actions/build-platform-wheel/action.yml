@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build and verify a platform wheel
+description: Build and verify one unified AISim platform wheel
+
+inputs:
+  build_method:
+    description: Wheel build method
+    required: true
+  python_architecture:
+    description: Python architecture passed to setup-python
+    required: true
+  platform:
+    description: Docker target platform for Linux builds
+    required: false
+    default: ""
+  wheel_base:
+    description: Manylinux wheel-builder base image
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx
+      if: inputs.build_method == 'docker'
+      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+    - name: Build Linux wheel
+      if: inputs.build_method == 'docker'
+      uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+      with:
+        context: .
+        file: python/aisim/docker/Dockerfile
+        platforms: ${{ inputs.platform }}
+        target: wheel-out
+        build-args: WHEEL_BUILD_BASE=${{ inputs.wheel_base }}
+        outputs: type=local,dest=./wheelhouse
+
+    # Docker builds only: the host interpreter drives the Linux smoke test.
+    # The native-macos path deliberately skips setup-python — on the
+    # self-hosted arm64 runner its install script needs `sudo installer`
+    # (no passwordless sudo there), which broke every main-push wheel build
+    # once 3.13 was requested (#1549); uv provisions a managed interpreter
+    # user-space instead (see the venv step below).
+    - name: Set up Python
+      if: inputs.build_method != 'native-macos'
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: "3.13"
+        architecture: ${{ inputs.python_architecture }}
+
+    - name: Set up uv
+      if: inputs.build_method == 'native-macos'
+      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      with:
+        version: "0.11.18"
+        enable-cache: false
+
+    - name: Create isolated macOS Python environment
+      if: inputs.build_method == 'native-macos'
+      shell: bash
+      env:
+        # Hermetic interpreter: always the python-build-standalone build uv
+        # manages (installed under ~/.local/share/uv/python by default; the
+        # per-run UV_CACHE_DIR below is separate) — never whatever python the
+        # host happens to carry, and no sudo anywhere.
+        UV_PYTHON_PREFERENCE: only-managed
+        UV_PYTHON_DOWNLOADS: automatic
+      run: |
+        uv_cache_dir="${RUNNER_TEMP}/aisim-uv-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        export UV_CACHE_DIR="${uv_cache_dir}"
+        echo "UV_CACHE_DIR=${uv_cache_dir}" >> "${GITHUB_ENV}"
+
+        uv venv --python 3.13 "${RUNNER_TEMP}/aisim-wheel-venv"
+        echo "${RUNNER_TEMP}/aisim-wheel-venv/bin" >> "${GITHUB_PATH}"
+        echo "VIRTUAL_ENV=${RUNNER_TEMP}/aisim-wheel-venv" >> "${GITHUB_ENV}"
+
+    - name: Select Rust toolchain for macOS wheel
+      if: inputs.build_method == 'native-macos'
+      shell: bash
+      run: |
+        rustup toolchain install 1.96.0 --profile minimal
+        rustup default 1.96.0
+
+    - name: Build and verify macOS wheel
+      if: inputs.build_method == 'native-macos'
+      shell: bash
+      env:
+        MACOSX_DEPLOYMENT_TARGET: "11.0"
+      run: |
+        uv pip install --quiet 'maturin>=1.12,<2' 'delocate>=0.13,<1'
+        mkdir -p wheelhouse repaired-wheelhouse
+        (cd python/aisim && maturin build --release --out ../../wheelhouse)
+        delocate-wheel --wheel-dir repaired-wheelhouse --verbose wheelhouse/aisim-*.whl
+        rm wheelhouse/aisim-*.whl
+        mv repaired-wheelhouse/*.whl wheelhouse/
+        python python/aisim/tools/verify_release_wheels.py wheelhouse
+
+    - name: Verify installed unified wheel
+      shell: bash
+      run: |
+        python -m pip install --quiet wheelhouse/aisim-*.whl
+        python python/aisim/tools/verify_installed_package_layers.py --exercise-engine

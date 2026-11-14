@@ -311,7 +311,7 @@ async def check_predictor_views(page, url, data, screenshot):
     await page.locator("#branch").select_option("release/0.12.0")
     await expect(page.locator(".overview-model-row")).to_have_count(2)
     await expect(page.locator("#evaluation-run")).to_have_attribute(
-        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/456/attempts/2"
+        "href", "https://github.com/ai-dynamo/aisim/actions/runs/456/attempts/2"
     )
     await expect(page.get_by_role("link", name="Overview", exact=True)).to_have_attribute(
         "href", "index.html?branch=release%2F0.12.0"
@@ -334,7 +334,7 @@ async def check_trend_tooltip(page, screenshot):
     )
     await expect(point.locator("title")).to_have_count(0)
     await expect(page.locator("#evaluation-run")).to_have_attribute(
-        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+        "href", "https://github.com/ai-dynamo/aisim/actions/runs/123/attempts/1"
     )
     await tooltip.hover()
     await page.wait_for_timeout(180)
@@ -379,7 +379,7 @@ async def check_history_links(page, url):
     await page.route("**/data/new-summary.json", lambda route: route.fulfill(json=summary))
     await page.goto(url + "trends.html?branch=main")
     await expect(page.locator("#evaluation-run")).to_have_attribute(
-        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/789/attempts/3"
+        "href", "https://github.com/ai-dynamo/aisim/actions/runs/789/attempts/3"
     )
     await page.locator(".trend-point").first.hover()
     await expect(page.locator("#trend-tooltip")).to_be_visible()
@@ -387,17 +387,17 @@ async def check_history_links(page, url):
     await page.locator("#model-filter").select_option("Org/Model")
     await check_evaluation_banner(page)
     await expect(page.locator("#evaluation-run")).to_have_attribute(
-        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+        "href", "https://github.com/ai-dynamo/aisim/actions/runs/123/attempts/1"
     )
     await page.goto(url + "evaluation-detail.html?branch=main")
     await expect(page.locator("#evaluation-run")).to_have_attribute(
-        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/789/attempts/3"
+        "href", "https://github.com/ai-dynamo/aisim/actions/runs/789/attempts/3"
     )
     await check_evaluation_banner(page, "2026-09-18")
     await page.locator("#evaluation-filter").select_option("1")
     await check_evaluation_banner(page)
     await expect(page.locator("#evaluation-run")).to_have_attribute(
-        "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+        "href", "https://github.com/ai-dynamo/aisim/actions/runs/123/attempts/1"
     )
     await page.unroute("**/data/history.json")
     await page.unroute("**/data/new-summary.json")
@@ -469,7 +469,7 @@ async def check():
                 await check_evaluation_banner(page)
                 await expect(page.locator(".evaluation-banner")).to_contain_text("Daily evaluation")
                 await expect(page.locator(".evaluation-banner #evaluation-run")).to_have_attribute(
-                    "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+                    "href", "https://github.com/ai-dynamo/aisim/actions/runs/123/attempts/1"
                 )
                 await expect(page.locator("thead th")).to_have_count(6)
                 assert not await page.locator('a[href*="coverage.html"]').count()
@@ -557,7 +557,7 @@ async def check():
                 await page.goto(url + "evaluation-detail.html?branch=main")
                 await expect(page.locator("#distribution table")).to_be_visible()
                 await expect(page.locator("#evaluation-run")).to_have_attribute(
-                    "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
+                    "href", "https://github.com/ai-dynamo/aisim/actions/runs/123/attempts/1"
                 )
                 await page.locator("#phase-filter").select_option("decode")
                 await expect(page.locator("#error-heatmap table")).to_be_visible()
@@ -588,7 +588,7 @@ async def check():
                 )
                 await page.goto(url + "3d-visualization.html?branch=release/0.12.0")
                 await expect(page.get_by_role("link", name="Evaluation run")).to_have_attribute(
-                    "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/456/attempts/2"
+                    "href", "https://github.com/ai-dynamo/aisim/actions/runs/456/attempts/2"
                 )
                 await expect(page.locator("#gv-left-chart .plot-container")).to_be_visible(timeout=30000)
                 held = asyncio.Event()

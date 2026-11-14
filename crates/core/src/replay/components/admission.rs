@@ -86,6 +86,46 @@ enum AdmissionSource {
     },
 }
 
+/// Shared rank constraints for spec and external-source requests.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DpRankLimits {
+    pub(crate) disaggregated: bool,
+    pub(crate) aggregated: u32,
+    pub(crate) prefill: u32,
+    pub(crate) decode: u32,
+}
+
+impl DpRankLimits {
+    pub(crate) fn check(
+        &self,
+        preferred: Option<u32>,
+        preferred_prefill: Option<u32>,
+        hint_source: Option<u32>,
+    ) -> std::result::Result<(), String> {
+        const PREFERRED: &str = "preferred attention-DP";
+        const HINT_SOURCE: &str = "kv_hints source";
+        let fits = |stage: &str, dp_size: u32, label: &str, rank: Option<u32>| match rank {
+            Some(rank) if rank >= dp_size => Err(format!(
+                "{stage} placement: {label} rank {rank} is out of range for dp_size {dp_size}"
+            )),
+            _ => Ok(()),
+        };
+        if self.disaggregated {
+            fits(
+                "prefill",
+                self.prefill,
+                PREFERRED,
+                preferred_prefill.or(preferred),
+            )?;
+            fits("decode", self.decode, PREFERRED, preferred)?;
+            fits("prefill", self.prefill, HINT_SOURCE, hint_source)
+        } else {
+            fits("aggregated", self.aggregated, PREFERRED, preferred)?;
+            fits("aggregated", self.aggregated, HINT_SOURCE, hint_source)
+        }
+    }
+}
+
 /// Runtime feedback collected beside the workload driver until the current
 /// logical timestamp is flushed as one deterministic batch.
 #[derive(Default)]
@@ -342,30 +382,34 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         let mut ready = Vec::new();
         let mut simulated_in_flight = cluster_in_flight;
         while simulated_in_flight < max_in_flight {
-            let Some(mut request) = next_request()? else {
+            let Some(request) = next_request()? else {
                 break;
             };
-            request.arrival_timestamp_ms = Some(now_ms);
-            let (session_id, turn_index) = request
-                .replay_context
-                .as_ref()
-                .map(|context| (context.session_id.clone(), context.turn_index))
-                .unwrap_or_default();
-            ready.push(map(ReplayReadyArrival {
-                request: ReplayRequestPayload::materialized(request),
-                arrival_time_ms: now_ms,
-                scheduled_ready_at_ms: now_ms,
-                authored_request_id: None,
-                play_id: None,
-                dispatched_at_ms: now_ms,
-                metadata: Metadata::from_hashes(None),
-                replay_hashes: None,
-                session_id,
-                turn_index,
-            }));
+            ready.push(map(Self::arrival_now(request, now_ms)));
             simulated_in_flight += 1;
         }
         Ok(ready)
+    }
+
+    fn arrival_now(mut request: DirectRequest, now_ms: f64) -> ReplayReadyArrival<Metadata> {
+        request.arrival_timestamp_ms = Some(now_ms);
+        let (session_id, turn_index) = request
+            .replay_context
+            .as_ref()
+            .map(|context| (context.session_id.clone(), context.turn_index))
+            .unwrap_or_default();
+        ReplayReadyArrival {
+            request: ReplayRequestPayload::materialized(request),
+            arrival_time_ms: now_ms,
+            scheduled_ready_at_ms: now_ms,
+            authored_request_id: None,
+            play_id: None,
+            dispatched_at_ms: now_ms,
+            metadata: Metadata::from_hashes(None),
+            replay_hashes: None,
+            session_id,
+            turn_index,
+        }
     }
 
     pub(crate) fn on_request_terminal(
@@ -399,7 +443,12 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         driver.on_quiescent(uuid, now_ms)
     }
 
-    pub(crate) fn on_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
+    pub(crate) fn on_output_token(
+        &mut self,
+        uuid: Uuid,
+        token_id: u32,
+        _now_ms: f64,
+    ) -> Result<()> {
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
@@ -410,9 +459,14 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.is_agentic())
     }
 
-    pub(crate) fn defer_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
+    pub(crate) fn defer_output_token(
+        &mut self,
+        uuid: Uuid,
+        token_id: u32,
+        now_ms: f64,
+    ) -> Result<()> {
         if !self.is_agentic() {
-            return CoreAdmissionSource::on_output_token(self, uuid, token_id);
+            return CoreAdmissionSource::on_output_token(self, uuid, token_id, now_ms);
         }
         let AdmissionSource::Workload {
             driver,
@@ -705,8 +759,8 @@ impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<M
         )
     }
 
-    fn on_output_token(&mut self, request_id: Uuid, token_id: u32) -> Result<()> {
-        AdmissionQueue::on_output_token(self, request_id, token_id)
+    fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()> {
+        AdmissionQueue::on_output_token(self, request_id, token_id, now_ms)
     }
 
     fn on_terminal(
@@ -1004,7 +1058,7 @@ mod agentic_feedback_tests {
         let uuid = driver.pop_ready(0.0, usize::MAX)[0].request_uuid;
         let mut admission = AdmissionQueue::<()>::new_workload(driver, ReplayMode::Trace);
 
-        admission.defer_output_token(uuid, 7).unwrap();
+        admission.defer_output_token(uuid, 7, 1.0).unwrap();
         assert!(
             !admission.flush_agentic_runtime_feedback(1.0).unwrap(),
             "full-prompt output progress has no consumer and must not be batched"

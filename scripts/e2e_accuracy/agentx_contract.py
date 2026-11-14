@@ -19,6 +19,15 @@ INPUT_SCHEMA = "aisimulate.agentx.inputs.v1"
 SUMMARY_SCHEMA = "aisimulate.agentx.accuracy.v1"
 INDEX = "catalog/e2e/agentx.json"
 METRICS = ("tpot_ms", "ttft_ms", "output_tokens_s")
+# The original, retained finite Qwen campaign predates complete silicon receipts.
+# Keep this compatibility exception finite; new IDs and Weka runs must qualify.
+HISTORICAL_SELF_COLLECTED = {
+    f"self-p{length}-l{lanes}-{cache}-r{repeat}": (length, lanes, cache, repeat)
+    for length in (4096, 32768)
+    for lanes in (1, 4, 16)
+    for cache in ("cold", "warm")
+    for repeat in range(3)
+}
 IDENTITY = (
     "id",
     "category",
@@ -53,10 +62,10 @@ def driver_digest(read_file=None):
     if b'"benchmark_features.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
         names += ("benchmark_features.py",)
     if b'"agentx_inputs.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
-        names += (
-            "agentx_inputs.py",
-            "../../benchmarks/evidence/accuracy/qwen-weka/cache_probe.py",
-        )
+        names += ("agentx_inputs.py",)
+        # Historical producers loaded cache validation from the collection tree.
+        if b"importlib.util.spec_from_file_location" in read_file("scripts/e2e_accuracy/agentx_inputs.py"):
+            names += ("../../benchmarks/evidence/accuracy/qwen-weka/cache_probe.py",)
     if b'"simulation_features.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
         names += ("simulation_features.py",)
     return hashlib.sha256(
@@ -672,10 +681,18 @@ def validate_result(run):
         "unsupported",
     }:
         raise ValueError("Invalid AgentX result fields")
+    historical = HISTORICAL_SELF_COLLECTED.get(run["id"])
+    legacy = (
+        historical is not None
+        and historical == tuple(run[k] for k in ("initial_input_tokens", "lanes", "cache_state", "repeat"))
+        and (run["model"], run["hardware"], run["backend"], run["tensor_parallel"], run["boundary"])
+        == ("Qwen/Qwen3.5-397B-A17B", "B300", "vllm", 8, "complete_finite_cohort")
+    )
+    complete_features = run["category"] == "self_collected" and not legacy
     if "feature_metadata" in run:
-        validate_features(run["feature_metadata"], run["id"])
-    elif run["id"].startswith("qwen-weka-l"):
-        raise ValueError("New Qwen Weka publications require silicon feature metadata")
+        validate_features(run["feature_metadata"], run["id"], require_complete=complete_features)
+    elif complete_features:
+        raise ValueError("New self-collected publications require silicon feature metadata")
     if "simulation_features" in run:
         validate_simulation(run["simulation_features"], run["id"])
     for item in run.get("op_data", []):

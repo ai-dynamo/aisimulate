@@ -3,17 +3,17 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AISimulate Core
+# AISim Core
 
-`aisimulate-core` is the single public Rust package for engine-neutral
-inference simulation. It preserves three explicit implementation and API
-layers:
+`aisim-core` is the single public Rust package for engine-neutral inference
+simulation. Its Rust library namespace remains `aisim_core`. It preserves
+three explicit implementation and API layers:
 
-- `aisimulate_core::engine` owns scheduling, native GPU KV accounting,
+- `aisim_core::engine` owns scheduling, native GPU KV accounting,
   preemption, timing, and attention-DP composition.
-- `aisimulate_core::replay` owns deterministic virtual time, logical-worker
+- `aisim_core::replay` owns deterministic virtual time, logical-worker
   lifecycle, placement and scaling composition, and replay reports.
-- `aisimulate_core::perfmodel` owns the imported AIConfigurator latency,
+- `aisim_core::perfmodel` owns the imported AIConfigurator latency,
   memory, and compiled-model implementation. Its `EngineConfig` and `engine`
   stay in this namespace so they cannot collide with the replay engine.
 
@@ -49,7 +49,7 @@ AIConfigurator commits path-rewritable and reviewable while still producing a
 single crates.io package.
 
 The default feature set is Rust-only and does not depend on PyO3. The `python`
-feature exposes registration hooks for the unified `aisimulate._runtime`
+feature exposes registration hooks for the unified `aisim._runtime`
 extension, and `embed-python` additionally enables PyO3 interpreter
 initialization for standalone Rust applications that call into Python during
 one-time model compilation.

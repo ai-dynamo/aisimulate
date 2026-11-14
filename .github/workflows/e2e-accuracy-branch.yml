@@ -103,7 +103,8 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           directory = Path(os.environ['RUNNER_TEMP']) / 'accuracy-wheel'
-          wheels = list(directory.glob('aisimulate-*.whl'))
+          from scripts.release.package_identity import wheels as product_wheels
+          wheels = product_wheels(directory)
           if len(wheels) != 1:
               raise SystemExit('expected one unified wheel')
           wheel = wheels[0]
@@ -111,7 +112,7 @@ jobs:
           if os.environ['NIGHTLY_RUN']:
               provenance = json.loads((directory / 'provenance.json').read_text())
               if (provenance['commit'] != os.environ['EXPECTED_SHA'] or
-                  provenance['repository'] != 'ai-dynamo/aisimulate' or
+                  provenance['repository'] != 'ai-dynamo/aisim' or
                   provenance['event'] != 'schedule' or provenance['ref'] != 'refs/heads/main' or
                   provenance['arch'] != 'amd64' or provenance['artifacts'][wheel.name] != digest):
                   raise SystemExit('nightly wheel provenance mismatch')
@@ -125,7 +126,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: e2e-accuracy-wheel-${{ inputs.artifact_key }}
-          path: ${{ runner.temp }}/accuracy-wheel/aisimulate-*.whl
+          path: ${{ runner.temp }}/accuracy-wheel/*.whl
           overwrite: true
           if-no-files-found: error
           compression-level: 0
@@ -478,6 +479,7 @@ jobs:
         with:
           name: agentx-private-${{ inputs.artifact_key }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/agentx-encrypted/
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
 
@@ -530,5 +532,6 @@ jobs:
         with:
           name: ${{ inputs.preview && 'e2e-agentx-preview' || 'e2e-agentx-web' }}-${{ inputs.artifact_key }}
           path: ${{ runner.temp }}/agentx-public/
+          overwrite: true
           if-no-files-found: error
           retention-days: 90

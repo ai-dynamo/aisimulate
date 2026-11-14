@@ -379,6 +379,7 @@ mod tests {
         let keys = f.keys(&[0, 1, 2, 3]);
         let meta = (0..4_u64)
             .map(|position| HostBlockMeta {
+                cache_salt: None,
                 parent: position.checked_sub(1),
                 tokens_hash: position,
                 position: position as usize,

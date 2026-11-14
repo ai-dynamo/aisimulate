@@ -63,6 +63,8 @@ the current SA convention.
 | `traffic.source.format` | `mooncake` | `x` | `-` | See [Trace Format Compatibility](#trace-format-compatibility). |
 | `traffic.source.block_size` | `512`; embedded for `dynamo` and `weka` | `x` | `-` | Positive. For embedded formats, an explicit value is an equality assertion. |
 | `traffic.source.nested_timestamp_basis` | `auto` | `x` | `-` | `auto`, `absolute`, or `relative`; Weka only. |
+| `traffic.source.client` | `recorded` | `x` | `-` | `recorded` or `agentx`; Weka only. See [Weka client](#weka-client). |
+| `traffic.source.chat_template` | Unset | `x` | `-` | Optional `request_tokens`, `user_tokens`, `assistant_tokens`, `tail_tokens` and `append_tail_tokens`, each a nonnegative integer, with `append_tail_tokens <= tail_tokens <= request_tokens`; Weka only. Unset replays the trace's `in` lengths and blocks. See [chat template](#weka-chat-template). |
 | `traffic.load.type` | `concurrency` | `x` | `-` | Synthetic: `concurrency`, `poisson`, `constant_rate`, or `kv_capacity_fraction`; trace: `trace_timestamps` or `concurrency`. |
 | `traffic.load.concurrency` | `10` | `-` | `-` | Positive integer; explicit domains are allowed in `recommend`. |
 | `traffic.load.requests_per_second` | `null` | `-` | `-` | Positive; synthetic request open-loop load only. |
@@ -75,7 +77,7 @@ the current SA convention.
 | `traffic.load.agentic_snapshot.initial_selections` | unset | `x` | `-` | Exact initial `{source_play_id, t_star_ms}` selections in lane order, one per lane, in the loaded graph's clock (Weka: per-play relative milliseconds). Requires `corpus_cursor`. Unset retains the original seed-based sampler. |
 | `traffic.load.agentic_snapshot.corpus_cursor` | unset | `x` | `-` | Unsigned 64-bit next sequential corpus draw, including any skipped initial draws. Requires `initial_selections` and must be at least the lane count. Recycled plays start at turn zero. |
 | `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Primes caches before measurement; see [warmup](#agentic-warmup). |
-| `traffic.load.agentic_warmup_policy` | `repeated_prefixes` | `x` | `-` | `repeated_prefixes` preserves the original frontier; `live_trajectory_v1` advances the live dependency graph during ten additional one-token requests per lane. The live policy requires `agentic_warmup: true` and `agentic_profile`; initially offline `--stack engine` only. |
+| `traffic.load.agentic_warmup_policy` | `repeated_prefixes` | `x` | `-` | `repeated_prefixes` preserves the original frontier; `live_trajectory_v1` advances the live dependency graph during ten additional one-token requests per lane; `primers_only` sends only the primers. The live policy requires `agentic_warmup: true` and `agentic_profile`, `primers_only` requires `agentic_warmup: true`, and both are offline `--stack engine` only. |
 | `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below and releases requests that depend on others in their play from dependency events alone, as AIPerf does. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous profile](#agentic-profile). |
 | `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
 | `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
@@ -241,20 +243,137 @@ Agentic formats are qualified on the offline `engine` stack; see
 [agentic load controls](#agentic-load-controls) for supported runtimes. P/D workers
 must share one target model. Reading a `dynamo` trace does not require the Dynamo stack.
 
-Weka is the AgentX source format. AISimulate converts a Weka corpus into
+Weka is the AgentX source format. AISim converts a Weka corpus into
 Agentic Mooncake and replays it natively; the Dynamo stack is not needed.
 
 Weka producers use two timestamp conventions for requests inside a subagent:
 raw kv-cache-tester traces are relative to the subagent marker, while published
 AgentX traces are absolute. Set `traffic.source.nested_timestamp_basis` to
 `relative` or `absolute` when you know which one applies. With `auto` (the
-default), AISimulate picks `relative` for the whole corpus if any child request
+default), AISim picks `relative` for the whole corpus if any child request
 is earlier than its subagent marker, and `absolute` otherwise. The chosen basis
 is reported as `weka_nested_timestamp_basis`.
+
+<a id="weka-chat-template"></a>
+
+A Weka `in` counts message content. A chat client also sends the tokens that
+the served model's chat template adds: role headers, end markers and the
+generation prompt. `traffic.source.chat_template` adds them to every prompt:
+
+```yaml
+traffic:
+  source:
+    type: trace
+    format: weka
+    paths:
+      - traces/agentx
+    chat_template:
+      request_tokens: 16
+      user_tokens: 5
+      assistant_tokens: 8
+      tail_tokens: 8
+      append_tail_tokens: 1
+```
+
+Each stream, that is a conversation, a detected chain or a subagent thread,
+keeps its messages as the AgentX client and AIPerf 0.13 build them from the
+trace (`ConversationReconstructor` in AIPerf's `weka_synth_buf.py`):
+
+- A stream's first request is one user message, `in + request_tokens` tokens on
+  the trace's blocks.
+- A later request cuts the message list at the hash blocks it shares with its
+  predecessor: a cut inside a message shortens it, and a cut at block 0 starts
+  the conversation over. It then adds the predecessor's reply, its `out`
+  rounded up to whole blocks, as an assistant message and the rest as a user
+  message. The reply leaves the last new block to the user message when
+  nothing else is new, and is left out when `out` is 0 or no user message is
+  left.
+- A prompt is `in + request_tokens`, plus `user_tokens` for each further user
+  message and `assistant_tokens` for each assistant message.
+- A request repeats its predecessor's prompt up to the cut. A cut inside a
+  message's content leaves out the rest of the prompt, including its last
+  `tail_tokens`, so the shared prefix ends between hash blocks rather than on
+  them. A request that keeps every message and adds a reply repeats all but the
+  last `append_tail_tokens`. Blocks past the repeated prefix are private.
+- A forked chain or subagent thread starts a new stream, so its first request
+  is one message, as AIPerf 0.13 and the AgentX client send it. AIPerf versions
+  that include
+  [ai-dynamo/aiperf#1555](https://github.com/ai-dynamo/aiperf/pull/1555) keep
+  the parent's messages in a child's first request, so there a child shares
+  more of its parent's prompt than this models.
+- The blocks a later request adds are its own, so with either
+  [client](#weka-client) another stream shares at most the blocks of a stream's
+  first request. With `recorded`, streams then no longer share their whole
+  common hash prefix.
+- Two cases repeat a few more tokens than counted: a request that keeps every
+  message and adds only a user message, and a cut at the end of an earlier
+  message. Tool-call message shapes are not modeled, and a corpus that declares
+  tool or system tokens is rejected.
+
+Where the shared prefix ends matters for hybrid models whose prefix cache keeps
+recurrent state only at block ends: it decides whether a turn reaches the
+previous prompt's last cached state.
+
+Measure the values by rendering plain messages with the model's chat template
+and tokenizer, as AIPerf does to size its prompts. With messages `u` and `v`
+from the user and `a` from the assistant, and `p(...)` a rendered prompt with
+the generation prompt:
+
+- `request_tokens`: the length of `p(u)`, minus the content tokens of `u`.
+- `user_tokens`: `p(u, v)` minus `p(u)`, minus the content tokens of `v`.
+- `assistant_tokens`: `p(u, a, v)` minus `p(u, v)`, minus the content tokens of
+  `a`.
+- `tail_tokens`: the tokens of `p(u)` after the content of `u`, that is its end
+  marker and the generation prompt.
+- `append_tail_tokens`: the tokens of `p(u)` past its longest common prefix
+  with `p(u, a, v)`. It is 0 when the generation prompt is the assistant
+  message's header, as in plain ChatML, and more when the history renders
+  assistant messages differently, for example with an empty reasoning block.
+
+A runner accepts `chat_template` only if it advertises
+`supports_weka_chat_template`, as the engine stack does.
 
 A Weka corpus can name several source models. Replay runs every request on
 `engine.model` and records the source models and target under
 `agentic_model_projection`.
+
+<a id="weka-client"></a>
+
+### Weka client
+
+`traffic.source.client` chooses whose replay of the corpus AISim follows.
+With `recorded` (the default), a subagent starts at its recorded offset from
+the request before it, a joining turn waits its recorded gap after each child,
+and the streams of a play share their whole common hash prefix, unless a
+[chat template](#weka-chat-template) is set. `agentx`
+follows the AgentX client, the AIPerf fork in the
+[behavioral reference](agentic/continuous-profiles.md#behavioral-reference):
+
+- Every subagent and flattened chain is a child of the main conversation. A
+  flattened chain is a conversation that the trace lists among its top-level
+  requests. The spawning turn is the latest main turn listed before the child;
+  the joining turn is the first main turn listed after it that starts at or
+  after the child's recorded end. Subagents with the same spawning and joining
+  turns form one group, and so do flattened chains.
+- A group starts when its spawning turn returns, and each child starts at its
+  offset from the group's earliest start. A group that started before the
+  spawning turn's recorded end starts with that turn instead, each child at its
+  offset from the turn's start.
+- The joining turn waits for every child with no added gap, and for its own
+  recorded delay after the previous main turn.
+- A subagent that no main turn precedes is dropped. A flattened chain that no
+  main turn precedes is spawned by the first one.
+- Each stream is its own chat conversation: its first request is one user
+  message, and a later request cuts the message list where its hash prefix
+  diverges from the previous request's. Streams therefore share prompt blocks
+  only inside their first user message, at block granularity and without
+  chat-template header tokens. A [chat template](#weka-chat-template) adds the
+  template's tokens to each prompt's length and to the prefix it shares with
+  the stream's previous request. Corpora that declare tool or system tokens are
+  rejected.
+
+Every runner accepts `recorded`. A runner accepts `agentx` only if it
+advertises `supports_weka_client`, as the engine stack does.
 
 <a id="agentic-load-controls"></a>
 
@@ -289,9 +408,11 @@ Supported runtimes: offline `engine` stack, vLLM or SGLang, aggregated or P/D
 workers and HBM-only KV cache, including
 [speculative decoding](engine/speculation.md) with explicit acceptance
 assumptions; ngram requires vLLM. vLLM additionally
-supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers,
-either one aggregated worker or 1P1D, `attention_data: 1` on every role and
-speculative decoding disabled. TensorRT-LLM, G3 offload and online
+supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers:
+one aggregated worker, 1P1D, or several aggregated workers with
+`scope: dp_rank_local`; `attention_data: 1` on every role. Speculation with G2
+is limited to canonical MTP on a single aggregated worker with local G2 and
+prefix caching. TensorRT-LLM, G3 offload and online
 P/D are rejected. Results are qualified `functional_only`, not hardware
 accuracy. [Start an AgentX simulation](agentic/quickstart.md) walks through a
 complete run.
@@ -346,7 +467,7 @@ A snapshot is cut at request boundaries. It does not model partial decode
 progress or restore an engine checkpoint: without warmup, the caches start
 empty.
 
-For a reference run, matching the seed alone is insufficient: AISimulate's
+For a reference run, matching the seed alone is insufficient: AISim's
 versioned BLAKE3 sampler is not AIPerf's NumPy sampler. Import the actual cuts
 and next sequential corpus position instead:
 
@@ -396,7 +517,7 @@ python scripts/prediction_regression/export_agentx_snapshots.py \
 `reference-dataset-metadata.json` is the reference loader's
 `DatasetMetadata.model_dump_json()` output, with every conversation, branch,
 and timestamp retained. `source-play-map.json` maps each root
-`conversation_id` from that metadata to its normalized AISimulate
+`conversation_id` from that metadata to its normalized AISim
 `source_play_id` (as recorded in `agentic_snapshots`). The root order in the
 metadata must match the replay corpus order and each root mapping must identify
 the corresponding source play; do not sort either input. The importer validates
@@ -422,7 +543,7 @@ paths must be new. For importable JSON on stdout, omit `--output` and provide
 anything is printed to stdout.
 The exporter verifies the source revision and clean source tree, invokes the
 reference `TrajectorySource` directly. It fails on unsupported samplers, timestamp-less trajectories,
-or incomplete lane selection. Neither AIPerf nor NumPy becomes an AISimulate
+or incomplete lane selection. Neither AIPerf nor NumPy becomes an AISim
 runtime dependency.
 
 <a id="agentic-warmup"></a>
@@ -480,6 +601,12 @@ for qualification boundaries. Unsupported CLI stacks are rejected before
 `--overwrite` prepares the output directory; external SDK adapters must
 explicitly advertise `supports_agentic_live_warmup` and forward the policy.
 
+`agentic_warmup_policy: primers_only` models AIPerf's snapshot warmup when no
+cache-pressure warmup is configured: the live policy's primers, timed the same
+way, and no further preparation request. External SDK adapters must explicitly
+advertise `supports_agentic_primers_only` and forward the policy. See
+[primers-only policy](agentic/warmup.md#primers-only-policy).
+
 <a id="agentic-profile"></a>
 
 ### Continuous profile
@@ -524,7 +651,7 @@ idle guards, cancellation and result details.
 is a small offline example with fixed timing:
 
 ```bash
-aisimulate predict --config examples/cli/agentic-profile.yaml \
+aisim predict --config examples/cli/agentic-profile.yaml \
   --capture-per-request --format json --output-dir ./agentic-profile
 ```
 
@@ -555,7 +682,7 @@ with vLLM's 64-token blocks and 127 tokens with SGLang's 1-token pages.
 
 ### Behavior references
 
-AISimulate's snapshot, warmup and profile behavior is modeled on AIPerf,
+AISim's snapshot, warmup and profile behavior is modeled on AIPerf,
 InferenceX and the AgentX harness, implemented independently and not at full
 AgentX parity. Pinned revisions, licenses and known differences are listed in
 [agentic warmup](agentic/warmup.md#reference-and-validation-boundary) and

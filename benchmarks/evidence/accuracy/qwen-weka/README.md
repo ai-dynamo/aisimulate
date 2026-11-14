@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Qwen Weka collection
 
-For new runs, follow the [AgentX collection skill](../../../../.agents/skills/aisimulate-agentx-collect/SKILL.md).
+For new runs, follow the [AgentX collection skill](../../../../.agents/skills/aisim-agentx-collect/SKILL.md).
 Capture all eight effective silicon feature settings and evidence before the full
 sweep. Historical outcomes below retain their original evidence and qualification
 status; missing historical fields do not become Off.

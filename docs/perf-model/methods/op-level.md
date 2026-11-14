@@ -33,6 +33,29 @@ Data-source inheritance and empirical transfer are different. A row inherited
 from an approved measured donor is still collected data. An estimated
 cross-shape or cross-precision transfer must retain its transfer provenance.
 
+### Context-attention measurement boundaries
+
+TRT-LLM `torch_flow` context-attention rows produced by `1.3.0rc20` and
+`1.3.0rc29` time the attention forward with internal RoPE and both K/V-cache
+writes. The estimator therefore does not add separate RoPE or KV-write costs
+on top of these timings. Q/K normalization remains a separate estimate.
+
+This decision follows the stored framework, version, and selected kernel lane,
+including accepted donor rows; it does not follow the requested backend or the
+first preferred lane. SILICON and HYBRID hits use the selected slice's boundary.
+Empirical estimates retain the boundary of their calibration slice, including
+full-window and cross-head-dimension borrowing. SOL retains its analytical
+extras. Older or unrecognized measurement identities keep their previous
+accounting; the historical A100 `1.0.0` collector used a different cache layout.
+Disabling model RoPE cannot remove work already inside a composite measurement;
+these rows do not establish NoPE-specific timings.
+
+These are composite attention timings, not isolated FMHA kernel measurements.
+Existing prefix corrections and context-parallel chunking still transform the
+composite base timing. Visual-mask overlays also use that base as an
+approximation to additional attention work. Removing duplicate extras does not
+establish a separate preprocessing/FMHA decomposition for those approximations.
+
 ## External execution profiles
 
 An externally stored profile can supply a qualified operation graph and exact
@@ -190,8 +213,8 @@ Use the shared Python API with an already downloaded local selection:
 
 ```python
 from pathlib import Path
-from aisimulate_core.datasets import check_manifest, prepare_execution_profile
-from aisimulate_core.sdk import RustForwardPassPerfModel
+from aisim_core.datasets import check_manifest, prepare_execution_profile
+from aisim_core.sdk import RustForwardPassPerfModel
 
 root = Path("/local/pinned-dataset")
 manifest = "metadata/execution-profiles/example/prefill.manifest.json"

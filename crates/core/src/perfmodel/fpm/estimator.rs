@@ -86,11 +86,11 @@ impl StateSnapshotConfig {
     }
 
     /// Anchor the directory and bind the manifest bytes before caller caches
-    /// use the resolved configuration. Relative paths resolve against the
-    /// working directory and are normalized lexically, without resolving
-    /// symlinks, matching the path `save_state_snapshot` records. The manifest read is
-    /// bounded.
-    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+    /// use the resolved configuration, and return those bytes. Relative paths
+    /// resolve against the working directory and are normalized lexically,
+    /// without resolving symlinks, matching the path `save_state_snapshot`
+    /// records. The manifest read is bounded.
+    pub(crate) fn resolve_source(&mut self) -> Result<Vec<u8>, AicError> {
         use sha2::{Digest, Sha256};
         self.path = super::snapshot::normalized_absolute(&self.path)?;
         let bytes = super::snapshot::read_manifest_bytes(&self.path)?;
@@ -105,7 +105,7 @@ impl StateSnapshotConfig {
             ));
         }
         self.sha256 = Some(actual);
-        Ok(())
+        Ok(bytes)
     }
 }
 
@@ -740,6 +740,14 @@ pub enum RegressionFeatureAxis {
     CountSquared,
     #[serde(rename = "logP")]
     LogPast,
+    /// The longest scheduled sequence over the decode-attention KV splits of
+    /// its rank; reads `fit.linear.max_kv_splits`.
+    #[serde(rename = "longest_split")]
+    LongestPerSplit,
+    /// 1 when a rank schedules more tokens than a CUDA graph covers; reads
+    /// `fit.linear.max_cudagraph_capture_size`.
+    #[serde(rename = "eager")]
+    EagerPass,
 }
 
 fn default_regression_axes() -> Vec<RegressionFeatureAxis> {
@@ -875,6 +883,16 @@ pub struct LinearFitConfig {
     /// then keep its default. Omitted from serialization when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feature_set: Option<RegressionFeatureSet>,
+    /// KV splits the decode-attention kernel gives a request that runs alone:
+    /// the GPU's SMs divided by the kernel's CTAs per request. Required when
+    /// fitting or sampling selects `longest_split`; omitted when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_kv_splits: Option<u32>,
+    /// The most scheduled tokens a pass runs in a CUDA graph, as vLLM's knob of
+    /// this name. Required when fitting or sampling selects `eager`; omitted
+    /// when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_cudagraph_capture_size: Option<u32>,
 }
 
 impl Default for LinearFitConfig {
@@ -884,6 +902,8 @@ impl Default for LinearFitConfig {
             non_negative: true,
             update_policy: RegressionUpdatePolicy::Always,
             feature_set: None,
+            max_kv_splits: None,
+            max_cudagraph_capture_size: None,
         }
     }
 }
@@ -922,13 +942,13 @@ impl Default for SplineFitConfig {
 /// and fields.
 ///
 /// ```compile_fail
-/// use aisimulate_core::SplineSearchConfig;
+/// use aisim_core::SplineSearchConfig;
 /// // Construct policies through their methods, leaving room for new controls.
 /// let search = SplineSearchConfig::Periodic { step: 64 };
 /// ```
 ///
 /// ```compile_fail
-/// use aisimulate_core::SplineSearchConfig;
+/// use aisim_core::SplineSearchConfig;
 /// // A wildcard arm is required for future search policies.
 /// match SplineSearchConfig::default() {
 ///     SplineSearchConfig::Periodic { .. } => (),
@@ -1387,6 +1407,7 @@ impl EstimatorConfig {
         self.fpm_regression.sampling.validate()?;
         validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
         self.validate_linear()?;
+        self.validate_axis_constants()?;
         self.validate_spline()?;
         crate::config::validate_fpm_parquet_path(
             self.fpm_interpolation.fpm_parquet_path.as_deref(),
@@ -1420,6 +1441,14 @@ impl EstimatorConfig {
                 return Err(invalid_regression_config(
                     "fit.linear.feature_set",
                     "cannot be combined with non-default fit.linear.feature_axes",
+                ));
+            }
+            // Every fpm5 fit already uses the exact retained rows, so no
+            // rebuild clock exists to schedule.
+            if self.fpm_regression.fit.rebuild_interval.is_some() {
+                return Err(invalid_regression_config(
+                    "fit.rebuild_interval",
+                    "must be null for fit.linear.feature_set='fpm5'",
                 ));
             }
             // Ratios such as mean_decode_kv duplicate their sums under a fixed
@@ -1477,6 +1506,38 @@ impl EstimatorConfig {
                 "fit.linear.update_policy.trigger",
                 "must be positive and at most window",
             ));
+        }
+        Ok(())
+    }
+
+    /// `longest_split` and `eager` read a positive constant from `fit.linear`,
+    /// whether fitting or sampling selects them.
+    fn validate_axis_constants(&self) -> Result<(), AicError> {
+        let regression = &self.fpm_regression;
+        let default_linear = LinearFitConfig::default();
+        let linear = regression.fit.linear.as_ref().unwrap_or(&default_linear);
+        for (axis, name, field, constant) in [
+            (
+                RegressionFeatureAxis::LongestPerSplit,
+                "longest_split",
+                "max_kv_splits",
+                linear.max_kv_splits,
+            ),
+            (
+                RegressionFeatureAxis::EagerPass,
+                "eager",
+                "max_cudagraph_capture_size",
+                linear.max_cudagraph_capture_size,
+            ),
+        ] {
+            let selected =
+                regression.sampling.axes.contains(&axis) || linear.feature_axes.contains(&axis);
+            if constant == Some(0) || (selected && constant.is_none()) {
+                return Err(invalid_regression_config(
+                    &format!("fit.linear.{field}"),
+                    &format!("must be positive, and is required when the {name} axis is selected"),
+                ));
+            }
         }
         Ok(())
     }
@@ -1925,6 +1986,22 @@ mod tests {
     }
 
     #[test]
+    fn retired_afd_decode_identity_is_rejected_for_every_value() {
+        for value in [
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::Value::Null,
+        ] {
+            assert!(
+                serde_json::from_value::<EstimatorConfig>(serde_json::json!({
+                    "afd": {"frozen_decode_identity": value}
+                }))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn default_selector_controls_preserve_previous_reader_configuration() {
         for value in [
             serde_json::json!({}),
@@ -2247,6 +2324,9 @@ mod tests {
         let message =
             error(&|config| config.fpm_regression.fit.singular_ridge_scale = 0.0).unwrap();
         assert!(message.contains("fit.singular_ridge_scale"), "{message}");
+        let message =
+            error(&|config| config.fpm_regression.fit.rebuild_interval = Some(4096)).unwrap();
+        assert!(message.contains("fit.rebuild_interval"), "{message}");
         assert_eq!(
             error(&|config| config.fpm_regression.sampling.max_observations = 18),
             None
@@ -2258,6 +2338,56 @@ mod tests {
                 config.fpm_regression.sampling.bins_per_axis = vec![8];
             }),
             None
+        );
+    }
+
+    #[test]
+    fn axis_constants_are_required_where_their_axes_are_selected_and_round_trip() {
+        let validated = |regression: serde_json::Value| {
+            let config: EstimatorConfig =
+                serde_json::from_value(serde_json::json!({"fpm_regression": regression})).unwrap();
+            match config.validate() {
+                Ok(()) => Ok(config),
+                Err(error) => Err(error.to_string()),
+            }
+        };
+        let message = validated(serde_json::json!({
+            "fit": {"linear": {"feature_axes": ["E", "longest_split"]}}
+        }))
+        .unwrap_err();
+        assert!(
+            message.contains(
+                "fit.linear.max_kv_splits must be positive, and is required when the longest_split axis is selected"
+            ),
+            "{message}"
+        );
+        // Retention reads the same constants from fit.linear.
+        let message = validated(serde_json::json!({
+            "sampling": {"axes": ["eager"], "bins_per_axis": [2]}
+        }))
+        .unwrap_err();
+        assert!(
+            message.contains("fit.linear.max_cudagraph_capture_size"),
+            "{message}"
+        );
+        // Zero is rejected even where no axis reads it.
+        assert!(
+            validated(serde_json::json!({
+                "fit": {"linear": {"feature_axes": ["E"], "max_cudagraph_capture_size": 0}}
+            }))
+            .is_err()
+        );
+        let linear = serde_json::json!({
+            "feature_axes": ["E", "P2", "F", "logN", "longest_split", "eager"],
+            "non_negative": true, "update_policy": {"kind": "always"},
+            "max_kv_splits": 66, "max_cudagraph_capture_size": 512,
+        });
+        let config = validated(serde_json::json!({"fit": {"linear": linear.clone()}})).unwrap();
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["fpm_regression"]["fit"]["linear"], linear);
+        assert_eq!(
+            serde_json::from_value::<EstimatorConfig>(serialized).unwrap(),
+            config
         );
     }
 

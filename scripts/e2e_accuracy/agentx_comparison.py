@@ -58,7 +58,7 @@ def build(reference, report, raw_report, scores, completed=True):
         },
     }
     # Qwen's preparation is identified by the measured cohort, not the native load mode.
-    measured_phases = {r["request_id"]: r["phase"] for r in reference["reference"] if "key" in r}
+    measured_phases = {r["key"]: r["phase"] for r in reference["reference"] if "key" in r}
     if measured_phases:
         dataset["requests"] = [
             dict(r, phase=measured_phases.get(r["request_id"], r["phase"])) for r in raw_report["requests"]

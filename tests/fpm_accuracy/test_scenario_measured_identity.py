@@ -136,7 +136,7 @@ def test_only_typed_domain_misses_are_unavailable(monkeypatch):
     class Missing(RuntimeError):
         pass
 
-    monkeypatch.setitem(sys.modules, "aisimulate_core.sdk.errors", SimpleNamespace(PerfDataNotAvailableError=Missing))
+    monkeypatch.setitem(sys.modules, "aisim_core.sdk.errors", SimpleNamespace(PerfDataNotAvailableError=Missing))
     message = "perf_interp: no data to anchor query {batch_size=1} (no usable neighbour site)"
     assert is_interpolation_support_miss(Missing(message))
     assert not is_interpolation_support_miss(ValueError(message))

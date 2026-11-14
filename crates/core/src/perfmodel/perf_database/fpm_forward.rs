@@ -6,7 +6,7 @@
 //! Whole-model `fpm_forward` perf tables (Python `forward_model="fpm"`).
 //!
 //! Rust port of the loader half of
-//! `python/aisimulate/src/aisimulate_core/sdk/operations/fpm_forward.py`: the formal
+//! `python/aisim/src/aisim_core/sdk/operations/fpm_forward.py`: the formal
 //! collector pair
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //! /data/reviewed-fpm.metadata.json
 //! ```
 //!
-//! The parquet may be supplied outside the AISimulate repository and is
+//! The parquet may be supplied outside the AISim repository and is
 //! validated (sidecar schema/sha256/row_count, per-row workload checks,
 //! duplicate physical row keys), healed of
 //! `kv_seed_regime == "fake_fallback"` values (fabricated-KV measurements
@@ -271,6 +271,32 @@ impl FpmForwardCell {
     }
 }
 
+/// One marked source row and the effective target used by the canonical loader.
+/// The row index always addresses the unchanged source Parquet, not a sorted cell.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FpmSeedTargetRow {
+    pub row_index: usize,
+    pub workload_kind: String,
+    pub batch_size: u32,
+    pub total_prefill_tokens: u32,
+    pub total_kv_read_tokens: u32,
+    pub raw_latency_ms: f64,
+    pub effective_latency_ms: f64,
+    pub replaced: bool,
+}
+
+/// Preparation-only audit of fake-KV target normalization for one complete
+/// loaded profile. Genuine rows are unchanged and are not duplicated here.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FpmSeedTargetNormalization {
+    pub policy: &'static str,
+    pub row_count: usize,
+    pub replacement_enabled: bool,
+    pub replaced_count: u64,
+    pub kept_count: u64,
+    pub rows: Vec<FpmSeedTargetRow>,
+}
+
 /// One loaded parquet/sidecar pair: the grouped cells plus the
 /// fake-fallback healing tallies (the crate has no logging facade, so the
 /// counters ARE the warning surface, exposed via table accessors).
@@ -285,6 +311,7 @@ struct LoadedPair {
     /// finite/positive) — the proposal's keep-and-warn case, or every fake
     /// row when the raw escape hatch is on.
     kept_fake_fallback: u64,
+    seed_target_normalization: FpmSeedTargetNormalization,
 }
 
 pub struct FpmForwardTable {
@@ -428,6 +455,12 @@ impl FpmForwardTable {
     /// load reports should print it.
     pub fn kept_fake_fallback_rows(&self) -> Result<u64, AicError> {
         Ok(self.loaded()?.kept_fake_fallback)
+    }
+
+    /// Effective fake-KV targets from the same validated load and correction
+    /// pass used for interpolation. No interpolation or SOL query is performed.
+    pub fn seed_target_normalization(&self) -> Result<&FpmSeedTargetNormalization, AicError> {
+        Ok(&self.loaded()?.seed_target_normalization)
     }
 
     /// Exact base identity, recorded DCP and model-path matching, followed by
@@ -1225,9 +1258,24 @@ fn load_pair(
     // all measured shapes.
     let mut replaced_fake_fallback: u64 = 0;
     let mut kept_fake_fallback: u64 = 0;
+    let mut normalized_rows: Vec<FpmSeedTargetRow> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.fake_fallback)
+        .map(|(row_index, row)| FpmSeedTargetRow {
+            row_index,
+            workload_kind: row.workload_kind.clone(),
+            batch_size: row.batch_size,
+            total_prefill_tokens: row.total_prefill_tokens,
+            total_kv_read_tokens: row.total_kv_read_tokens,
+            raw_latency_ms: row.latency_ms,
+            effective_latency_ms: row.latency_ms,
+            replaced: false,
+        })
+        .collect();
     if !replace_fake_fallback {
-        kept_fake_fallback = rows.iter().filter(|r| r.fake_fallback).count() as u64;
-    } else if rows.iter().any(|r| r.fake_fallback) {
+        kept_fake_fallback = normalized_rows.len() as u64;
+    } else if !normalized_rows.is_empty() {
         // (cell key, batch rung) -> real_kv anchors as (kv, latency).
         let mut anchors: BTreeMap<(Vec<String>, u32), Vec<(u32, f64)>> = BTreeMap::new();
         for row in &rows {
@@ -1243,10 +1291,11 @@ fn load_pair(
             // already rejected same-(cell, phase, batch, kv) row pairs.
             list.sort_unstable_by_key(|&(kv, _)| kv);
         }
-        for row in &mut rows {
-            if !row.fake_fallback {
-                continue;
-            }
+        for (row, normalized) in rows
+            .iter_mut()
+            .filter(|row| row.fake_fallback)
+            .zip(&mut normalized_rows)
+        {
             let mut healed = None;
             if row.workload_kind == "decode" {
                 if let Some(list) = anchors.get(&(row.cell_key(), row.batch_size)) {
@@ -1269,6 +1318,8 @@ fn load_pair(
             match healed {
                 Some(value) => {
                     row.latency_ms = value;
+                    normalized.effective_latency_ms = value;
+                    normalized.replaced = true;
                     replaced_fake_fallback += 1;
                 }
                 None => kept_fake_fallback += 1,
@@ -1391,6 +1442,14 @@ fn load_pair(
         cells,
         replaced_fake_fallback,
         kept_fake_fallback,
+        seed_target_normalization: FpmSeedTargetNormalization {
+            policy: "same_cell_batch_real_kv_extrapolation_v1",
+            row_count: rows.len(),
+            replacement_enabled: replace_fake_fallback,
+            replaced_count: replaced_fake_fallback,
+            kept_count: kept_fake_fallback,
+            rows: normalized_rows,
+        },
     }))
 }
 
@@ -3069,6 +3128,17 @@ pub(crate) mod tests {
         assert_eq!(curves[&128][&32768], 39.0);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 1);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 0);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 4);
+        assert_eq!(normalization.replaced_count, 1);
+        assert_eq!(normalization.kept_count, 0);
+        assert!(normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 1);
+        let row = &normalization.rows[0];
+        assert_eq!(row.row_index, 3);
+        assert_eq!(row.raw_latency_ms, 33.235794);
+        assert_eq!(row.effective_latency_ms, healed);
+        assert!(row.replaced);
     }
 
     /// The R17 wrong-row regression case (tp2, b=128, kv=131200, same-node
@@ -3146,6 +3216,17 @@ pub(crate) mod tests {
         assert_eq!(curves[&128][&258018], 33.235794);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 0);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 4);
+        assert_eq!(normalization.replaced_count, 0);
+        assert_eq!(normalization.kept_count, 1);
+        assert!(!normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 1);
+        let row = &normalization.rows[0];
+        assert_eq!(row.row_index, 3);
+        assert_eq!(row.raw_latency_ms, 33.235794);
+        assert_eq!(row.effective_latency_ms, row.raw_latency_ms);
+        assert!(!row.replaced);
     }
 
     /// A station with fewer than two `real_kv` anchors keeps its original
@@ -3181,6 +3262,22 @@ pub(crate) mod tests {
         assert_eq!(curves[&64][&16384], healed);
         assert_eq!(table.replaced_fake_fallback_rows().unwrap(), 1);
         assert_eq!(table.kept_fake_fallback_rows().unwrap(), 1);
+        let normalization = table.seed_target_normalization().unwrap();
+        assert_eq!(normalization.row_count, 5);
+        assert_eq!(normalization.replaced_count, 1);
+        assert_eq!(normalization.kept_count, 1);
+        assert!(normalization.replacement_enabled);
+        assert_eq!(normalization.rows.len(), 2);
+        let kept = &normalization.rows[0];
+        assert_eq!(kept.row_index, 1);
+        assert_eq!(kept.raw_latency_ms, 5.0);
+        assert_eq!(kept.effective_latency_ms, kept.raw_latency_ms);
+        assert!(!kept.replaced);
+        let replaced = &normalization.rows[1];
+        assert_eq!(replaced.row_index, 4);
+        assert_eq!(replaced.raw_latency_ms, 9.0);
+        assert_eq!(replaced.effective_latency_ms, healed);
+        assert!(replaced.replaced);
     }
 
     /// A fake rung that is NOT its station's kv top anchors on the two

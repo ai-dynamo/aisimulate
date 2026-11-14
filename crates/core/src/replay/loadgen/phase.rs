@@ -7,12 +7,15 @@
 //! Live policy adapted from the Apache-2.0 NVIDIA AIPerf implementation:
 //! https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py
 //! Modified for native deterministic scheduling and server-settlement barriers.
+//! The primers-only policy follows the Apache-2.0 NVIDIA AIPerf snapshot warmup
+//! without a cache-pressure warmup (`_execute_warmup`, `_capped_warmup_lead_ms`):
+//! https://github.com/ai-dynamo/aiperf/blob/bb79be22fdc8ce7860e7b81eda1e7765474d568c/src/aiperf/timing/strategies/agentic_replay.py
 //!
 //! Methodology reference for one-token primers and ten warmups per lane:
 //! https://github.com/SemiAnalysisAI/InferenceX-app/blob/9bb7b13eb4985217a6282f340459fd5948613276/packages/app/src/components/datasets/agentx-methodology-article.tsx
-//! This module implements those requirements using AISimulate's prepared plays
+//! This module implements those requirements using AISim's prepared plays
 //! and native completion feedback. Repeating saved prefixes without advancing
-//! the frontier is an AISimulate policy. See docs/replay/agentic/warmup.md for the
+//! the frontier is an AISim policy. See docs/replay/agentic/warmup.md for the
 //! reference scope, upstream licenses, and separate AIPerf snapshot comparison.
 
 use anyhow::{Context, Result, ensure};
@@ -35,6 +38,8 @@ pub enum AgenticWarmupPolicy {
     #[default]
     RepeatedPrefixes,
     LiveTrajectoryV1,
+    /// The live policy's primers and nothing else (AIPerf's snapshot warmup).
+    PrimersOnly,
 }
 
 impl AgenticWarmupPolicy {
@@ -280,10 +285,10 @@ impl AgenticPreparation {
                 primer_times_ms: Vec::new(),
             });
         }
-        if policy == AgenticWarmupPolicy::LiveTrajectoryV1 {
+        if policy != AgenticWarmupPolicy::RepeatedPrefixes {
             ensure!(
                 this.lanes.len() == prepared.context().lane_count(),
-                "live warmup requires a complete initial lane cohort"
+                "primed warmup requires a complete initial lane cohort"
             );
             this.lanes
                 .sort_by_key(|lane| lane.snapshot.evidence.lane_id);
@@ -395,7 +400,7 @@ impl AgenticPreparation {
             .iter()
             .filter(|lane| lane.in_flight.is_none() && lane.next < lane.request_indices.len())
             .map(|lane| {
-                if self.policy == AgenticWarmupPolicy::LiveTrajectoryV1 {
+                if self.policy != AgenticWarmupPolicy::RepeatedPrefixes {
                     lane.primer_times_ms[lane.next..]
                         .iter()
                         .copied()
@@ -418,7 +423,7 @@ impl AgenticPreparation {
             return Vec::new();
         }
         let mut ready = Vec::new();
-        if self.policy == AgenticWarmupPolicy::LiveTrajectoryV1 && !self.live_started {
+        if self.policy != AgenticWarmupPolicy::RepeatedPrefixes && !self.live_started {
             // Independent predecessor streams on one lane may prime concurrently.
             // Select each due primer once; a completion is not a lane-serial gate.
             for lane in &mut self.lanes {
@@ -660,7 +665,7 @@ impl AgenticPreparation {
                     Some("preparation request completed without exactly one output token".into());
             }
         }
-        if self.policy == AgenticWarmupPolicy::LiveTrajectoryV1 {
+        if self.policy != AgenticWarmupPolicy::RepeatedPrefixes {
             return Ok(());
         }
         let lane = self
@@ -707,7 +712,7 @@ impl AgenticPreparation {
         if self.failure_request_id.is_some() {
             return Ok(Some(AgenticPreparationTransition::Aborted));
         }
-        if (self.policy == AgenticWarmupPolicy::RepeatedPrefixes
+        if (self.policy != AgenticWarmupPolicy::LiveTrajectoryV1
             && self
                 .lanes
                 .iter()
@@ -803,7 +808,11 @@ impl AgenticPreparation {
                                     && r.observed_output_tokens == 1
                             })
                             .count(),
-                        warmup_expected: AGENTIC_WARMUP_REQUESTS_PER_LANE,
+                        warmup_expected: if self.policy == AgenticWarmupPolicy::PrimersOnly {
+                            0
+                        } else {
+                            AGENTIC_WARMUP_REQUESTS_PER_LANE
+                        },
                         warmup_completed: requests
                             .iter()
                             .filter(|r| {
@@ -1115,6 +1124,104 @@ mod tests {
             turn.authored_request_id.as_deref(),
             Some("a-future" | "b-future")
         )));
+    }
+
+    fn primers_only_driver(cut: f64, cap_ms: f64) -> WorkloadDriver {
+        WorkloadDriver::new_agentic_warmup_with_policy(
+            prepared(1, cut),
+            64,
+            true,
+            1.0,
+            AgenticWarmupPolicy::PrimersOnly,
+            cap_ms,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn primers_only_sends_aligned_primers_and_no_warmup_request() {
+        // Source leads of 50 and 30 ms under a 40 ms cap become 40 and 30 ms,
+        // so the primers are due at 0 and 10 ms.
+        let mut cold =
+            WorkloadDriver::new_agentic_snapshots(prepared(1, 50.0), 64, true, 1.0).unwrap();
+        let mut driver = primers_only_driver(50.0, 40.0);
+        let first = driver.pop_ready(0.0, 100);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].authored_request_id.as_deref(), Some("a-history"));
+        assert_eq!(first[0].request.max_output_tokens, 1);
+        assert_eq!(driver.next_ready_time_ms(), Some(10.0));
+        driver.on_output_token(first[0].request_uuid, 0).unwrap();
+        driver.on_complete(first[0].request_uuid, 2.0).unwrap();
+        assert_eq!(driver.finish_agentic_preparation(2.0).unwrap(), None);
+        assert_eq!(driver.next_ready_time_ms(), Some(10.0));
+        let second = driver.pop_ready(10.0, 100);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].authored_request_id.as_deref(), Some("b-history"));
+        assert_eq!(second[0].request.arrival_timestamp_ms, Some(10.0));
+        driver.on_output_token(second[0].request_uuid, 0).unwrap();
+        driver.on_complete(second[0].request_uuid, 12.0).unwrap();
+        assert_eq!(
+            driver.finish_agentic_preparation(12.0).unwrap(),
+            Some(AgenticPreparationTransition::OpenProfile)
+        );
+        assert_eq!(
+            driver.next_ready_time_ms(),
+            Some(cold.next_ready_time_ms().unwrap() + 12.0)
+        );
+        let evidence = driver.agentic_phase_evidence().unwrap();
+        assert_eq!(evidence.warmup_policy, AgenticWarmupPolicy::PrimersOnly);
+        assert_eq!(evidence.requests.len(), 2);
+        let lane = &evidence.lanes[0];
+        assert_eq!(
+            (
+                lane.primers_completed,
+                lane.warmup_expected,
+                lane.warmup_completed
+            ),
+            (2, 0, 0)
+        );
+    }
+
+    #[test]
+    fn primers_only_caps_leads_and_waits_for_every_primer() {
+        // A 25 ms cap clamps both leads (50 and 30 ms), so both primers are due
+        // at 0 ms and run concurrently; the barrier waits for the second.
+        let mut driver = primers_only_driver(50.0, 25.0);
+        let ready = driver.pop_ready(0.0, 100);
+        assert_eq!(ready.len(), 2);
+        for turn in &ready {
+            driver.on_output_token(turn.request_uuid, 0).unwrap();
+        }
+        driver.on_complete(ready[0].request_uuid, 3.0).unwrap();
+        assert_eq!(driver.finish_agentic_preparation(3.0).unwrap(), None);
+        assert!(driver.pop_ready(3.0, 100).is_empty());
+        driver.on_complete(ready[1].request_uuid, 4.0).unwrap();
+        assert_eq!(
+            driver.finish_agentic_preparation(4.0).unwrap(),
+            Some(AgenticPreparationTransition::OpenProfile)
+        );
+    }
+
+    #[test]
+    fn primers_only_with_nothing_to_prime_opens_the_profile_at_once() {
+        // A cut at 0 ms leaves no history, so there is no primer to send.
+        let mut cold =
+            WorkloadDriver::new_agentic_snapshots(prepared(1, 0.0), 64, true, 1.0).unwrap();
+        let mut driver = primers_only_driver(0.0, 10_000.0);
+        assert_eq!(
+            driver.finish_agentic_preparation(0.0).unwrap(),
+            Some(AgenticPreparationTransition::OpenProfile)
+        );
+        assert_eq!(driver.next_ready_time_ms(), cold.next_ready_time_ms());
+        let evidence = driver.agentic_phase_evidence().unwrap();
+        assert!(evidence.requests.is_empty());
+        assert_eq!(
+            (
+                evidence.lanes[0].primers_completed,
+                evidence.lanes[0].warmup_expected
+            ),
+            (0, 0)
+        );
     }
 
     #[test]

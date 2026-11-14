@@ -500,8 +500,8 @@ impl ValidatedTimingPhase {
         Ok(Self(ValidatedEvidence::Slotted(phase)))
     }
 
-    /// Checked reference constructor for arbitrary operation layouts.
-    #[cfg(test)]
+    /// Checked constructor for providers with arbitrary operation layouts.
+    #[cfg(any(feature = "python", test))]
     pub(crate) fn from_operations(operations: Vec<TimingOperationEvidence>) -> Result<Self> {
         TimingPhaseEvidence::try_from_operations(operations)
             .map(|phase| Self(ValidatedEvidence::Named(phase)))
@@ -1141,6 +1141,7 @@ pub enum TimingModelConfig {
     Fixed { prefill_ms: f64, decode_ms: f64 },
     /// Process-local provider loaded by a Runner or binding.
     External {
+        #[serde(deserialize_with = "deserialize_timing_provider")]
         provider: String,
         #[serde(default)]
         config: Value,
@@ -1182,8 +1183,10 @@ pub struct PrefillWork {
     /// Exact batch totals, as [`TimingModel::predict_prefill_totals_ms`]
     /// receives them.
     pub totals: PrefillTotals,
-    /// Per-request `(new_tokens, prefix_tokens)`, in no particular order.
-    pub requests: Vec<(usize, usize)>,
+    /// Per-request `(new_tokens, prefix_tokens, prompt_len)`, in no particular
+    /// order. `prompt_len` is the request's full prompt, which a chunk of it
+    /// does not cover, as forward-pass telemetry reports prefill lengths.
+    pub requests: Vec<(usize, usize, usize)>,
 }
 
 /// The decode batch one attention-DP rank computes in a forward pass, in the
@@ -1205,6 +1208,11 @@ pub struct DecodeWork {
     pub kv_bound_tokens: usize,
     /// Per-request context lengths, in no particular order.
     pub lengths: Vec<usize>,
+    /// Tokens each request of `lengths` verifies in this forward, in the same
+    /// order: one plus the drafts the scheduler gave it, which the token
+    /// budget, the context limit or drafts not yet ready can make fewer than
+    /// `verify_width`.
+    pub widths: Vec<usize>,
     /// Tokens each request verifies in this forward: one plus the configured
     /// speculative (MTP) depth, or one without speculation.
     pub verify_width: usize,
@@ -1282,10 +1290,22 @@ pub(crate) fn predict_group_iteration_ms(
     Ok(Some(iteration))
 }
 
+/// Normalize the retired AFD name when loading saved descriptors.
+fn deserialize_timing_provider<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let provider = String::deserialize(deserializer)?;
+    Ok(if provider == "aic-afd" {
+        "afd".into()
+    } else {
+        provider
+    })
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
-/// provider without adding that dependency to `aisimulate-core`.
+/// provider without adding that dependency to `aisim-core`.
 pub trait TimingModel: Send + Sync {
     /// Validate actual (new tokens, cached prefix) pairs before a scheduler
     /// reduces them to means. Providers with nonlinear per-request execution
@@ -1363,6 +1383,16 @@ pub trait TimingModel: Send + Sync {
     /// prices its own work and the group ends with its slowest rank.
     fn predict_iteration_ms(&self, _ranks: &[RankWork]) -> Result<Option<IterationMs>> {
         Ok(None)
+    }
+
+    /// Whether the provider prices separate prefill and decode phases. One
+    /// that prices only whole iterations (`false`) answers every pass with
+    /// model work through [`Self::predict_iteration_ms`] and rejects phase
+    /// queries, so a scheduler charges a step that computes no forward, such
+    /// as an SGLang decode whose page reservation failed, no time without
+    /// asking it.
+    fn prices_phases(&self) -> bool {
+        true
     }
 
     /// Return typed evidence accumulated by this provider so far.
@@ -1505,6 +1535,26 @@ pub(crate) fn modeled_duration_ms(raw_ms: f64, speedup_ratio: f64) -> Result<f64
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn external_provider_round_trip_normalizes_only_the_legacy_afd_name() {
+        for provider in ["afd", "aic-afd", "aic", "ais", "custom"] {
+            let mut saved = serde_json::json!({
+                "type": "external", "provider": provider,
+                "config": {"isl": 16, "osl": 128}
+            });
+            let config: TimingModelConfig = serde_json::from_value(saved.clone()).unwrap();
+            if provider == "aic-afd" {
+                saved["provider"] = serde_json::json!("afd");
+            }
+            let canonical = serde_json::to_value(&config).unwrap();
+            assert_eq!(canonical, saved);
+            assert_eq!(
+                serde_json::from_value::<TimingModelConfig>(canonical).unwrap(),
+                config
+            );
+        }
+    }
 
     #[test]
     fn provider_source_tags_preserve_known_and_unknown_values() {
@@ -1652,7 +1702,7 @@ pub(crate) mod tests {
                     new_tokens: 8,
                     prefix_tokens: 0,
                 },
-                requests: vec![(8, 0)],
+                requests: vec![(8, 0, 8)],
             }),
             decode: None,
         }
@@ -1668,6 +1718,7 @@ pub(crate) mod tests {
                 mean_context_length: 9,
                 kv_bound_tokens: 1024,
                 lengths: vec![9, 9],
+                widths: vec![1, 1],
                 verify_width: 1,
             }),
         }

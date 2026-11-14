@@ -21,7 +21,7 @@ decode KV cache across the existing TP ranks and adds no GPUs). Both default to
 one and stay out of the serialized identity when unset.
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B",
@@ -84,11 +84,49 @@ identities must be quoted to preserve their exact spelling:
 | --- | --- | --- |
 | `model` | Required | String model name or path; write a numeric identifier as `model: "123"`. |
 | `backend_version` | `null` | Optional string version; write `backend_version: "0.10"` to preserve the trailing zero. |
+| `system`, `backend_version`, `tp`, `pp`, `attention_dp`, `moe_tp_size`, `moe_ep_size`, `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode`, `attention_backend` | As above | With `estimation_mode` `fpm_regression` or `fpm_learned`, each may be the literal `"unknown"` for a fact the saver did not know. Every other mode, a `fallback_policy` other than `deny` and an `fpm_profile` reject it. The integer fields accept only the string spelling. |
+| `deployment_limits` | absent | Optional mapping of the calibrated deployment's `num_gpus` (GPUs of one worker, `tp * pp * attention_dp`), `max_num_batched_tokens`, `max_num_seqs`, `max_kv_tokens` (KV capacity of one attention-DP rank, in tokens) and `context_length`. Each is a positive integer or `"unknown"`; an omitted entry is `"unknown"`. Absent, it is omitted from the serialized configuration. Accepted in every mode. |
 
 This is an intentional compatibility change for direct Rust YAML parsing:
 earlier parsing accepted numeric scalars for string fields, while canonical
 normalization now rejects them. Quote numeric, Boolean, or null-like values
 when they represent text. An actual `backend_version: null` still means unset.
+
+Regression and learned models read no performance data, so their identity only
+records the deployment they were calibrated on. A producer such as the Dynamo
+planner, which may not know that deployment's hardware, versions, parallelism or
+precision, records `"unknown"` instead of a guess. In memory an unknown integer
+holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisim_core::UNKNOWN_SIZE`), which
+serializes back to `"unknown"`, so the configuration round-trips exactly;
+`unknown_identity_facts()` lists them. Unknown widths are not checked against
+each other (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`). An
+unknown `tp`, `pp` or `attention_dp` neither conflicts with nor derives an
+engine launch's `tensor_parallel_size` and `dp_size`, and replay takes the
+engine's own topology for it. `deployment_limits` is identity too: estimates
+never read it and snapshot restoration compares it exactly. Replay and
+`predict` read only a known `max_kv_tokens`, as the KV capacity of a regression
+or learned role without explicit capacity (see
+[engine replay timing](#engine-replay-timing)); they do not check the worker's
+shape or scheduler limits against the other limits. Recommendation of such a
+snapshot role also requires its GPUs per replica to equal a known `num_gpus`
+and caps its `max_batched_tokens` and `max_sequences` domains at
+`max_num_batched_tokens` and `max_num_seqs` (see
+[snapshot roles](#recommending-with-a-calibrated-snapshot)). Nothing reads
+`context_length`.
+
+The canonical configuration carries the following AFD identity fields. Ordinary
+agg configurations omit them; AFD derives pool identities through the same
+`best_available` construction interface.
+
+| Field | Default | Behavior |
+|---|---|---|
+| `afd_routing_location` | absent | AFD passes `a` to both pools. An explicit `f` fails before estimator/data preparation. |
+| `afd_pool_role` | absent | `a` emits attention, shared and dense computation; `f` emits routed computation. Used for selective pool compilation and retained in canonical/cache identity. |
+
+Selective pool compilation requires SGLang, PP1/CP1/DCP1 and op-level estimation.
+Every AFD pool carries its role and a typed source layer plan. See
+[AFD execution plans](../sweeper/afd-topology.md#performance-model) for ownership
+and [AFD configuration](../replay/engine/analytical.md#afd) for public YAML.
 
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
@@ -98,9 +136,13 @@ The canonical configuration also carries quantization overrides and `attention_b
 
 `moe_perf.parquet` may include Boolean selection metadata `default_eligible`. An absent column preserves legacy automatic selection; when present, every value must be a non-null Boolean. A `false` row requires a nonblank string `kernel_source`, preserved exactly, and is available only through that named source. It cannot enter automatic standard or low-latency grids, including empirical cross-shape and cross-quant reference selection. Among eligible rows, existing source priority and first-row precedence remain unchanged. Default table views, coverage, and readiness use those same eligible grids; raw Parquet enumeration retains all measured rows. Malformed eligibility metadata is an invalid-data error, never a missing-data fallback. The flag is not a measurement identity dimension. Collector finalization preserves it during merges, including existing annotations when a legacy recollection omits the column; genuinely new legacy keys remain eligible.
 
-An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
+An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any non-AFD timing phase with no compatible fused MoE operator. In AFD, the A pool retains the selector in its canonical configuration but emits no routed MoE operation; the F pool applies it to routed MoE operations. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
 
-AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
+Ordinary prefill/decode companions of AFD roles use the canonical timing provider
+and preserve exact-source requests under the same eligibility rules. Fixed or
+polynomial timing and whole-forward FPM reject incompatible source selectors.
+These controls describe standalone AISim behavior, not downstream Dynamo
+planner integration.
 
 `nextn` remains compute-side identity. Expected accepted draft tokens are a
 simulator workload assumption, supplied separately by the unified CLI as
@@ -128,9 +170,10 @@ adaptation is the default; set `adaptation: frozen` explicitly for a fixed fores
 Frozen adaptation accepts either source, online adaptation requires a training or
 runtime checkpoint, and `causal_selector` requires a training seed checkpoint.
 Learned models support the standalone canonical API with complete per-iteration
-`ForwardPassMetrics` for prediction and feedback. Replay, engine CLI prediction
-and recommendation, and Sweeper timing use phase aggregates that cannot supply
-these features, so they reject learned mode before loading its source. See
+`ForwardPassMetrics` for prediction and feedback. Engine replay, engine CLI
+prediction and recommendation, and Sweeper timing price every pass of a learned
+role with one iteration query, adding the per-request lengths an artifact
+reads (see [engine replay timing](#engine-replay-timing)). See
 [learned configuration](fpm_ml/configuration.md#selection-and-supported-execution)
 for source identity checks, adaptation controls and correction requirements.
 
@@ -192,7 +235,7 @@ Rust callers now construct the public struct instead of the former
 `ForwardPassSpeculationConfig::Ngram` enum variant:
 
 ```rust
-use aisimulate_core::{
+use aisim_core::{
     BackendKind, DatabaseMode, EstimationMode, ForwardPassPerfModel,
     ForwardPassPerfModelConfig, ForwardPassSpeculationConfig, ForwardPassWorkerType,
 };
@@ -446,6 +489,8 @@ sample from the most populated cell when the store exceeds its budget.
 | `estimator_config.fpm_regression.fit.linear.non_negative` | `true` | `false` permits signed slopes; the intercept is always free. |
 | `estimator_config.fpm_regression.fit.linear.update_policy` | `{kind: always}` | `error_threshold` defers coefficient publication until recent prediction errors exceed its tolerances. |
 | `estimator_config.fpm_regression.fit.linear.feature_set` | Absent | `fpm5` fits the 17 cross-rank aggregates of the learned `fpm5` preset instead of `feature_axes`, which must keep its default. Requires `sampling.max_observations >= 18` and a positive `fit.singular_ridge_scale`. Omitted from serialization when absent. |
+| `estimator_config.fpm_regression.fit.linear.max_kv_splits` | Absent | KV splits the decode-attention kernel gives a request that runs alone: the GPU's SM count over the kernel's CTAs per request. Positive, and required when `feature_axes` or `sampling.axes` selects `longest_split`. Omitted from serialization when absent. See [engine-constant axes](methods/online-regression.md#engine-constant-axes). |
+| `estimator_config.fpm_regression.fit.linear.max_cudagraph_capture_size` | Absent | The most scheduled tokens a rank runs in a CUDA graph, as vLLM's knob of this name. Positive, and required when `feature_axes` or `sampling.axes` selects `eager`. Omitted from serialization when absent. |
 
 `feature_set: fpm5` fits the same named aggregates as the learned
 `--features fpm5` preset: active-rank, request and token counts and sums,
@@ -462,7 +507,7 @@ serving its last fit when a refit cannot produce a usable one, for example when
 multi-rank traffic first activates more aggregates than it has retained rows.
 `sampling.axes` still selects
 retention coordinates, and `update_policy` and `non_negative` keep their
-meaning. `rebuild_interval` has no effect because every fit already uses the
+meaning. `rebuild_interval` must stay `null` because every fit already uses the
 exact retained rows. See [online regression](methods/online-regression.md#fpm5-aggregate-features).
 
 | Correction field | Default | Behavior |
@@ -513,9 +558,10 @@ Configuration describes a cold model. To keep what a model has learned from
 Saving atomically writes a new directory and returns the pinned canonical
 configuration, which is also written to `path/config.json`. Restore through
 the same constructor: `RustForwardPassPerfModel.best_available(state_snapshot=path)`
-reads that file, and passing the returned configuration is equivalent. There is no
-separate loader; `best_available` restores whenever
-`estimator_config.state_snapshot` is present.
+reads that file with `state_snapshot.path` naming `path`, wherever the
+directory now is, and passing the returned configuration is equivalent while
+the snapshot stays where it was saved. There is no separate loader;
+`best_available` restores whenever `estimator_config.state_snapshot` is present.
 
 ```python
 config = model.save_state_snapshot("/tmp/decode-snapshot")
@@ -526,7 +572,7 @@ resumed = RustForwardPassPerfModel.best_available(config)
 
 | Field | Default | Behavior |
 | --- | --- | --- |
-| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept, so a stable mount alias stays valid. |
+| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`, at its save location or wherever it was copied or moved. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept. A path written in [`ais_perf_model`](#unified-perf-model-input) is made absolute before that, by the rule of its [relative paths](#relative-paths), which follows the links in the folders of the path before `..` is applied. The inputs the snapshot owns are read from this directory (see [relocation](#relocating-a-snapshot)). |
 | `estimator_config.state_snapshot.sha256` | `null` | SHA-256 of `path/manifest.json`. Normalization fills it; a supplied value that differs is an error. |
 | `estimator_config.state_snapshot.on_tune` | `reject` | `reject` makes `tune_with_fpms()` and `flush_updates()` return an error. `continue` resumes tuning from the saved state exactly as the saving model would have continued. |
 
@@ -568,7 +614,7 @@ Restoration requires an explicit `estimation_mode` and `fallback_policy: deny`
 and fails, without selecting another estimator, when:
 
 - the manifest digest, a pinned file's size or digest, or the snapshot format
-  differs: snapshots load only in the same `aisimulate-core` version with the
+  differs: snapshots load only in the same `aisim-core` version with the
   same state layout and engine-specification schema;
 - the configuration, compared field by field after normalization, differs
   from the saved identity (the error names the first differing field);
@@ -594,7 +640,12 @@ non-UTF-8 names. A native model fingerprints its data when the process first
 loads that systems root; later constructions reuse that result. Performance
 tables that another engine in the process parsed before then are not shared
 with the model, so it reads the fingerprinted data; restoration does the same
-after its check.
+after its check. Only tables an earlier restoration in the process loaded from
+the same data stay shared, and only while no fingerprinted file or directory
+has been written since, even back to its original bytes, and no symbolic link
+followed on the way to the data, including links inside link targets, has been
+retargeted: tables parse on first query, so they could otherwise hold rows from
+data changed in between.
 `save_state_snapshot` fingerprints the data again and fails if it changed
 since it was loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
@@ -610,19 +661,51 @@ configuration bundled with the package, a local directory or Hugging Face, so
 a packed native snapshot still needs it, and restoration fails if it compiles
 a different engine specification from the saved one.
 
-Snapshot configurations pin absolute paths. Restoration reads the pinned
-`state_snapshot.path`, so `best_available(state_snapshot=path)` raises
-`ValueError` unless `path` is the directory the snapshot was saved to (compared with
-`os.path.samefile`) rather than silently restoring the original. A
-configuration is not compared with that location. Edited to name a copy, a
-snapshot with a deployment identity restores the copy after verifying it
-against its manifest, but its other pinned paths (packed performance data, an
-execution profile, learned artifacts and checkpoints) belong to that identity
-and must keep naming the original directory. A `from_learned` snapshot derives
-its artifact path from `state_snapshot.path`, so it rejects the edit unless
-`fpm_learned.artifact_path` names the copy too. Save a new snapshot instead of
-moving one. Snapshot
-I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
+#### Relocating a snapshot
+
+A snapshot directory can be copied or moved, for example to another host or
+mount point, and restored after the original is deleted. The manifest names
+the inputs a snapshot owns (packed performance data under `perf_db/`, a
+copied execution profile, learned artifacts and online checkpoints) by their
+fixed paths inside the snapshot, and construction reads them from the
+directory that `state_snapshot.path` names, whatever paths the rest of the
+configuration gives for them. Restore a moved snapshot with
+`best_available(state_snapshot=new_path)`, or set
+`estimator_config.state_snapshot.path` in a saved configuration;
+`config.json` and the returned configuration record the absolute paths at the
+save location. The manifest pins the content of every owned input, so a copy
+is verified exactly like the original.
+
+Where external performance data is found is not identity. A snapshot saved
+without `include_perf_db` reads its data through `systems_paths` (and
+`fpm_parquet_path`), which may name any root with the same content: the
+fingerprint decides. `best_available(state_snapshot=path)` keeps the roots
+recorded at save time, so on another host either save with
+`include_perf_db=True` or pass a configuration with `systems_paths` replaced.
+Regression and learned estimators read no performance data, so their
+`systems_paths` are not compared. Every other field, such as the model,
+hardware, backend version, parallelism, `kv_block_size`, quantization and the
+estimator controls, must still equal the saved identity. A snapshot is
+self-contained only when saved with `include_perf_db=True`: re-saving a model
+restored from a packed snapshot without it references that snapshot's packed
+data as external data.
+
+The manifest schema version is 2. Version 1 manifests, written before
+snapshots were relocatable (for example by nightly
+`0.13.0.dev202610280000000086`), recorded owned inputs as absolute paths below
+the save location. A snapshot restores only in the aisim-core version
+that wrote it, so a version 1 snapshot from a published nightly cannot be
+relocated: restore it in place with the build that wrote it, or tune and save
+a new snapshot with a current build, which rejects the old one with an error
+naming the writer's version and manifest schema version. A current build still
+reads a version 1 manifest that carries its own version string, such as one
+from an unstamped local `0.13.0` build, and relocates it by recovering the save
+location from the owned inputs' fixed relative paths. Newer schema versions
+are rejected with the versions this build reads.
+
+#### Errors, replay and inspection
+
+Snapshot I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
 a missing snapshot or a missing learned artifact or checkpoint inside it)
 through both `state_snapshot=` and a configuration, never the skippable
 `PerfDataNotAvailableError`. A manifest from another release
@@ -740,16 +823,560 @@ work, at its own queries and native latency under the pass's correction, as
 each rank recorded its own estimate under per-rank phase timing; a rank that
 computes prefill and decode is reported with decode.
 
-Replay keeps per-rank phase timing, each rank pricing its own phases and the
-pass ending with the slowest rank, for a `decode_speedup_ratio` other than 1,
-bounded decoder replay, v1 execution profiles, hybrid speculative FPM
-(operation-level draft tails, or `nextn > 0` without a measured SD-round
+A native estimator keeps per-rank phase timing, each rank pricing its own
+phases and the pass ending with the slowest rank, for a `decode_speedup_ratio`
+other than 1, bounded decoder replay, v1 execution profiles, hybrid speculative
+FPM (operation-level draft tails, or `nextn > 0` without a measured SD-round
 profile), a measured SD-round profile with attention DP above one, a scheduler
 whose speculative depth differs from the model's, an operation graph whose
 measured scopes cannot compose a mix step when a rank computes prefill and
 decode, and totals beyond the query's 32-bit counters. Lookup coverage
 collection counts every pass, so replay does not reuse a priced iteration while
 it is enabled.
+
+Regression and learned estimators (`fpm_regression`, and `fpm_learned` with
+any adaptation) have no native engine. Replay prices every pass of their role
+with the iteration query and never asks them for a separate phase, so totals
+beyond the 32-bit counters are an error. Each rank's metrics follow the
+`ForwardPassMetrics` telemetry such models are fitted to, which Dynamo's vLLM
+worker reports: prefill passes its scheduled totals, and decode KV is the
+requests' past KV, the sum of their computed tokens excluding each request's
+current token. That is the whole-model FPM convention, the context lengths
+minus one token per decode request, but without the scheduler's KV clamp. When
+the model reads per-request detail (a regression request feature axis, or a
+learned `req_*`, `slot*` or length-variance feature), each rank also carries
+`extend_lengths` and `past_kv_lengths` (each prefill request's new tokens and
+prefix, each decode request's verification width and past KV) and the population
+variances of the prefill requests' full prompt lengths, as the telemetry
+reports them whatever chunk of a prompt the pass computes, and of the decode
+requests' past KV; those passes are not reused from the iteration cache. Each
+rank's metrics carry its position in the group as `dp_rank`.
+
+A vLLM regression fitted at `nextn > 0` gives a valid estimate only when its
+training timings cover complete MTP rounds, drafting and verification, as a
+measured speculative-round profile's do; `nextn` records the depth, not how
+the timings were obtained. Replay times such a role only at that depth:
+the snapshot pins `nextn`, and the engine's `aic_nextn` must equal it. Each
+decode request counts once in the totals with its past KV, as in the
+telemetry; only its `extend_lengths` entry carries the tokens it verifies: one
+plus the drafts the scheduler gave it, fewer than `nextn` when the token budget
+or the context limit cuts the round short. No `draft_length` scaling applies.
+
+Construction checks that the role's workload stores are ready: pure prefill
+for a prefill worker, pure decode for a decode worker, and pure prefill and
+pure decode for an aggregated worker. An aggregated vLLM or TensorRT-LLM worker
+also needs locally mixed, since its scheduler computes chunked prefill beside
+decode in one rank pass; an SGLang rank runs a prefill batch alone (mixed chunk
+is not modeled), so it does not. Every aggregated worker whose engine runs
+attention DP above one also needs cross-rank aggregated. A regression store is
+ready with a usable fit and a learned store when the forest has it. It rejects
+a rank hosting the vision encoder, a speculation scheme, `nextn > 0` for a
+learned model or a non-vLLM regression (SGLang's telemetry reports an MTP
+decode request's extend as 1), bounded decoder replay, and an automatic selection that
+would fall back to an untrained regression. Replay also rejects such a role
+whose engine sets a `decode_speedup_ratio` other than 1: replay then prices
+each rank's phases, which these estimators never do. A pass on which no rank
+computes model work takes no time without a query, as for every estimator; so
+does an SGLang decode step whose page reservation failed, which a native
+estimator is still asked to price at no charge. These estimators are
+latency-only: they record no operation evidence, so replay reports
+`power_w: null` as for other latency-only timing.
+
+Without explicit KV capacity, a regression or learned role takes
+`deployment_limits.max_kv_tokens` in whole scheduler blocks. Without a
+recorded capacity the AIC memory estimate needs the complete identity, so an
+identity with unknown facts must then set `num_gpu_blocks`. A `tp` or
+`attention_dp` recorded as `"unknown"` takes the engine's, and a `pp` recorded
+so takes the engine's single pipeline stage, including for `kv_cache.kvcr`.
+Replay reads no other `deployment_limits` entry.
+
+## Unified perf-model input
+
+`ais_perf_model` is one value that describes the perf model of each worker
+type. You write it once and use it everywhere: in the `aisim perf-model`
+tools, as `engine.ais_perf_model` in `predict` and `recommend` YAML, and as
+`search_space.ais_perf_model` in a Sweeper search.
+
+Dynamo components that use the [loader](api/python.md#ais-perf-model-loader),
+`aisim_core.ais_perf_model`, read the same value. A Dynamo release whose
+components do not use it may read a different `ais_perf_model` mapping; see
+the documentation of that release.
+
+```yaml
+# perf-model.yaml: one entry per worker type
+- worker_type: prefill
+  from: {dataset: {root: /opt/aisim-data, manifest: metadata/prefill-manifest.json}}
+- worker_type: decode
+  model: Qwen/Qwen3-32B
+  system: h200_sxm
+  backend: vllm
+```
+
+Check a file before you use it. `check` builds every entry in it:
+
+```bash
+aisim perf-model check ./perf-model.yaml
+```
+
+A consumer builds only the entry for its own worker type, so run `check` in
+CI. See [perf-model tools](../reference/cli.md#perf-model) for `check`,
+`migrate` and `fetch`.
+
+### Entries
+
+The value is one perf-model config, or a list with one config per worker type.
+Each config is an entry.
+
+| Key | Meaning |
+|---|---|
+| `worker_type` | `prefill`, `decode`, or `aggregated`. Required in a list, and each worker type may appear once. One config alone may leave it out; the consumer then fills in its own worker type. |
+| `from` | Optional. Starts the entry from a template file, a dataset, or a state snapshot. See [Start an entry with `from`](#start-an-entry-with-from). |
+| Any other key | A `ForwardPassPerfModelConfig` field, such as `model`, `system`, `backend`, `tp`, `estimation_mode`, or `estimator_config`. |
+
+- A key written as `null` counts as not written. So does an empty
+  `systems_paths` or an empty `estimator_config`.
+- A `null` inside `estimator_config` is a value. `transfer_policy: []` is a
+  value too.
+- An entry with only `worker_type` is valid.
+- An empty config, an empty list, a repeated key, and an unknown or repeated
+  worker type are errors.
+- A key written twice is an error at every depth of the value, in these
+  places:
+  - a perf-model file, a template file named by `from`, and inline JSON;
+  - the value written under `engine.ais_perf_model` or
+    `search_space.ais_perf_model` in a `predict`, `recommend` or search YAML
+    file, when `aisim predict`, `aisim recommend`,
+    `CorePredictionConfig.from_yaml`, `CoreRecommendationConfig.from_yaml` or
+    `SmartSearchConfig.from_yaml` reads the file.
+
+  A configuration file reports it like this:
+  `engine.ais_perf_model in predict.yaml: the key 'estimation_mode' is written twice (lines 9 and 11); write it once`.
+  `aisim predict` and `aisim recommend` then exit with code `2`
+  before they touch the output directory. A key that a YAML merge (`<<`)
+  brings in does not repeat a key written next to it.
+- The same commands and loaders reject a configuration file that writes
+  `ais_perf_model` itself twice in its section. They also reject a file that
+  writes the section (`engine`, or `search_space` in a search file) twice
+  when one of these sections writes `ais_perf_model`. The YAML reader would
+  keep the last one and drop the others without a word. The error has the
+  same form and names the first and the last line:
+  `engine.ais_perf_model in predict.yaml: the key 'ais_perf_model' is written twice (lines 8 and 10); write it once`
+  or
+  `engine.ais_perf_model in predict.yaml: the key 'engine' is written twice (lines 1 and 14); write it once`.
+  A file with several of these repeats reports the section first, then
+  `ais_perf_model`, then a key inside the value.
+- `ais_perf_model`, or its section, that a YAML merge (`<<`) brings in next
+  to a written one is not a repeat: the written one is used. When only a
+  merge brings the value in, the value that the YAML reader keeps is the one
+  that is checked for a key written twice.
+- A key written twice is not checked in a value given with `--set`. The YAML
+  reader keeps the last value there. It does the same for a key repeated
+  anywhere else in a configuration file, such as an old estimator field, and
+  for a section written twice when none of them writes `ais_perf_model`.
+  `aisim perf-model migrate` makes the same checks when it reads a file.
+  Python data passed to `model_validate` cannot hold a key twice.
+- When a consumer needs a worker type the value does not have, the error lists
+  the worker types the value does have.
+
+### File or inline JSON
+
+A value given as text, to `aisim perf-model check` or to the
+[loader](api/python.md#ais-perf-model-loader), is read like this:
+
+| Value | Read as |
+|---|---|
+| Starts with `{` or `[` | Inline JSON. |
+| Anything else | A file path. A `.json` file is read as JSON, any other file as YAML. |
+
+```bash
+aisim perf-model check \
+  '{"model": "Qwen/Qwen3-32B", "system": "h200_sxm", "backend": "vllm"}' \
+  --worker-type aggregated
+```
+
+Inline YAML is not supported. For a file whose name starts with `{` or `[`,
+write `./NAME`.
+
+In `predict`, `recommend` and search YAML, write the content directly under
+the key. A string there is an error. To reuse a file, write `from: <file>`.
+
+### Start an entry with `from`
+
+```yaml
+- worker_type: decode
+  from: ./base.yaml          # a template file
+  tp: 4                      # the entry wins over the template
+```
+
+| `from` | The entry starts from |
+|---|---|
+| `./base.yaml` | A template file. Keys in the entry win over keys in the file. `estimator_config` is merged mapping by mapping; lists and scalars are replaced. When the file is a list, the entry takes the config with its own `worker_type`. A template cannot use `from` itself. |
+| `{dataset: {root, manifest}}` | A [dataset](methods/op-level.md#shared-dataset-layout-and-local-preparation) on local disk. `manifest` is a path relative to `root`. The dataset is prepared once in a workspace folder and reused after that. |
+| `{state_snapshot: {path}}` | A saved perf-model state; see [State snapshots](#state-snapshots). Optional `sha256` must match the saved state. Optional `on_tune: continue` lets the restored model keep tuning; without it the saved `reject` stays. |
+
+What you write wins over a template file. Both win over a consumer's
+defaults. A consumer adds what it observes only when the entry leaves it out.
+It never overrides: a written value that differs from the observed one is an
+error that names the field and both values.
+
+A dataset and a state snapshot are fixed. They record the model, hardware and
+settings they were built for. Other keys in such an entry are only compared
+with the saved values:
+
+- A different value is an error that names the field and both values.
+- A key that the source does not record cannot be added.
+- `systems_paths` next to a state snapshot is allowed. It says where the data
+  is, not what the model is.
+
+### Relative paths
+
+| Where the value is written | Relative paths start at |
+|---|---|
+| A file: a perf-model file, a template file, or a `predict`, `recommend` or search configuration file | That file's folder |
+| Inline JSON, a `--set` override, or Python data passed to `model_validate` | The current working directory |
+
+`manifest` in a dataset `from` always starts at `root`.
+
+The rule covers `from`, the items of `systems_paths` (the word `default` is
+kept), and these `estimator_config` fields: `state_snapshot.path`,
+`fpm_learned.artifact_path`, `fpm_learned.checkpoint_path`,
+`temporary_mixed_composition.original_a.manifest_path`,
+`op_level.execution_profile.path` and `fpm_interpolation.fpm_parquet_path`.
+
+Symbolic links are treated the way the system treats them when it opens a
+path:
+
+- Links in the folders of a path are followed before `..` is applied. So
+  `link/..` is the parent of the folder that the link names.
+- A file reached through a linked folder starts its relative paths at the
+  real folder.
+- The last name of a path is kept as written. A file that is itself a link
+  starts its relative paths at the folder of the link, not at the folder of
+  the file that the link names. In the value that the loader returns, a data
+  folder or a snapshot that is a link keeps its name. The `systems_paths`
+  field of a `predict`, `recommend` or search configuration then stores the
+  real folder, as it does for the old field.
+
+This differs from the old estimator fields. Their relative paths start at the
+working directory. `aisim perf-model migrate` rewrites them to start at
+the folder of the converted file. When `migrate` is given the file through a
+symbolic link in another folder, as the configuration file or as `FILE`, it
+writes them as absolute paths; see
+[`perf-model migrate`](../reference/cli.md#perf-model-migrate).
+
+### In predict, recommend and search configurations
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode: {}
+  ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      fallback_policy: deny
+      systems_paths: [./fpm-data, default]
+    - worker_type: decode
+      estimation_mode: op_level
+```
+
+In this release, `engine.ais_perf_model` and `search_space.ais_perf_model` are
+another spelling of the existing estimator fields. Validation rewrites the
+entries into those fields. Saved configurations, candidate YAML and
+`model_dump()` output show the existing fields and leave `ais_perf_model` out.
+
+An entry has two kinds of keys here:
+
+| Kind | Keys | What happens |
+|---|---|---|
+| Estimator keys | `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy`, `fpm_profile` | They set the estimator. They are written into the existing fields. |
+| Identity keys | Every other key, such as `model`, `system`, `backend`, `tp` or `kv_block_size` | They are only checked. The engine section, or the search space, still states them. A different value is an error. |
+
+#### Worker types
+
+The configuration decides which worker types are active:
+
+| Configuration | Active worker types |
+|---|---|
+| Aggregated mode | `aggregated` |
+| Disaggregated mode | `prefill` and `decode` |
+| Several modes in `recommend` or in a search | The worker types of every listed mode |
+| Mode left out | `predict`: `aggregated`. `recommend` and search: all three. |
+
+- One config without `worker_type` applies to every active worker type.
+- A list, or one config that writes `worker_type`, needs an entry for every
+  active worker type and none for an inactive one.
+
+#### Estimator keys
+
+Entries that agree are the engine-level spelling, entries that differ the
+per-worker spelling. The rule is applied to each key on its own:
+
+- Every active entry gives the key, and all give the same value: the value is
+  written to `engine.<key>`.
+- Otherwise it is written to `engine.workers.<role>.timing.<key>` for each
+  entry that gives the key.
+
+The example above is the same as `estimation_mode: fpm_interpolation`,
+`fallback_policy: deny` and `systems_paths` under
+`engine.workers.prefill.timing`, and `estimation_mode: op_level` under
+`engine.workers.decode.timing`. A single config without `worker_type` is the
+same as the `engine.<key>` fields.
+
+- `fpm_profile` is engine-wide. All active entries must give the same value.
+  An entry that leaves it out next to one that gives it is an error too.
+- In a search, the engine level is the top-level `SearchSpace` field and the
+  per-worker level is `role_estimator_controls`; see
+  [Sweeper Python SDK](../sweeper/sdk.md#ais-perf-model).
+
+#### Identity keys
+
+Identity keys use the perf-model field names, such as `tp`, not
+`parallelism.tensor`.
+
+| Command | Keys an entry may state | Compared with |
+|---|---|---|
+| `predict` | Any `ForwardPassPerfModelConfig` field except `afd_routing_location` and `afd_pool_role` | The value the engine section gives that worker, or the field's default when the engine section does not set it. |
+| `recommend` | `model`, `system`, `backend`, `backend_version`, `nextn`, and the engine-wide precision and model controls: the five `*_quant_mode` fields, `attention_backend`, `moe_backend`, `moe_kernel_source`, `enable_eplb` and `wideep_num_slots` | `engine.model`; `engine.workers.<role>.hardware`, else `engine.hardware`; `engine.backend`; the `engine` field of the same name, or its default. |
+| Search | `model`, `system`, `backend` | `model_name`; `prefill_hardware_sku` or `decode_hardware_sku` when set, else `hardware_sku`; `backend`. |
+
+- `predict` compares `backend_version` as written. An entry that states it
+  needs the same text in `engine.backend_version`.
+- In `predict`, a key that is not a `ForwardPassPerfModelConfig` field is an
+  error when the configuration is validated:
+  `engine.ais_perf_model entry for aggregated: estimaton_mode: not a perf model field (did you mean estimation_mode?). Correct the key or drop it from the entry, or from the template file when 'from: <file>' brings it in.`
+- In `predict`, an entry that sets `afd_routing_location` or `afd_pool_role`
+  is an error at the same point. Only the pools of an AFD worker have these
+  fields:
+  `engine.ais_perf_model entry for aggregated: afd_pool_role is set, and ais_perf_model does not cover AFD yet. Drop the key from the entry, or from the template file when 'from: <file>' brings it in.`
+- `predict` compares the values of identity keys later, when it builds the
+  workers of a run. `CorePredictionConfig.model_validate` alone does not
+  report a different value. With `--overwrite`, the known outputs are already
+  removed by then; see
+  [Existing Output Directories](../reference/cli.md#existing-output-directories).
+- `recommend` and search need one stated value to compare with. An entry that
+  states `system` is an error with `hardware: auto`. An entry that states
+  `backend` is an error unless the configuration names exactly one backend.
+- A boolean and a number are different values. `tp: true` does not restate
+  `tp: 1`, and `enable_eplb: 0` does not restate `enable_eplb: false`:
+  `engine.ais_perf_model entry for aggregated does not match the engine section: tp: entry has true, the engine section gives 1. Fix the engine section or drop the key from the entry.`
+- In `recommend`, a snapshot entry that states `backend_version`, `nextn` or
+  an engine-wide control needs that key set in `engine`. The default is not
+  used for it.
+- Any other identity key, such as `tp`, is an error in `recommend` and in a
+  search. They choose those values for each candidate. Drop the key from the
+  entry, or from the template file when `from: <file>` brings it in. A `null`
+  in the entry does not remove a template key.
+
+#### State snapshot entries
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode: {}
+  ais_perf_model:
+    - worker_type: prefill
+    - worker_type: decode
+      from: {state_snapshot: {path: /mnt/planner/decode-snapshot}}
+```
+
+A state snapshot belongs to one worker. A snapshot entry is an entry with
+`from: {state_snapshot: ...}`, or one that writes
+`estimator_config.state_snapshot`. When any active entry is a snapshot entry,
+every estimator key is written at the per-worker level, even when the entries
+agree. `fpm_profile` stays engine-wide.
+
+- One config without `worker_type` can be a snapshot entry only when exactly
+  one worker type is active.
+- Name the snapshot once. `from.state_snapshot` together with
+  `estimator_config.state_snapshot` is an error.
+- The snapshot is then judged like the per-worker field; see
+  [Recommending with a calibrated snapshot](#recommending-with-a-calibrated-snapshot).
+  Its error messages name
+  `engine.workers.<role>.timing.estimator_config.state_snapshot`.
+
+#### Overrides with `--set`
+
+```bash
+aisim predict -c prediction.yaml \
+  --set engine.ais_perf_model.estimation_mode=op_level
+```
+
+- `--set engine.ais_perf_model.<key>=VALUE` changes one config, or creates it.
+- A list can only be replaced as a whole.
+- `--set engine.ais_perf_model=null` removes the key.
+- A relative path given with `--set` starts at the working directory.
+
+### Old and new fields together
+
+State a setting with the old field or with the new key, not with both. A
+written old estimator field next to `ais_perf_model` is an error:
+
+```text
+engine.ais_perf_model cannot be combined with old estimator fields that say something else: engine.estimation_mode. Remove the old fields.
+```
+
+One case is allowed. An old field may hold exactly the value that the entries
+produce at the same level. This keeps a saved configuration valid when you add
+the key back to it.
+
+`transfer_policy` is compared by the transfer kinds it names, not by spelling.
+`engine.transfer_policy: [xshape]` next to an entry with
+`transfer_policy: xshape` is the same value. So is a preset name next to the
+list of kinds it stands for. A text is read as a preset name, a kind name, or
+several of them separated by commas, in any letter case. A list must hold kind
+names, written exactly: `[balanced]` and `[XSHAPE]` are not lists of kinds. A
+value that does not work on its own, such as `other`, and a list that holds
+anything but kind names, is the same value only as a value written
+identically. The configuration keeps the spelling of the entry. A search space
+follows the same rule; see
+[Sweeper Python SDK](../sweeper/sdk.md#ais-perf-model).
+
+An old field that repeats the key still prints the deprecation warning. The
+warning then says to remove the old field; see
+[Old estimator fields](#old-estimator-fields).
+
+### Limits in this release
+
+- **Dataset entries.** `from: {dataset: ...}` works in
+  `aisim perf-model check` and in Python code that calls the
+  [loader](api/python.md#ais-perf-model-loader). `predict` and `recommend`
+  configurations reject it:
+  `dataset entries are not supported in predict and recommend configs yet; use 'aisim perf-model check' or a Dynamo component`.
+  A search configuration rejects it with the same message for search configs.
+  The message names a Dynamo component: a Dynamo component that uses the
+  loader and gives it a workspace folder can take a dataset entry.
+- **AFD, encoder pools, fixed and polynomial timing.** These keep the old
+  fields. A configuration with an AFD worker
+  (`engine.workers.<role>.type: afd`), with `engine.workers.encoder`, or with
+  `timing.type: fixed` or `polynomial` on an active worker rejects
+  `ais_perf_model`. Its old fields do not print the deprecation warning. The
+  same holds for a search with `afd_roles`, with `encoder`, or with a
+  `<role>_timing_model`.
+- **Snapshot entries in `predict`.** The entry only re-spells the per-worker
+  field. `predict` still needs every saved estimator control written out, and
+  `engine.backend_version` equal to the saved one. `recommend` takes them from
+  the snapshot.
+- **Identity keys in `recommend`.** Only the keys in the table above can be
+  checked. Every other identity key is an error.
+- **Generated files.** Candidate files written by `recommend`
+  (`recommendations/NNNN.yaml`) and replay configurations written by
+  `aisim onboard` still use the old fields. Reading one back prints the
+  deprecation warning. Do not migrate a replay configuration written by
+  `aisim onboard`. For such a file the warning ends with
+  `('aisim onboard' wrote this file and rejects it once it is changed, so leave it as it is)`
+  in place of the `migrate` command. This holds for the `predict.yaml` that
+  `onboard` writes next to its `validation.json`, and for the
+  `matched/predict.yaml` that serving validation writes in the folder of its
+  `recipe.json`, while the file is unchanged and that report is in place. A
+  copy in another folder, or a file that was changed, gets the `migrate`
+  command.
+- **Simulated router.** The key sets the simulated engines. A `router`
+  section is read only by the router adapter of a serving-stack integration;
+  the `engine` stack rejects a configuration that has one. The adapter defines
+  the keys of the section, and AISim hands the section to it without
+  reading them.
+
+### Old estimator fields
+
+The estimator fields under `engine` and in the search space are deprecated.
+They work as before in this release. The next release removes them. Use
+`engine.ais_perf_model` or `search_space.ais_perf_model`.
+
+Loading a configuration file that writes an old field prints one warning that
+lists every old field:
+
+```text
+ais-perf-model: engine.estimation_mode, engine.workers.decode.timing.systems_paths are deprecated and will be removed in the next release; use engine.ais_perf_model (run 'aisim perf-model migrate prediction.yaml' to convert the file)
+```
+
+The command in the warning shows the conversion and writes nothing. Preview
+the conversion, then write it:
+
+```bash
+# Preview: print the new block and the fields it removes.
+aisim perf-model migrate prediction.yaml
+# Write: convert the file in place.
+aisim perf-model migrate prediction.yaml --output prediction.yaml
+```
+
+The preview ends with
+`Nothing was written. Pass --output FILE to write the converted config.` The
+second command ends with
+`Wrote prediction.yaml (comments and formatting of the original file are not kept).`
+The converted file loads without the warning. To keep the original file, name
+another file after `--output`. See
+[`perf-model migrate`](../reference/cli.md#perf-model-migrate).
+
+| Old field | In an entry |
+|---|---|
+| `engine.estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy`, `fpm_profile` | The same key, in one config or in every entry. |
+| `engine.workers.<role>.timing.estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy` | The same key, in the entry for that worker type. |
+| `engine.systems_path: P` | `systems_paths: [P]` |
+| `engine.workers.<role>.timing.forward_model: op_level` | `estimation_mode: op_level` with `fallback_policy: deny` |
+| `engine.workers.<role>.timing.forward_model: fpm` | `estimation_mode: fpm_interpolation` with `fallback_policy: deny` |
+| `engine.workers.<role>.timing.fpm_parquet_path: P` | `estimator_config.fpm_interpolation.fpm_parquet_path: P` |
+| Search space, top level: `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode`, `transfer_policy`, `fpm_profile` | The same key, in one config or in every entry. |
+| Search space, top level: `systems_path: P` | `systems_paths: [P]` |
+| Search space: `role_estimator_controls.<role>.<key>` | The same key, in the entry for that worker type. The `agg` role is the `aggregated` worker type. |
+| Search space: `<role>_forward_model: op_level` | `estimation_mode: op_level`, in the entry for that worker type. No `fallback_policy` is added. |
+| Search space: `<role>_forward_model: fpm` | `estimation_mode: fpm_interpolation`, in the entry for that worker type. No `fallback_policy` is added. |
+| Search space: `<role>_fpm_parquet_path: P` | `estimator_config.fpm_interpolation.fpm_parquet_path: P`, in the entry for that worker type. |
+
+The names of the old search fields are not keys of an entry. An entry that
+writes `<role>_forward_model`, `<role>_fpm_parquet_path` or
+`role_estimator_controls` is an error such as
+`search_space.ais_perf_model entry for aggregated: agg_forward_model, agg_fpm_parquet_path cannot be checked in a search config.`
+[Sweeper Python SDK](../sweeper/sdk.md#replacing-the-per-role-fpm-fields)
+shows the old and the new spelling of one search side by side.
+
+- With one old field the warning says `is deprecated`. A path with a space or
+  a character such as `&` is quoted for the shell, as in
+  `migrate 'my configs/prediction.yaml'`.
+- A field counts as written when it is present, not `null`, and differs from
+  its default. A saved configuration that only lists defaults does not warn.
+  `systems_path`, `forward_model` and `fpm_parquet_path` count whenever they
+  are set.
+- One search field counts also when it is `null`:
+  `role_estimator_controls.<role>.transfer_policy`. A `null` there replaces
+  the top-level policy for that role with every transfer kind; see
+  [Sweeper Python SDK](../sweeper/sdk.md#ais-perf-model).
+- `aisim predict` and `aisim recommend` print the warning. So do
+  `CorePredictionConfig.from_yaml`, `CoreRecommendationConfig.from_yaml` and
+  `SmartSearchConfig.from_yaml`. Validating Python data with `model_validate`
+  does not warn.
+- When every old field comes from `--set` and the file has none, the warning
+  ends with `(set engine.ais_perf_model.<key> with --set instead)` in place of
+  the `migrate` command. When the file also has an old field, the warning
+  names every old field and ends with the `migrate` command.
+- When the configuration also sets `ais_perf_model`, the warning ends with
+  `(it is already set, so remove the old fields)`. When the file holds the
+  key and old fields, and `--set engine.ais_perf_model=null` removes the key
+  for the run, the ending is
+  `(the file already sets it, so remove the old fields from the file)`.
+  `migrate` does not merge old fields into a key that is already set.
+  To set the key again in a run that has `--set engine.ais_perf_model=null`,
+  write it as one mapping
+  (`--set 'engine.ais_perf_model={transfer_policy: xshape}'`) or drop the
+  null override. `--set engine.ais_perf_model.<key>` after the null override
+  is an error, also when the warning of that run ends with the `--set` hint
+  above.
+- For a replay configuration that `aisim onboard` wrote and that is
+  unchanged, the warning ends with
+  `('aisim onboard' wrote this file and rejects it once it is changed, so leave it as it is)`;
+  see [Limits in this release](#limits-in-this-release).
+- The warning category is `AisPerfModelDeprecationWarning`, a `FutureWarning`
+  in `aisim_core.ais_perf_model`. With `PYTHONWARNINGS=error` the command
+  fails with exit code `1`.
+- `timing.type`, `timing.prefill_ms` and `timing.decode_ms` are not
+  deprecated.
 
 ## Unified CLI timing fields
 
@@ -759,26 +1386,172 @@ select the forward-pass timing provider. SDK constructor names differ (for
 example, `parallelism.tensor` becomes `tp`). A Default Range of `x` is
 concrete-only.
 
+The estimator fields in this table are deprecated, and their rows say so. They
+work as before in this release. The next release removes them.
+`engine.ais_perf_model` replaces them; see
+[Unified perf-model input](#unified-perf-model-input) and its
+[list of old fields](#old-estimator-fields). `timing.type`,
+`timing.prefill_ms` and `timing.decode_ms` are not deprecated.
+
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `engine.estimation_mode` | `auto` | `x` | `-` | `auto`, `op_level`, `fpm_interpolation`, or `fpm_regression`. `fpm_learned` is rejected by prediction and recommendation configuration validation. |
-| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Optional role override using the same four modes; omission inherits the global selection. `fpm_learned` is rejected here too. |
+| `engine.estimation_mode` | `auto` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). `auto`, `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned`. Regression and learned roles are priced per iteration (see [engine replay timing](#engine-replay-timing)). |
+| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). Optional role override using the same five modes; omission inherits the global selection. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
-| `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
-| `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
-| `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
-| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
+| `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Finite, nonnegative and required for `fixed` timing. |
+| `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Finite, nonnegative and required for `fixed` timing. |
+| `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
+| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and ordinary prefill/decode companions of AFD roles. |
+| `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | Deprecated; use [`engine.ais_perf_model`](#unified-perf-model-input). `recommend`: `{path, sha256}` of a calibrated snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
+
+Fixed timing accepts zero for either phase. Nonfinite values (infinity or NaN)
+are configuration errors, rejected before prediction output is prepared, including
+when `--overwrite` is used.
+
+AFD replay prices every decode pass at its actual batch, context length and
+MTP verification width. The former `estimator_config.afd.frozen_decode_identity`
+control and saved pricing identity have been removed. Configurations and saved
+ReplaySpecs containing them are rejected for every value, including `false` and
+`null`; regenerate them with the current compiler. Static forward queries remain
+available for configuration-sized estimates.
 
 The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
-The CLI and Sweeper reject `fpm_learned` because their phase timing interface
-lacks complete iteration features; the same restriction applies to global and
-role-specific settings. The generated configuration schemas advertise only the
-four supported modes above.
+The generated configuration schemas advertise the five modes above; a learned
+source is read when the canonical model is constructed, not during configuration
+validation.
 A role's `timing.estimator_config` replaces the global dictionary for that role;
 include all required controls in that override. Legacy `timing.forward_model: fpm`
 and `timing.fpm_parquet_path` normalize to FPM interpolation and its external pair.
 The mode does not fall back to op-level on a missing measured cell.
+
+### Recommending with a calibrated snapshot
+
+A `recommend` role can be timed by a model calibrated online, such as a
+Dynamo planner's, by naming only its [state snapshot](#state-snapshots). Native
+`op_level` and `fpm_interpolation` snapshots follow the rules below;
+[regression and learned snapshots](#regression-and-learned-snapshots) add
+their own:
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode:
+      timing:
+        estimator_config:
+          state_snapshot:
+            path: /mnt/planner/decode-snapshot  # sha256 optional
+```
+
+This per-worker field is deprecated. The same role is written as a
+[snapshot entry](#state-snapshot-entries) of `engine.ais_perf_model`, and the
+rules below apply to it unchanged. They are about the `engine` section. A
+snapshot entry may also restate `backend_version`, `nextn` or an engine-wide
+control as an [identity key](#identity-keys), but only when `engine` sets it.
+
+A snapshot restores exactly one engine identity, so the role is pinned to it.
+Before the search starts, the backend and backend version, the role's tensor,
+pipeline, attention-data and MoE parallelism, its KV block size, the
+engine-wide quantization and model controls and the MTP depth (`nextn`) are
+taken from the snapshot; omit them, or give values that include the saved
+ones. A conflicting explicit value fails configuration validation and names
+the snapshot's value; an explicit default such as `enable_eplb: false` or
+`moe_backend: default` conflicts with a snapshot saved with EPLB or another
+MoE backend. Replicas, scheduler limits (`max_batched_tokens`,
+`max_sequences`), KV memory, prefix caching and the other roles are still
+searched. Scheduler limits are not capped at the snapshot's correction grid:
+outside the observed region a fixed correction applies factor 1.0 and a
+dynamic or hybrid correction a constant recent ratio. The engine-wide values
+also apply to roles without a snapshot, and two snapshot roles must agree on
+them. A snapshot with `nextn > 0` needs `engine.nextn` set to the saved depth
+and `engine.nextn_accepted`, which a snapshot does not record.
+
+The role takes every estimator control from the snapshot, so `timing` may
+name only the snapshot, plus `estimation_mode` equal to the saved mode,
+`fallback_policy: deny` and, for a snapshot saved without `include_perf_db`,
+`systems_paths` naming one root that holds the referenced data. A packed
+snapshot also serves as the role's systems root for enumeration and capacity.
+Each candidate restores the snapshot through `best_available`, which compares
+its complete engine identity with the saved one and rejects any difference;
+the sweeper restores each role's snapshot once per run, and replay once per
+candidate. The recommended deployment's prediction YAML keeps the restored
+configuration, so `predict` replays the same calibrated model. For a role whose
+timing names a snapshot, `predict` takes `decoder_replay`,
+`enable_shared_layer`, `strict_provenance` and `fpm_fmha_quant_mode` from the
+snapshot unless the engine sets them, and reads packed data from the snapshot
+wherever `systems_paths` points.
+
+Configuration validation rejects snapshots replay cannot use: a `from_learned`
+model, which records no identity; a native snapshot without an enabled, ready
+correction store for the iterations replay prices for the role (prefill, decode,
+or any of prefill, decode and mixed for an aggregated worker); a snapshot
+without `kv_block_size`; one saved for another worker role, model or hardware;
+and snapshots with an FPM profile, speculation, pipeline parallelism (engine
+replay runs only `pipeline: 1`) or context parallelism.
+`engine.estimator_config.state_snapshot` is rejected: a snapshot belongs to one
+role.
+
+#### Regression and learned snapshots
+
+A Dynamo planner without an `ais_perf_model` role configuration saves an
+`fpm_regression` snapshot, and learned (`fpm_learned`) snapshots work the same
+way. Replay prices every pass of such a role with the saved model (see
+[engine replay timing](#engine-replay-timing)), so the snapshot needs a ready
+workload store for each kind of iteration the role computes: pure prefill for a
+prefill worker, pure decode for a decode worker, and pure prefill and pure
+decode for an aggregated worker, plus locally mixed for an aggregated vLLM or
+TensorRT-LLM worker and cross-rank aggregated when the role runs attention DP
+above one. Its identity facts may be
+[`"unknown"`](#engine-identity-controls); the planner should record what it
+does not know that way rather than defaults such as `system: unprofiled` or
+`tp: 1`:
+
+```yaml
+# Saved identity (excerpt)
+estimation_mode: fpm_regression
+system: unknown
+backend_version: unknown
+tp: unknown
+pp: unknown
+attention_dp: unknown
+kv_block_size: 16
+deployment_limits:
+  num_gpus: 1
+  max_num_batched_tokens: 8192
+  max_num_seqs: 256
+  max_kv_tokens: 16384
+  context_length: unknown
+```
+
+Known identity facts are pinned exactly as for a native snapshot, and a
+conflicting value names the saved one. Facts the snapshot does not know are
+handled as follows:
+
+| Saved identity | Recommendation |
+| --- | --- |
+| `system: unknown` | The role runs on `engine.hardware` (or its own `hardware`) without a conflict. |
+| `backend_version`, a quantization mode or `attention_backend` `unknown` | Not pinned engine-wide; the caller's value applies to the other roles and the role's estimator identity stays `"unknown"`. |
+| `tp`, `pp`, `attention_dp`, `moe_tp_size` or `moe_ep_size` `unknown` | The role needs one explicit value for each unknown width, such as `parallelism: {preset: false, tensor: 1, pipeline: 1, attention_data: 1}`; known widths are still pinned. `tp * pp * attention_dp` must equal `deployment_limits.num_gpus` when known. |
+| `deployment_limits.max_kv_tokens` | Required. The role's KV capacity is fixed to that many tokens in whole `kv_block_size` blocks and KV memory is not searched; a different fixed capacity or a `memory_fraction` search is a conflict. |
+| `deployment_limits.max_num_batched_tokens`, `max_num_seqs` | Required. The role's `max_batched_tokens` and `max_sequences` domains keep only values at most the recorded limit; an empty domain is an error. |
+| `nextn > 0` | For a vLLM regression, pinned as for a native snapshot: `engine.nextn` takes the saved depth, and `engine.nextn_accepted` is required. Rejected for other backends. |
+
+A snapshot whose `backend_version` is unset (`null`) is rejected: save the
+deployed version or `"unknown"`. `deployment_limits.num_gpus` and
+`context_length` may stay unknown, and `context_length` is not read. A native
+snapshot keeps the rules above this section and does not apply its
+`deployment_limits`. The exported prediction YAML names the snapshot with the
+role's explicit shape and fixed KV capacity, but no systems root, since these
+models read no performance data, and no quantization mode the snapshot records
+as unknown. `predict` spells the unknown facts as the snapshot does, so it
+replays the same model. A `backend_version` alias such as `current` resolves
+from the roles that know their version, or on the role's hardware when none
+does. Candidate provenance reports the hardware the role ran on when its
+identity's `system` is unknown.
 
 ## Flat engine precision and execution controls
 
@@ -786,15 +1559,30 @@ These additional public YAML fields are concrete controls:
 
 | Field | Meaning |
 | --- | --- |
-| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
+| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. AFD resolves GEMM/MoE execution independently against each pool hardware while preserving requested overrides. |
 | `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, or `int8`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
-| `engine.attention_backend`, `moe_backend`, `moe_kernel_source` | Runtime graph/backend and exact collected source selectors, subject to canonical validation. |
+| `engine.attention_backend` | Attention kernel selector, including AFD per-pool construction; subject to canonical model/backend validation. |
+| `engine.moe_kernel_source` | Exact collected fused-MoE compute source, including AFD per-pool construction; unsupported with a large-EP MoE graph. |
+| `engine.moe_backend` | Runtime graph/backend selector, subject to canonical validation; nondefault overrides remain unsupported for AFD. |
 | `engine.enable_eplb`, `wideep_num_slots` | Expert load balancing and redundant expert slots; require compatible MoE execution. |
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
 | `engine.enable_chunked_prefill` | Override chunked prefill; omission preserves the backend default. |
+| `engine.enable_shared_layer` | Optional shared-data reuse override; explicit `false` disables reuse. Preserved by both AFD pools and their memory preflight. |
+| `engine.strict_provenance` | Fail-closed performance-data provenance validation; defaults to `false` in the canonical model. Preserved by both AFD pools and memory preflight. |
 
-These controls require default timing on language roles. AFD and encoder-pool
-configurations of either mode reject the unsupported controls. Use `--stack engine`
+For AFD, the original GEMM/MoE precision request is preserved in saved
+configuration. Each pool applies the supported hardware execution mapping:
+`nvfp4` uses weight-only `nvfp4_wo` with BF16 compute below Blackwell and native
+FP4 compute on Blackwell. An explicit `nvfp4_wo` remains weight-only. Unknown or
+unsupported hardware execution combinations fail construction; missing measured
+data follows the existing data policy without silently changing precision.
+Timing and memory/KV sizing share this resolution. Pool provenance reports both
+requested overrides and the execution modes present in the compiled graph.
+
+These controls require default timing on ordinary language roles. AFD supports
+explicit precision, kernel selectors and MTP; EPLB, redundant slots and nondefault
+`moe_backend` remain unsupported in both public YAML and SDK searches. Encoder-pool
+configurations reject unsupported controls. Use `--stack engine`
 and the supported model/backend; an older external adapter can reject them at
 capability validation before Replay. Expected acceptance is workload behavior,
 not an estimator-fitting observation. See [Replay features](../replay/features.md)
@@ -808,7 +1596,7 @@ FPM also checks the preserved GEMM/MoE identity before selecting a timing cell,
 including profiles without an original op-level graph.
 Missing hardware metadata still follows the system-spec/data diagnostics.
 Serving runtimes may execute FP8 checkpoints through weight-only kernels such as
-Marlin on these GPUs; AISimulate does not model that path.
+Marlin on these GPUs; AISim does not model that path.
 
 ### KV precision and token capacity
 
@@ -825,12 +1613,13 @@ recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:
 | KV declaration missing/null or `bfloat16`; weight `quant_algo` is `fp8`, `fp8_block`, or `nvfp4` | FP8 |
 | Other supported configurations | BF16 |
 
-These are AISimulate policies, not serving-engine defaults. `torch_dtype: bfloat16`
+These are AISim policies, not serving-engine defaults. `torch_dtype: bfloat16`
 does not prevent FP8 KV inference. For regular language roles using default timing,
 pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
 The explicit engine field also accepts `int8`, subject to model/backend validation;
 this does not make an `int8` checkpoint KV declaration valid.
-Fixed/polynomial timing, EPD, and AFD currently reject this engine override.
+Fixed/polynomial timing and EPD currently reject this engine override. AFD passes
+explicit KV precision through canonical per-pool construction.
 
 Ordinary `predict` output shows each known role's effective KV dtype and source.
 JSON stdout and `prediction.json` summaries expose `kv_cache_precision.<role>`
@@ -842,6 +1631,16 @@ at compile time and do not report the resolved precision through this path.
 
 FP8 uses one byte per KV element; BF16 uses two. At the same byte budget, linear
 FP8 KV holds twice as many tokens. This does not imply twice the throughput.
+
+AFD preserves supported controls, including explicit `attention_backend` and
+`moe_kernel_source`, through prediction, recommendation, saved replay specifications,
+canonical pool construction and memory preflight. Attention uses A; routed MoE
+uses F. The A pool retains `moe_kernel_source` in its canonical configuration but
+does not apply it to attention, shared, or dense operations. The F pool applies
+it to routed MoE operations. Omission preserves pool defaults;
+explicit selectors retain the canonical eligibility, data-source and SOL rules
+above without changing communication. EPLB, redundant slots and nondefault
+`moe_backend` overrides remain unsupported for AFD.
 
 ## Migrating saved configuration
 

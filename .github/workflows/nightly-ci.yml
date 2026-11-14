@@ -3,8 +3,8 @@
 
 name: Main branch nightly CI
 
-# Nightly build of the approved AISimulate release artifacts — the
-# `aisimulate` wheel and the `aisimulate-core` crate — plus a strict-native
+# Nightly build of the approved AISim release artifacts — the
+# `aisim` wheel and the `aisim-core` crate — plus a strict-native
 # FPE support-matrix refresh at the same source SHA. The GitLab publish
 # trigger waits for the matrix refresh, and a failed refresh fails the run,
 # so consumers (who resolve the newest successful run) never advance to a
@@ -248,10 +248,10 @@ jobs:
             --arg run_url "${RUN_URL}" \
             '{
               channel: $channel,
-              text: ("AISimulate Nightly build started — " + $date),
+              text: ("AISim Nightly build started — " + $date),
               blocks: [
                 { type: "header",
-                  text: { type: "plain_text", text: (":crescent_moon: AISimulate Nightly build started — " + $date) } },
+                  text: { type: "plain_text", text: (":crescent_moon: AISim Nightly build started — " + $date) } },
                 { type: "section",
                   fields: [
                     { type: "mrkdwn", text: ("*Commit:*\n`" + $sha + "`") },
@@ -321,7 +321,7 @@ jobs:
         run: |
           python -m venv "${RUNNER_TEMP}/venv-licenses"
           python scripts/ci/check_python_licenses.py \
-            --pyproject source/python/aisimulate/pyproject.toml \
+            --pyproject source/python/aisim/pyproject.toml \
             --python "${RUNNER_TEMP}/venv-licenses/bin/python" \
             --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-${PYTHON_SERIES}.csv"
       - name: Preserve the dependency inventory as data
@@ -373,6 +373,7 @@ jobs:
       contents: read
     outputs:
       wheel-version: ${{ steps.verify.outputs.wheel-version }}
+      wheel-package: ${{ steps.verify.outputs.wheel-package }}
     container:
       # Digest-pinned manylinux_2_28: ships the C toolchain the native build
       # needs and audit-tags wheels at glibc 2.28 — also the minimum glibc
@@ -409,6 +410,9 @@ jobs:
           sparse-checkout: |
             /scripts/release/apply_dev_version.py
             /scripts/release/build_release_artifacts.py
+            /scripts/ci/check_bundled_configs.py
+            /scripts/ci/bundled_configs.json
+            /scripts/ci/bundled_config_legacy.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -526,7 +530,29 @@ jobs:
           set -euo pipefail
           # The .crate is arch-independent source; the amd64 leg's copy is
           # canonical, so drop this leg's duplicate before upload.
-          rm "${DIST_DIR}"/aisimulate-core-*.crate
+          rm "${DIST_DIR}"/*.crate
+
+      - name: Check exact wheel configuration provenance
+        run: |
+          set -euo pipefail
+          inventory_args=()
+          if [[ ! -f scripts/ci/bundled_configs.json ]]; then
+            # Historical sources may use only the byte-identical subset of
+            # the trusted workflow's catalog. Unknown or changed bytes fail.
+            inventory_args=(--inventory release-tooling/scripts/ci/bundled_configs.json --allow-subset)
+          fi
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/ci/check_bundled_configs.py extract --check \
+            --root . "${inventory_args[@]}" --wheel "${DIST_DIR}"/*.whl \
+            --output-dir "${RUNNER_TEMP}/bundled-configs-nightly"
+      - name: Preserve wheel configuration inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundled-configs-nightly-${{ matrix.arch }}
+          # Reports are root files; extracted payloads live in files/.
+          path: ${{ runner.temp }}/bundled-configs-nightly/*.*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
 
       # The wheel's name is a contract: stamped dev version (catches a
       # silent stamping failure) and cp311-abi3-manylinux_2_28 tags for this
@@ -539,13 +565,17 @@ jobs:
           set -euo pipefail
           [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
           plat="${UV_TARGET%%-*}"
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
-          [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
+          wheel="$(basename "${DIST_DIR}"/*.whl)"
+          package="${wheel%%-*}"
+          [[ "${package}" == aisim || "${package}" == aisimulate ]] || { echo "::error::unknown package"; exit 1; }
+          [[ "${wheel}" == "${package}"-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
             echo "::error::unexpected wheel name: ${wheel}"
             exit 1
           }
-          version="${wheel#aisimulate-}"
+          version="${wheel#*-}"
           version="${version%%-*}"
+          echo "WHEEL_PACKAGE=${package}" >> "${GITHUB_ENV}"
+          echo "wheel-package=${package}" >> "${GITHUB_OUTPUT}"
           echo "EXPECTED_VERSION=${version}" >> "${GITHUB_ENV}"
           echo "wheel-version=${version}" >> "${GITHUB_OUTPUT}"
           echo "wheel OK: ${wheel} (version ${version})"
@@ -576,7 +606,7 @@ jobs:
           from pathlib import Path
 
           dist = Path(os.environ["DIST_DIR"])
-          pyproject = Path("python/aisimulate/pyproject.toml")
+          pyproject = Path("python/aisim/pyproject.toml")
           version = tomllib.loads(pyproject.read_text())["project"]["version"]
           provenance = {
               "version": version,
@@ -711,7 +741,7 @@ jobs:
           ARTIFACTORY_PYPI_REPO: ${{ secrets.ARTIFACTORY_PYPI_REPO_NAME }}
         run: |
           set -euo pipefail
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          wheel="$(basename "${DIST_DIR}"/*.whl)"
           fetch_dir="${TOOLS_DIR}/staged-dist"
           mkdir -p "${fetch_dir}"
           curl -q --fail --silent --show-error --retry 3 \
@@ -749,24 +779,24 @@ jobs:
       - name: Smoke-test the staged wheel on every supported Python
         run: |
           set -euo pipefail
-          wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
+          wheel="$(basename "${DIST_DIR}"/*.whl)"
           fetch_dir="${TOOLS_DIR}/staged-dist"
           cat > "${TOOLS_DIR}/smoke_asserts.py" <<'EOF'
           import importlib.metadata as metadata
           import os
 
-          import aisimulate
-          import aisimulate_core
+          import aisim
+          import aisim_core
 
           expected = os.environ["EXPECTED_VERSION"]
           assert (
-              aisimulate.__version__
-              == aisimulate_core.__version__
-              == metadata.version("aisimulate")
+              aisim.__version__
+              == aisim_core.__version__
+              == metadata.version(os.environ["WHEEL_PACKAGE"])
               == expected
-          ), (aisimulate.__version__, expected)
+          ), (aisim.__version__, expected)
           installed = {dist.metadata["Name"].lower() for dist in metadata.distributions()}
-          forbidden = {"aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
+          forbidden = {"aisim-core", "aisimulate-core", "aiconfigurator", "aiconfigurator-core"}
           assert installed.isdisjoint(forbidden), installed & forbidden
           EOF
           for series in ${PYTHON_SERIES_LIST}; do
@@ -775,7 +805,7 @@ jobs:
             uv pip install --python "${venv}/bin/python" "${fetch_dir}/${wheel}"
             uv pip check --python "${venv}/bin/python"
             "${venv}/bin/python" "${TOOLS_DIR}/smoke_asserts.py"
-            "${venv}/bin/aisimulate" --help
+            "${venv}/bin/aisim" --help
             "${venv}/bin/aiconfigurator" version
             echo "smoke OK on Python ${series}"
           done
@@ -806,6 +836,11 @@ jobs:
         with:
           name: nightly-crate-inventory
           path: ${{ runner.temp }}/license-artifacts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bundled-configs-nightly-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/license-artifacts/bundled
       - name: Generate license compliance evidence
         env:
           GH_API_TOKEN: ${{ github.token }}
@@ -825,6 +860,19 @@ jobs:
                                    "version": r["Version"], "spdx_license": r["License"]})
           if not rows:
               raise SystemExit("missing Python dependency inventories")
+          bundled = sorted(glob.glob(f"{outdir}/bundled/**/bundled-deps.csv", recursive=True))
+          expected_bundled = [
+              f"{outdir}/bundled/bundled-configs-nightly-{arch}/bundled-deps.csv"
+              for arch in ("amd64", "arm64")
+          ]
+          if bundled != expected_bundled:
+              raise SystemExit("missing or duplicate architecture-specific bundled configuration inventories")
+          for filename in bundled:
+              with open(filename, newline="") as f:
+                  inventory = list(csv.DictReader(f))
+              if not inventory or any(r["dependency_type"] != "bundled_model_config" for r in inventory):
+                  raise SystemExit("invalid bundled configuration inventory")
+              rows.extend(inventory)
           with open(f"{outdir}/cargo-metadata.json") as f:
               meta = json.load(f)
           workspace = set(meta.get("workspace_members") or [])
@@ -975,6 +1023,7 @@ jobs:
           SLACK_THREAD_TS: ${{ needs.slack-thread-start.outputs.thread-ts }}
           STAGE_RESULT: ${{ needs.build-artifacts.result }}
           WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
+          WHEEL_PACKAGE: ${{ needs.build-artifacts.outputs.wheel-package }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -992,8 +1041,8 @@ jobs:
           fi
           wheel="" crate=""
           if [ -n "${WHEEL_VERSION}" ]; then
-            wheel="aisimulate ${WHEEL_VERSION}"
-            crate="aisimulate-core ${WHEEL_VERSION%.dev*}-dev.${WHEEL_VERSION##*.dev}"
+            wheel="${WHEEL_PACKAGE} ${WHEEL_VERSION}"
+            crate="${WHEEL_PACKAGE}-core ${WHEEL_VERSION%.dev*}-dev.${WHEEL_VERSION##*.dev}"
           fi
           payload=$(jq -n \
             --arg channel "${SLACK_CHANNEL_ID}" \
@@ -1074,13 +1123,14 @@ jobs:
           GH_SHA: ${{ needs.changes-guard.outputs.target-sha }}
           TOOLING_SHA: ${{ github.sha }}
           WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
+          WHEEL_PACKAGE: ${{ needs.build-artifacts.outputs.wheel-package }}
         run: |
           set -euo pipefail
-          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION TOOLING_SHA; do
+          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION WHEEL_PACKAGE TOOLING_SHA; do
             [ -n "${!name}" ] || { echo "::error::${name} is not available"; exit 1; }
           done
           # Variable names follow the release-automation root pipeline's
-          # contract (PROJECT routes to projects/aisimulate.yml there).
+          # contract (PROJECT=aisim and the legacy route use projects/aisim.yml).
           # The response names internal pipeline URLs: keep it out of the log.
           # Preflight requires a dated NIGHTLY_TAG for nightly runs.
           nightly_tag="nightly-${WHEEL_VERSION##*.dev}-${GH_SHA:0:7}"
@@ -1088,7 +1138,7 @@ jobs:
             --output "${RUNNER_TEMP}/gitlab-trigger.json" \
             -F "token=${GITLAB_TRIGGER_TOKEN}" \
             -F "ref=main" \
-            -F "variables[PROJECT]=aisimulate" \
+            -F "variables[PROJECT]=${WHEEL_PACKAGE}" \
             -F "variables[PIPELINE_TYPE]=security" \
             -F "variables[RELEASE_TYPE]=nightly" \
             -F "variables[NIGHTLY_TAG]=${nightly_tag}" \
@@ -1259,7 +1309,7 @@ jobs:
               - type: "section"
                 text:
                   type: mrkdwn
-                  text: ":alert: *AISimulate Nightly CI Failure*"
+                  text: ":alert: *AISim Nightly CI Failure*"
               - type: "section"
                 text:
                   type: mrkdwn
