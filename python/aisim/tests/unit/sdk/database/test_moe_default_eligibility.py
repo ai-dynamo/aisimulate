@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk.common import MoEQuantMode
 from aisim_core.sdk.engine import EngineHandle
 from aisim_core.sdk.engine_table_view import fetch_table_view
@@ -19,7 +20,7 @@ from aisim_core.sdk.perf_database import get_database_view
 
 pytestmark = pytest.mark.unit
 
-SYSTEMS = Path(__file__).resolve().parents[4] / "src/aisim_core/systems"
+SYSTEMS = Path(default_systems_path())
 SOURCE = "sglang_flashinfer_trtllm_moe"
 
 

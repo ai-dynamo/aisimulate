@@ -1080,18 +1080,21 @@ def _validate_worker_type(worker_type: str) -> str:
 
 
 def _resolve_forward_pass_systems_paths(entries: tuple[str, ...], *, require_directories: bool = True) -> list[str]:
-    packaged = os.fspath(pkg_resources.files("aisim_core") / "systems")
+    from aisim_core.data.default_systems import default_systems_path
+
+    packaged = None  # the default root, composed only when something asks for it
     if not entries:
         from aisim_core.sdk.perf_database import get_systems_paths
 
         configured = get_systems_paths()
+        packaged = default_systems_path()
         env_root = os.environ.get("AICONFIGURATOR_SYSTEMS_PATH")
         entries = tuple([env_root] if configured == [packaged] and env_root is not None else configured)
     resolved: list[str] = []
     for entry in entries:
         if not isinstance(entry, str) or not entry.strip():
             raise ValueError("systems_paths entries must be nonempty strings")
-        path = packaged if entry.lower() == "default" else os.path.abspath(os.path.expanduser(entry))
+        path = default_systems_path() if entry.lower() == "default" else os.path.abspath(os.path.expanduser(entry))
         if require_directories and not os.path.isdir(path):
             raise ValueError(f"forward-pass systems path is not a directory: {path}")
         if path not in resolved:
@@ -2041,7 +2044,9 @@ def _moe_quant_to_dtype(value: Any) -> str | None:
 
 def _configure_default_data_roots() -> None:
     if "AICONFIGURATOR_SYSTEMS_PATH" not in os.environ:
-        systems_root = _python_sdk_systems_root() or Path(str(pkg_resources.files("aisim_core") / "systems"))
+        from aisim_core.data.default_systems import default_systems_path
+
+        systems_root = _python_sdk_systems_root() or Path(default_systems_path())
         if systems_root.exists():
             os.environ["AICONFIGURATOR_SYSTEMS_PATH"] = str(systems_root)
     if "AICONFIGURATOR_MODEL_CONFIGS_PATH" not in os.environ:

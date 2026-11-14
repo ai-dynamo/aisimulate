@@ -20,6 +20,7 @@ from aisim.sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerCap
 from aisim.sweeper.sample import unroll_sample
 from aisim.sweeper.sampler import RandomBranchSampler
 from aisim.sweeper.search_space import RunnerIncompatibleError, enumerate_branches
+from aisim_core.data.default_systems import default_systems_path
 
 COMBINATIONS = [
     ("aggregated", ("aggregated",)),
@@ -190,9 +191,7 @@ def test_afd_companion_preserves_and_executes_host_loop_and_frontend(frontend):
 
 @pytest.mark.parametrize("shadow_root", [False, True])
 def test_native_afd_memory_and_kv_budget_use_custom_pool_specs(tmp_path, shadow_root):
-    import aisim_core
-
-    packaged = Path(aisim_core.__file__).parent / "systems"
+    packaged = Path(default_systems_path())
     system = yaml.safe_load((packaged / "h200_sxm.yaml").read_text())
     system["data_dir"] = str(packaged / "data/h200_sxm")
     for name, capacity in (("custom_a", 64), ("custom_f", 32)):
@@ -809,9 +808,7 @@ def test_native_afd_undeclared_window_still_limits_runtime_prompt_length():
 
 
 def hetero_specs(tmp_path, a_width, f_width):
-    import aisim_core
-
-    root = Path(aisim_core.__file__).parent / "systems"
+    root = Path(default_systems_path())
     system = yaml.safe_load((root / "h200_sxm.yaml").read_text())
     system["data_dir"] = str(root / "data/h200_sxm")
     for name, width in (("hetero_a", a_width), ("hetero_f", f_width)):

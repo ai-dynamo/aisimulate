@@ -115,7 +115,9 @@ def test_public_model_uses_only_matching_vllm_reuse_measurements(tmp_path, skip_
     measured cells above the hardware roofline. Other operations retain the
     shipped measurements; only the attention component is asserted here.
     """
-    systems = Path(aisim_core.__file__).parent / "systems"
+    from aisim_core.data.default_systems import default_systems_path
+
+    systems = Path(default_systems_path())
     (tmp_path / "b200_sxm.yaml").symlink_to(systems / "b200_sxm.yaml")
     (tmp_path / "query_versions.yaml").symlink_to(systems / "query_versions.yaml")
     target = tmp_path / "data/b200_sxm"

@@ -234,3 +234,20 @@ def test_row_models_match_table_columns():
     assert set(op.query_versions_table(qv).column_names) == set(OpQueryVersionsRow.model_fields)
     assert set(op._MAP_COLUMNS) == set(OpSourceMapRow.model_fields)
     assert set(op._declared_reuse_table([]).column_names) == set(OpDeclaredReuseRow.model_fields)
+
+
+def test_reuse_manifest_without_analysis_stats_round_trips():
+    doc = {
+        "groups": [
+            {"op_file": "g.parquet", "kernel_source": "k", "tier": "shared", "systems": ["s"], "frameworks": ["x"]},
+            {
+                "op_file": "h.parquet",
+                "kernel_source": "k",
+                "tier": "shared",
+                "systems": ["s"],
+                "frameworks": ["x"],
+                "total_raw_rows": 4,
+            },
+        ]
+    }
+    assert op.reuse_manifest_document(op.reuse_manifest_table(doc)) == doc

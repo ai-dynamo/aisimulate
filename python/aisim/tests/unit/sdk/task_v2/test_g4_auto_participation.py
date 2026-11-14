@@ -34,11 +34,12 @@ import pytest
 
 from aisim.sdk.operations.base import resolve_op_data_path
 from aisim.sdk.task_v2 import Task
+from aisim_core.data.default_systems import default_systems_path
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_DATA_ROOT = REPO_ROOT / "src" / "aisim_core" / "systems" / "data"
+SYSTEMS_DATA_ROOT = Path(default_systems_path()) / "data"
 
 # The legacy-adapted large-EP sources for h200_sxm/sglang (comm + compute).
 H200_SGLANG_LARGE_EP_PATHS = [

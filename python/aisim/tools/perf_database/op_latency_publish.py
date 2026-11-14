@@ -356,6 +356,9 @@ def _leading_comment(text: str) -> str:
     return "\n".join(lines)
 
 
+_OPTIONAL_REUSE_STATS = ("total_raw_rows", "within_framework_dedup_rows", "median_pct_divergence")
+
+
 def reuse_manifest_table(document: dict) -> pa.Table:
     if set(document) != {"groups"} or not isinstance(document["groups"], list):
         raise PublishError("perf_data_reuse_manifest.yaml must contain only a 'groups' list")
@@ -372,8 +375,8 @@ def reuse_manifest_table(document: dict) -> pa.Table:
             "tier": pa.array([g["tier"] for g in groups], pa.string()),
             "systems": pa.array([list(g["systems"]) for g in groups], str_list),
             "frameworks": pa.array([list(g["frameworks"]) for g in groups], str_list),
-            "total_raw_rows": pa.array([g["total_raw_rows"] for g in groups], pa.int64()),
-            "within_framework_dedup_rows": pa.array([g["within_framework_dedup_rows"] for g in groups], pa.int64()),
+            "total_raw_rows": pa.array([g.get("total_raw_rows") for g in groups], pa.int64()),
+            "within_framework_dedup_rows": pa.array([g.get("within_framework_dedup_rows") for g in groups], pa.int64()),
             "median_pct_divergence": pa.array([g.get("median_pct_divergence") for g in groups], pa.float64()),
         }
     )
@@ -383,9 +386,10 @@ def reuse_manifest_document(table: pa.Table) -> dict:
     """Inverse of :func:`reuse_manifest_table` (absent optional keys stay absent)."""
     groups = []
     for row in table.to_pylist():
-        group = {k: v for k, v in row.items() if k != "median_pct_divergence"}
-        if row["median_pct_divergence"] is not None:
-            group["median_pct_divergence"] = row["median_pct_divergence"]
+        group = {k: v for k, v in row.items() if k not in _OPTIONAL_REUSE_STATS}
+        for key in _OPTIONAL_REUSE_STATS:
+            if row[key] is not None:
+                group[key] = row[key]
         groups.append(group)
     return {"groups": groups}
 

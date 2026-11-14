@@ -575,11 +575,9 @@ impl Dsv41StageOp {
 mod tests {
     use super::*;
     use crate::common::enums::TransferPolicy;
-    use std::path::PathBuf;
 
     fn test_db(mode: DatabaseMode) -> PerfDatabase {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         PerfDatabase::load(&root, "gb300", "sglang", "0.5.14")
             .unwrap()
             .with_mode(mode, TransferPolicy::ALL)

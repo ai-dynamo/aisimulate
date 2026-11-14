@@ -269,7 +269,7 @@ pub(crate) mod tests {
     }
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
+        crate::test_systems::path("")
     }
 
     fn golden_dir() -> PathBuf {

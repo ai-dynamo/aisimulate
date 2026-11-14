@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
@@ -15,9 +16,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 
 @pytest.fixture
 def custom_systems(tmp_path):
-    from importlib.resources import files
-
-    packaged = Path(str(files("aisim_core") / "systems"))
+    packaged = Path(default_systems_path())
     for entry in packaged.iterdir():
         (tmp_path / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
     (tmp_path / "review_h200.yaml").write_text((packaged / "h200_sxm.yaml").read_text())
@@ -294,12 +293,10 @@ def test_legacy_options_preserve_shape_ridge_and_general_mapping():
 
 @pytest.mark.parametrize("invalid_root", ["", "missing-directory"])
 def test_invalid_discovered_roots_are_configuration_errors(monkeypatch, tmp_path, invalid_root):
-    from importlib.resources import files
-
     import aisim_core
     from aisim_core.sdk import perf_database
 
-    monkeypatch.setattr(perf_database, "_SYSTEMS_PATHS", [str(files("aisim_core") / "systems")])
+    monkeypatch.setattr(perf_database, "_SYSTEMS_PATHS", [default_systems_path()])
     root = str(tmp_path / invalid_root) if invalid_root else ""
     monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", root)
     for policy in ["deny", "allow"]:

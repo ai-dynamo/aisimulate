@@ -15,6 +15,7 @@ import pytest
 from aisim.sdk import common, rust_engine_step
 from aisim.sdk.config import ModelConfig, RuntimeConfig
 from aisim.sdk.performance_result import MoECommFallback
+from aisim_core.data.default_systems import default_systems_path
 
 pytestmark = pytest.mark.unit
 
@@ -1949,7 +1950,7 @@ def test_wideep_mla_spec_emits_per_rank_heads_not_tp():
 
 # ---- Large-EP op graphs: native compilation (AIC-1601, PR 2.5) ----
 
-_SYSTEMS_DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aisim_core/systems/data"
+_SYSTEMS_DATA_ROOT = Path(default_systems_path()) / "data"
 
 
 def test_large_ep_opspec_key_sets_match_the_rust_structs():
@@ -2559,11 +2560,9 @@ def test_decode_energy_bridge_preserves_error_taxonomy(monkeypatch, entrypoint, 
 
 @pytest.mark.integration
 def test_canonical_native_selection_retries_roots_and_pins_effective_configuration(tmp_path):
-    from importlib import resources
-
     from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-    packaged = str(resources.files("aisim_core") / "systems")
+    packaged = default_systems_path()
     config = ForwardPassPerfModelConfig(
         model="Qwen/Qwen3-32B",
         system="h200_sxm",

@@ -1639,15 +1639,12 @@ mod tests {
     use super::*;
 
     fn b200_sxm_spec() -> SystemSpec {
-        let systems_yaml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/b200_sxm.yaml");
+        let systems_yaml = crate::test_systems::path("b200_sxm.yaml");
         SystemSpec::load(&systems_yaml).expect("b200_sxm.yaml must parse")
     }
 
     fn b200_sglang_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems/data/b200_sxm/sglang/0.5.14")
+        crate::test_systems::path("data/b200_sxm/sglang/0.5.14")
     }
 
     #[test]

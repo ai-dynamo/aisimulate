@@ -1182,22 +1182,16 @@ mod tests {
     use super::*;
     use crate::perf_database::fpm_forward::tests::{default_identity, default_rows, write_pair};
 
-    const SYSTEMS_ROOT: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../python/aisim/src/aisim_core/systems"
-    );
+    fn systems_root() -> std::path::PathBuf {
+        crate::test_systems::path("")
+    }
 
     /// A PerfDatabase whose fpm_forward table points at a temp pair; the rest
     /// of the tables point at the real checked-in b200/vllm/0.24.0 fixture
     /// (never touched by these tests).
     fn db_with_pair(dir: &std::path::Path) -> PerfDatabase {
-        let mut db = PerfDatabase::load(
-            std::path::Path::new(SYSTEMS_ROOT),
-            "b200_sxm",
-            "vllm",
-            "0.24.0",
-        )
-        .expect("fixture db");
+        let mut db =
+            PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").expect("fixture db");
         db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
             dir.to_path_buf(),
             "b200_sxm",
@@ -2546,9 +2540,7 @@ mod tests {
         // Synthetic table-selection fixture, not measured Hopper timings.
         let tmp = tempfile::tempdir().unwrap();
         write_pair(tmp.path(), &default_rows());
-        let hardware =
-            std::fs::read_to_string(std::path::Path::new(SYSTEMS_ROOT).join("h200_sxm.yaml"))
-                .unwrap();
+        let hardware = std::fs::read_to_string(systems_root().join("h200_sxm.yaml")).unwrap();
         let hardware_db = |known_sm: bool| {
             let root = tmp.path().join(if known_sm { "hopper" } else { "unknown" });
             std::fs::create_dir_all(&root).unwrap();

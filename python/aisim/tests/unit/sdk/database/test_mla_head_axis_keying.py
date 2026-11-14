@@ -296,9 +296,9 @@ def test_kernel_views_reject_rows_without_num_heads(tmp_path, basename, attribut
 
 
 def _data_root() -> Path:
-    import aisim_core
+    from aisim_core.data.default_systems import default_systems_path
 
-    return Path(aisim_core.__file__).parent / "systems" / "data"
+    return Path(default_systems_path()) / "data"
 
 
 def test_shipped_mla_module_models_are_pinned():

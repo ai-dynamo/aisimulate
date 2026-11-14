@@ -26,8 +26,12 @@ maps registry operations to storage families.
 
 Run collector commands from `python/aisim/` unless a command explicitly uses
 a repository-root path. Keep campaign checkpoints and raw logs in a run-specific
-output directory, separate from published data. The packaged data root is
-`python/aisim/src/aisim_core/systems/data/`.
+output directory, separate from published data. The wheel and the repository no longer carry operation tables: runtime reads them from the pinned
+`ai-dynamo/aisim-data` revision in `aisim_core/data/op_latency_pin.json` (see
+[Default operation data](../../reference/cli.md#default-operation-data)). Collector commands still stage new
+output in this layout under `python/aisim/src/aisim_core/systems/data/` (created on demand, not tracked
+by the cutover); publish it with `tools/perf_database/publish_op_latency_tree.py` and raise the pin to the
+new dataset commit.
 
 ## Benchmark guidelines
 

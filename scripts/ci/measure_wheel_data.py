@@ -11,7 +11,8 @@ Two sources, same report:
 
 Packaged operation data is ``aisim_core/systems/data/**``; the rest of
 ``systems/`` (specs, version tables, profiles) is reported as ``systems-other``.
-Used to size the Phase 6 cutover that removes production data from the wheel.
+Operation data now comes from the pinned Hugging Face dataset, so the wheel must stay small:
+``--max-wheel-mib N`` fails when the wheel file exceeds N MiB or still packages operation tables.
 """
 
 from __future__ import annotations
@@ -91,14 +92,44 @@ def tree_members(package: Path = PACKAGE) -> list[tuple[str, int, int]]:
     return members
 
 
+WHEEL_LIMIT_MIB = 100
+
+
+def check_wheel_limit(wheel: Path, limit_mib: float, report: dict) -> list[str]:
+    """Problems that make a wheel unacceptable: over the size limit or still carrying op data."""
+    problems = []
+    size = wheel.stat().st_size
+    if size > limit_mib * 1024 * 1024:
+        problems.append(f"{wheel.name} is {size / 1024 / 1024:.1f} MiB, above the {limit_mib:g} MiB limit")
+    if report["packaged_op_data"]["files"]:
+        problems.append(f"{wheel.name} packages {report['packaged_op_data']['files']} operation data files")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--wheel", type=Path, help="measure this wheel instead of estimating from the tree")
+    parser.add_argument(
+        "--max-wheel-mib",
+        type=float,
+        nargs="?",
+        const=WHEEL_LIMIT_MIB,
+        help=f"with --wheel: exit 1 if the wheel exceeds this size (default {WHEEL_LIMIT_MIB}) or packages op data",
+    )
     args = parser.parse_args(argv)
+    if args.max_wheel_mib is not None and not args.wheel:
+        parser.error("--max-wheel-mib needs --wheel")
     members = wheel_members(args.wheel) if args.wheel else tree_members()
     report = {"source": str(args.wheel) if args.wheel else "source-tree-estimate", **summarize(members)}
+    if args.wheel:
+        report["wheel_file_bytes"] = args.wheel.stat().st_size
     json.dump(report, sys.stdout, indent=2)
     sys.stdout.write("\n")
+    if args.max_wheel_mib is not None:
+        problems = check_wheel_limit(args.wheel, args.max_wheel_mib, report)
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        return 1 if problems else 0
     return 0
 
 

@@ -119,14 +119,14 @@ def _verify_payload() -> None:
     required_resources = (
         resources / "model_configs" / "meta-llama--Meta-Llama-3.1-8B_config.json",
         resources / "systems" / "h100_sxm.yaml",
-        resources / "systems" / "data" / "b200_sxm" / "gemm" / "vllm" / "0.24.0" / "gemm_perf.parquet",
-        # Live reuse declaration and provenance sidecar from the post-prune tree.
-        resources / "systems" / "data" / "b200_sxm" / "gemm" / "trtllm" / "1.3.0rc23" / "reuse.yaml",
-        resources / "systems" / "data" / "b200_sxm" / "gemm" / "vllm" / "0.24.0" / "collection_meta.yaml",
+        # Operation tables come from the pinned dataset; the wheel ships only the pin.
+        resources / "data" / "op_latency_pin.json",
     )
     missing = [str(path) for path in required_resources if not path.is_file()]
     if missing:
         raise RuntimeError(f"aisim is missing bundled core resources: {missing}")
+    if (resources / "systems" / "data").is_dir():
+        raise RuntimeError("aisim must not package operation data under aisim_core/systems/data")
 
 
 def _verify_imports() -> None:

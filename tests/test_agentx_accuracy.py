@@ -3,6 +3,7 @@
 """AgentX arithmetic, complete accounting, and public publication boundaries."""
 
 import hashlib
+import importlib
 import io
 import json
 import posixpath
@@ -188,6 +189,10 @@ def test_reviewed_database_pin_overrides_current_slot_and_never_borrows_data(tmp
             resources=SimpleNamespace(files=lambda package: tmp_path),
         ),
     )
+    # The predictor reads operation data from the default systems root; point it at the fixture
+    # instead of downloading the pinned dataset.
+    default_systems = importlib.import_module("aisim_core.data.default_systems")
+    monkeypatch.setattr(default_systems, "default_systems_path", lambda: tmp_path / "systems")
     missing = agentx_predict.predict(config, tmp_path)
     assert missing["reason"] == "database_unavailable"
     assert missing["prediction_backend_version"] == version

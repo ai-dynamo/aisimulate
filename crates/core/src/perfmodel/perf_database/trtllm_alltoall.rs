@@ -357,14 +357,12 @@ mod tests {
     use super::*;
 
     fn gb200_spec() -> SystemSpec {
-        let yaml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems/gb200.yaml");
+        let yaml = crate::test_systems::path("gb200.yaml");
         SystemSpec::load(&yaml).expect("gb200.yaml must parse")
     }
 
     fn gb200_trtllm_table() -> TrtllmAlltoallTable {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems/data/gb200/trtllm/1.3.0rc10");
+        let root = crate::test_systems::path("data/gb200/trtllm/1.3.0rc10");
         TrtllmAlltoallTable::new(root)
     }
 
@@ -488,8 +486,7 @@ mod tests {
     fn alltoall_loader_smoke() {
         // No TRT-LLM alltoall data exists on vLLM b200 (TRT-LLM territory).
         // Loader must surface a clean typed error, not a panic.
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisim/src/aisim_core/systems/data/b200_sxm/vllm/0.19.0");
+        let root = crate::test_systems::path("data/b200_sxm/vllm/0.19.0");
         let spec = gb200_spec();
         let table = TrtllmAlltoallTable::new(root);
         let err = table

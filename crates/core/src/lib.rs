@@ -29,6 +29,8 @@ pub mod perfmodel;
 #[cfg(feature = "python")]
 mod python;
 pub mod replay;
+#[cfg(test)]
+pub(crate) mod test_systems;
 
 pub use engine::{
     EngineConfig as ReplayEngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,

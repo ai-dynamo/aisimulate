@@ -28,7 +28,7 @@ use crate::{
 };
 
 pub(crate) fn systems_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
+    crate::test_systems::path("")
 }
 
 pub(crate) const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";

@@ -47,6 +47,7 @@ import pytest
 import yaml
 
 import aisim_core.sdk.operations as ops
+from aisim_core.data.default_systems import default_systems_path
 from aisim_core.sdk import common, config
 from aisim_core.sdk.models.blocks import MoEBlockShape, build_moe_block_ops
 from aisim_core.sdk.models.helpers import _get_model_info
@@ -56,7 +57,7 @@ from aisim_core.sdk.perf_database import get_database
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_ROOT = REPO_ROOT / "src" / "aisim_core" / "systems"
+SYSTEMS_ROOT = Path(default_systems_path())
 SYSTEMS_DATA_ROOT = SYSTEMS_ROOT / "data"
 
 DSR1 = "deepseek-ai/DeepSeek-R1"

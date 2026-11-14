@@ -43,8 +43,9 @@ class TestSupportedSystems:
 
     def test_supported_systems_matches_yaml_files_and_folders(self):
         """Test that SupportedSystems set matches the YAML files and data folders in systems directory."""
-        repo_root = _find_repo_root(Path(__file__))
-        systems_dir = repo_root / "src" / "aisim_core" / "systems"
+        from aisim_core.data.default_systems import default_systems_path
+
+        systems_dir = Path(default_systems_path())  # packaged specs plus the pinned op-latency data
         data_dir = systems_dir / "data"
 
         # Get all YAML files in the systems directory (excluding subdirectories)
@@ -63,7 +64,9 @@ class TestSupportedSystems:
         )
 
         # Assert that the data folders match SupportedSystems
-        assert common.SupportedSystems.issubset(data_folder_names), (
+        # PCIe/L4/A30 are estimate-only systems with no measured op tables.
+        estimate_only = {"h100_pcie", "a100_pcie", "l4", "a30"}
+        assert (common.SupportedSystems - estimate_only).issubset(data_folder_names), (
             "SupportedSystems set does not match data folders in systems/data directory.\n"
         )
 

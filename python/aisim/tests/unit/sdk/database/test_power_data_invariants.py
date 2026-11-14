@@ -21,11 +21,11 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-import aisim_core
+from aisim_core.data.default_systems import default_systems_path
 
 pytestmark = pytest.mark.unit
 
-_DATA_ROOT = Path(aisim_core.__file__).parent / "systems" / "data"
+_DATA_ROOT = Path(default_systems_path()) / "data"
 _POWER_DATA = Path(__file__).resolve().parents[4] / "tools" / "perf_database" / "power_data.py"
 _SPEC = importlib.util.spec_from_file_location("power_data_invariants", _POWER_DATA)
 assert _SPEC is not None and _SPEC.loader is not None

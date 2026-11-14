@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from aisim.sdk.perf_database import _load_collection_meta_yaml
+from aisim_core.data.default_systems import default_systems_path
 
 pytestmark = pytest.mark.unit
 
@@ -221,7 +222,7 @@ def test_v2_runtime_extensions_reject_invalid_metadata(tmp_path, scope, field, v
 
 
 def test_b300_gemm_healing_distinguishes_shipped_rows_from_attempted_neighbors():
-    path = REPO_ROOT / "src/aisim_core/systems/data/b300_sxm/gemm/sglang/0.5.14/collection_meta.yaml"
+    path = Path(default_systems_path()) / "data/b300_sxm/gemm/sglang/0.5.14/collection_meta.yaml"
 
     document = _load_collection_meta_yaml(str(path))
     healing_events = document["tables"]["gemm_perf"]["collections"][1:]

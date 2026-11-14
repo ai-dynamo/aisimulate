@@ -507,14 +507,11 @@ fn p2p_bandwidth(spec: &SystemSpec, num_gpus: u32) -> f64 {
 mod tests {
     use super::*;
     use crate::perf_database::CommunicationTable;
-    use std::path::PathBuf;
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
 
     fn b200_vllm_db() -> PerfDatabase {
-        let systems_root = PathBuf::from(REPO_ROOT_HINT)
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let systems_root = crate::test_systems::path("");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.19.0").expect("db must load")
     }
 

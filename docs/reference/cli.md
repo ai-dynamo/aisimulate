@@ -87,45 +87,51 @@ Private datasets use the standard `HF_TOKEN` only while connected; the cache nee
 
 <a id="non-python-consumers"></a>
 
-### Operation data for consumers without the Python data library
+### Default operation data
+
+Operation tables are not in the wheel. The default `systems/` root is composed on first use from the Hugging Face
+dataset revision pinned in `aisim_core/data/op_latency_pin.json` (a full commit SHA that ships with the
+release): every `op-latency` entry is downloaded into the data cache, hash-verified, and written next to the
+packaged specs, profiles and version tables as one root that later processes reuse. The first use downloads about
+180 MB (files are fetched concurrently); a warm cache makes no network request. Missing, corrupt or
+offline-uncached data raises `missing-data`; there is no packaged fallback.
+
+| Setting | Effect |
+|---|---|
+| `systems_paths`, `AICONFIGURATOR_SYSTEMS_PATH` | Use that root directly; nothing is downloaded. |
+| `AISIM_OP_LATENCY_DATASET=<owner>/<name>@<full SHA>` | Read another revision instead of the pin. |
+| `AISIM_OP_LATENCY_LOCAL=<dir>` | Compose the root from a local dataset-layout directory (no network). |
+| `AISIM_DATA_OFFLINE=1`, `AISIM_DATA_CACHE`, `AISIM_DATA_MAX_BYTES` | Forbid downloads, move the cache, change the auto-download threshold (default 256 MiB). |
+
+Prefetch or air-gap by running any prediction once while connected, then copy the cache directory and set
+`AISIM_DATA_OFFLINE=1 AISIM_DATA_CACHE=<copy>`.
 
 Rust `perf_database` users, sweeper and planner embeddings and Rust tests read a `systems/` directory
-(`systems_paths`, `AICONFIGURATOR_SYSTEMS_PATH`) and never run the data library. Today that directory is the
-packaged `aisim_core/systems`. Once production operation data leaves the wheel, prepare a root in Python
-once and point the consumer at it:
+(`systems_paths`, `AICONFIGURATOR_SYSTEMS_PATH`) and never run the data library. Compose a root in Python once and
+point them at it:
 
 ```python
-from aisim_core.data.ensure import DataPin
-from aisim_core.data.materialize import materialize_systems_root
+from aisim_core.data.default_systems import default_systems_path
 
-root = materialize_systems_root(
-    {"system": "b200_sxm", "backend": "vllm", "backend_version": "0.24.0"},
-    DataPin(repo="OWNER/NAME", revision="<40-hex-sha>", offline=True, cache_dir="./aisim-cache"),
-    "./systems-root",
-)
-# root.env == {"AICONFIGURATOR_SYSTEMS_PATH": "./systems-root"}; pass root.root as `systems_paths` / `systems_path`.
+root = default_systems_path()  # then: export AICONFIGURATOR_SYSTEMS_PATH=$root
 ```
 
-The root holds the packaged specs and support files plus the verified pinned `data/` tables (hard-linked from
-the cache when possible); it never mixes in packaged tables. The call fails if the destination exists.
-
-To load every operation table of a local dataset-layout tree (for example one built by
-`tools/perf_database/publish_op_latency_tree.py build`) into one root, use
-`aisim_core.data.op_tree.load_op_latency_tree(tree, destination)`. It verifies each manifest, copies the
-runtime tables, rebuilds `perf_data_reuse_manifest.yaml` and `query_versions.yaml` byte-for-byte from their Parquet
-tables and copies the packaged specs; the packaged data is not read or changed. The per-configuration path above
-selects one family and version, so a configuration that omits `operation_family` matches several catalog entries and
-fails with `data-conflict`. `tools/perf_database/op_database_parity.py` compares such a root with the packaged
-database; no default reads this root yet.
+For one configuration only, `aisim_core.data.materialize.materialize_systems_root(config, DataPin(...), dest)`
+writes a self-contained root holding the packaged specs plus that configuration's verified tables. To load every
+operation table of a local dataset-layout tree (for example one built by
+`tools/perf_database/publish_op_latency_tree.py build`) use
+`aisim_core.data.op_tree.load_op_latency_tree(tree, destination)`; it rebuilds `perf_data_reuse_manifest.yaml`
+and `query_versions.yaml` byte-for-byte from their Parquet tables. `tools/perf_database/op_database_parity.py`
+compares such a root with a packaged database (it needs a checkout that still has `systems/data`, such as the
+commit before the cutover).
 
 | Consumer | Preparation |
 |---|---|
-| Python predict/recommend/replay | Automatic through the pin; `data fetch` only prefetches. |
-| Sweeper, planner, Python embedding of the Rust engine | Pass `systems_paths` or set `AICONFIGURATOR_SYSTEMS_PATH` to the prepared root. |
+| Python predict/recommend/replay | Automatic on first use (above). |
+| Sweeper, planner, Python embedding of the Rust engine | Automatic through `get_systems_paths()`, or pass `systems_paths` / `AICONFIGURATOR_SYSTEMS_PATH`. |
 | Rust `perf_database` crate users | Same root as `systems_paths`/`DataRoots`; no Python at run time. |
-| Rust tests (about 38 files resolve the in-tree `systems/` directory) | Prepare a root before `cargo test` and route the sites through one resolver; a Phase 6 task. |
-| Air-gapped hosts | Prefetch with a full-SHA pin, copy the cache, run with `AISIM_DATA_OFFLINE=1`. |
-| `pip install` users | A wheel without op data needs one `data fetch` (or the automatic first-use download below the size threshold) per system and framework. |
+| Rust tests | `export AICONFIGURATOR_SYSTEMS_PATH="$(python scripts/ci/compose_systems_root.py)"` before `cargo test`; tests locate data through `crate::test_systems::path`. |
+| Air-gapped hosts | Prefetch once, copy the cache, run with `AISIM_DATA_OFFLINE=1`. |
 
 <a id="common-options"></a>
 

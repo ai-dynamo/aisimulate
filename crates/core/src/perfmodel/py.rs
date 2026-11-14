@@ -2828,7 +2828,7 @@ mod tests {
     use crate::{BackendKind, ParallelMapping, QuantizationConfig};
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
+        crate::test_systems::path("")
     }
 
     /// `cargo test` runs without an embedding host, so the interpreter must

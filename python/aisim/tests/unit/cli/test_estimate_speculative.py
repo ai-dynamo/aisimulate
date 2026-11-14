@@ -65,9 +65,9 @@ def hybrid_warning_systems(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    import aisim_core
+    from aisim_core.data.default_systems import default_systems_path
 
-    packaged = Path(aisim_core.__file__).parent / "systems"
+    packaged = Path(default_systems_path())
     system = COMMON["system_name"]
     shutil.copy(packaged / f"{system}.yaml", tmp_path)
     data_dir = tmp_path / "data" / system

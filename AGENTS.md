@@ -161,10 +161,11 @@ Python dependencies are managed via `uv` with the
 
 - **Install/refresh deps:**
   `uv sync --project python/aisim --extra dev`
-- **Performance data:** Current op profiles are parquet files under
-  `python/aisim/src/aisim_core/systems/data/<system>/<family>/<backend>/<version>/`
-  and are checked in directly. Legacy `*.txt` perf files, when present, use Git
-  LFS; run `git lfs pull` only when working with those legacy assets.
+- **Performance data:** Op latency tables are not in the repository or the wheel. The first prediction (or test
+  run) downloads about 180 MB from the Hugging Face dataset pinned in
+  `python/aisim/src/aisim_core/data/op_latency_pin.json` into the data cache (`AISIM_DATA_CACHE`), so unit
+  tests need network access once. Offline: `AISIM_OP_LATENCY_LOCAL=<dataset dir>` or a warm cache with
+  `AISIM_DATA_OFFLINE=1`. Legacy `*.txt` perf files, when present, use Git LFS.
 
 ### Lint / Test / Run
 

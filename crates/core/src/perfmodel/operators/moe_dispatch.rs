@@ -724,12 +724,9 @@ fn alltoall_empirical(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn b200_sglang_db() -> PerfDatabase {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         PerfDatabase::load(&root, "b200_sxm", "sglang", "0.5.10").expect("db loads")
     }
 
@@ -793,18 +790,14 @@ mod tests {
     use crate::common::enums::TransferPolicy;
 
     fn gb200_trtllm_db(mode: DatabaseMode) -> PerfDatabase {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         PerfDatabase::load(&root, "gb200", "trtllm", "1.3.0rc10")
             .expect("db loads")
             .with_mode(mode, TransferPolicy::ALL)
     }
 
     fn h100_sglang_db(mode: DatabaseMode) -> PerfDatabase {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let root = crate::test_systems::path("");
         PerfDatabase::load(&root, "h100_sxm", "sglang", "0.5.6.post2")
             .expect("db loads")
             .with_mode(mode, TransferPolicy::ALL)

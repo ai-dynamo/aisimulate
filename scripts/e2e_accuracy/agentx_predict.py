@@ -38,7 +38,9 @@ def predict(config_path, output):
     if not version:
         return {"outcome": "unsupported", "reason": "database_unavailable"}
     engine["backend_version"] = version
-    data_root = importlib.resources.files("aisim_core") / "systems/data"
+    from aisim_core.data.default_systems import default_systems_path
+
+    data_root = Path(default_systems_path()) / "data"
     relative = (
         f"b300_sxm/sparse_attention/sglang/{version}/dsa_generation_module_perf.parquet"
         if engine["backend"] == "sglang"

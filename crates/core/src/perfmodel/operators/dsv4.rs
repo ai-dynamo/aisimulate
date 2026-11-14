@@ -1064,9 +1064,7 @@ mod tests {
     /// `perf_database::dsv4` (absent calib -> None -> operator fail-loud).
     #[test]
     fn cp_missing_sparse_tables_fail_loud_on_real_db() {
-        let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let systems_root = crate::test_systems::path("");
         let db = PerfDatabase::load(&systems_root, "b200_sxm", "sglang", "0.5.10")
             .expect("b200_sxm/sglang/0.5.10 must load");
         let op = dsv4_cp_op(AttnKind::Csa, 8, None);
@@ -1084,9 +1082,7 @@ mod tests {
     /// chunk lookups — so no recorded-value constant (2026-08 test policy).
     #[test]
     fn mqa_chunked_matches_python_on_gb200_data() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems/data/gb200/sparse_attention/sglang/0.5.14");
+        let root = crate::test_systems::path("data/gb200/sparse_attention/sglang/0.5.14");
         let table = Dsv4Table::new(root);
         let mut lookup =
             |chunk_isl: u32, past: u32| table.query_paged_mqa_logits(1, chunk_isl, past, 1, 64);
@@ -1108,9 +1104,7 @@ mod tests {
     }
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems")
+        crate::test_systems::path("")
     }
 
     fn b200_sglang_root() -> PathBuf {
@@ -1509,9 +1503,7 @@ mod tests {
     /// SOL branches).
     #[test]
     fn dsv4_sol_mode_returns_roofline_with_sol_source() {
-        let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("python/aisim/src/aisim_core/systems");
+        let systems_root = crate::test_systems::path("");
         let mut db = PerfDatabase::load(&systems_root, "b200_sxm", "sglang", "0.5.10")
             .expect("db must load");
         db.database_mode = DatabaseMode::Sol;
