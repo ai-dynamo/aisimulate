@@ -45,23 +45,23 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-manylinux-python-rust
       - name: Build the unmodified release package once
-        working-directory: release-source/python/aisimulate
+        working-directory: release-source/python/aisim
         run: |
           python -m pip install maturin==1.15.0
           python -m maturin build --release --locked --auditwheel skip --out "${RUNNER_TEMP}/release-raw-wheel"
           auditwheel repair --plat manylinux_2_28_x86_64 \
-            --wheel-dir "${GITHUB_WORKSPACE}/fpe-release-wheel" "${RUNNER_TEMP}"/release-raw-wheel/aisimulate-*.whl
+            --wheel-dir "${GITHUB_WORKSPACE}/fpe-release-wheel" "${RUNNER_TEMP}"/release-raw-wheel/*.whl
       - name: Record release and tooling provenance
         run: python scripts/fpe/run_release_fpe.py record-wheel
       - name: Install the release's locked dependencies and exact wheel
         run: |
           python -m pip install uv==0.12.6
-          uv sync --project release-source/python/aisimulate --locked --no-install-project --no-dev --python "$(command -v python)"
-          uv pip install --python release-source/python/aisimulate/.venv/bin/python --no-deps fpe-release-wheel/*.whl
-          uv pip check --python release-source/python/aisimulate/.venv/bin/python
+          uv sync --project release-source/python/aisim --locked --no-install-project --no-dev --python "$(command -v python)"
+          uv pip install --python release-source/python/aisim/.venv/bin/python --no-deps fpe-release-wheel/*.whl
+          uv pip check --python release-source/python/aisim/.venv/bin/python
       - id: discover
         name: Discover the release inventory through its verified wheel
-        run: release-source/python/aisimulate/.venv/bin/python scripts/fpe/run_release_fpe.py discover
+        run: release-source/python/aisim/.venv/bin/python scripts/fpe/run_release_fpe.py discover
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fpe-release-wheel-${{ inputs.release }}
@@ -104,15 +104,15 @@ jobs:
       - name: Install the release's locked dependencies and exact wheel
         run: |
           python -m pip install uv==0.12.6
-          uv sync --project release-source/python/aisimulate --locked --no-install-project --no-dev --python "$(command -v python)"
-          uv pip install --python release-source/python/aisimulate/.venv/bin/python --no-deps fpe-release-wheel/*.whl
-          uv pip check --python release-source/python/aisimulate/.venv/bin/python
+          uv sync --project release-source/python/aisim --locked --no-install-project --no-dev --python "$(command -v python)"
+          uv pip install --python release-source/python/aisim/.venv/bin/python --no-deps fpe-release-wheel/*.whl
+          uv pip check --python release-source/python/aisim/.venv/bin/python
       - name: Probe the complete release shard
         env:
           FPE_SYSTEM: ${{ matrix.shard.system }}
           FPE_BACKEND: ${{ matrix.shard.backend }}
         run: |
-          release-source/python/aisimulate/.venv/bin/python scripts/fpe/run_release_fpe.py probe \
+          release-source/python/aisim/.venv/bin/python scripts/fpe/run_release_fpe.py probe \
             --system "${FPE_SYSTEM}" --backend "${FPE_BACKEND}" \
             --output-dir "fpe-release-results/${FPE_SYSTEM}/${FPE_BACKEND}" \
             --forward-model op_level --sdk-log-level ERROR --max-workers 8

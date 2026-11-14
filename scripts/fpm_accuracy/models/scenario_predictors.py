@@ -10,10 +10,15 @@ scenario evaluator; this module never reads a prediction's latency target.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import random
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import fields, replace
+from itertools import pairwise
+from operator import attrgetter
 from typing import Any
 
 from scripts.fpm_accuracy.contract import strict_json
@@ -28,6 +33,11 @@ from scripts.fpm_accuracy.types.forward_pass import (
     ForwardPassMetric,
     RequestMetrics,
 )
+
+# Field names are identical for every request record. Comparing their values in
+# this fixed name order equals comparing sorted (name, value) pairs, without
+# allocating dictionaries and name/value tuples for every DP rank.
+_REQUEST_METRIC_ORDER_KEY = attrgetter(*sorted(field.name for field in fields(RequestMetrics)))
 
 
 def create_scenario_predictor(
@@ -75,6 +85,11 @@ def create_scenario_predictor(
             from scripts.fpm_accuracy.models.mixed_scenario import MixedOriginalA
 
             mixed = MixedOriginalA(engine_config, context.fpm_artifact, scenario)
+            normalization = seed_target_normalization_evidence(training_iterations)
+            if normalization is not None:
+                mixed.provenance["seed_target_normalization"] = normalization
+                if normalization["replaced_source_rows"]:
+                    mixed.provenance["grouping"]["target_scope"] = "native_normalized_aggregate_latency"
         request = config_type.from_legacy_engine_config(engine_config, context.worker_role, dict(context.options))
         if method in {"gbdt", "hybrid", "selector"}:
             from scripts.fpm_accuracy.models.learned_scenario import LearnedScenarioPredictor
@@ -136,8 +151,14 @@ def _create_interpolation(context: PredictorContext, perf_model: Any, config_typ
 
 
 class _ScenarioInterpolation(aic_predictors.AicFpmPredictor):
+    def fpm_seed_target_normalization(self) -> Mapping[str, Any]:
+        operation = getattr(self._model, "fpm_seed_target_normalization", None)
+        if not callable(operation):
+            raise DependencyError("Self-benchmark fake-KV targets require native seed target normalization.")
+        return operation()
+
     def predict(self, features: ForwardPassInput) -> Prediction:
-        from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+        from aisim_core.sdk.errors import PerfDataNotAvailableError
         from scripts.fpm_accuracy.models.scenario_interpolation import is_interpolation_support_miss
 
         try:
@@ -234,7 +255,7 @@ class _WorkerScenarioRegression(ForwardPassTimePredictor):
 
 def _import_gbdt_trainer() -> Any:
     try:
-        from aisimulate_core.sdk import fpm_learned
+        from aisim_core.sdk import fpm_learned
     except ImportError as exc:
         raise DependencyError("The evaluated AISim version does not provide the PR #280 GBDT trainer.") from exc
     if "fpm5" not in fpm_learned.FEATURE_PRESETS:
@@ -242,18 +263,60 @@ def _import_gbdt_trainer() -> Any:
     return fpm_learned
 
 
+def order_offline_regression_seeds(
+    iterations: Sequence[ForwardPassIteration],
+) -> tuple[ForwardPassIteration, ...]:
+    """Remove profile serialization order from A/A+C spline initialization.
+
+    Only the evaluator's offline artifact branch calls this transport helper.
+    Neither targets nor source row/counter IDs enter the ordering. Each worker
+    receives the same fixed shuffle of its sorted workload coordinates. Duplicate
+    feature keys are ambiguous profile inputs, not an invitation to break ties
+    with labels or the source row order.
+    """
+    from scripts.fpm_accuracy.scenario_contract import OFFLINE_REGRESSION_SEED_ORDER
+
+    groups = defaultdict(list)
+    for iteration in iterations:
+        key = (
+            iteration.configuration_id,
+            tuple(
+                (
+                    rank.version,
+                    rank.dp_rank,
+                    str(rank.workload_kind),
+                    _REQUEST_METRIC_ORDER_KEY(rank.scheduled),
+                    _REQUEST_METRIC_ORDER_KEY(rank.queued),
+                )
+                for rank in sorted(iteration.ranks, key=lambda rank: rank.dp_rank)
+            ),
+        )
+        groups[iteration.ranks[0].worker_id].append((key, iteration))
+    result = []
+    for worker in sorted(groups):
+        decorated = groups[worker]
+        decorated.sort(key=lambda item: item[0])
+        if any(left[0] == right[0] for left, right in pairwise(decorated)):
+            raise DataError("Offline spline seeds contain duplicate workload feature keys for one worker.")
+        random.Random(OFFLINE_REGRESSION_SEED_ORDER["seed"]).shuffle(decorated)
+        result.extend(iteration for _, iteration in decorated)
+    return tuple(result)
+
+
 def self_benchmark_iterations(case: MeasurementCase, artifact: FpmArtifact) -> tuple[ForwardPassIteration, ...]:
-    """Transport actual self-benchmark rows into the existing telemetry API.
+    """Transport qualified self-benchmark targets into the existing tuning API.
 
     Schema-6 balanced_v1 collection repeats the table's counts and token sums
     on every attention-DP rank, despite the iteration_totals coordinate name.
     Its collector validates each rank against those unchanged coordinates.
     Individual rank latencies are not recorded in the table: rank zero carries
-    the recorded aggregate label and other ranks use the unobserved zero
-    sentinel, so the canonical iteration target remains the exact table value.
+    the qualified aggregate target and other ranks use the unobserved zero
+    sentinel, so the canonical iteration target remains that aggregate value.
     This does not assert that rank zero was the slowest measured rank. Unknown
     partition policies and schema-7 execution identities remain unsupported.
-    Stored latencies are used unchanged, including any recorded KV seed regime.
+    Genuine labels stay unchanged. Marked fake-KV targets use the canonical
+    native loader's effective labels, with both raw and effective provenance;
+    these corrected labels are not presented as additional measurements.
     """
     import pyarrow.parquet as pq
 
@@ -269,6 +332,11 @@ def self_benchmark_iterations(case: MeasurementCase, artifact: FpmArtifact) -> t
         raise DependencyError("Self-benchmark regression seeding requires Gym-supported schema-6 execution identity.")
     if metadata.get("parquet_sha256") != artifact.sha256:
         raise DataError("Self-benchmark metadata does not bind the selected parquet hash.")
+    from scripts.fpm_accuracy.models.aic_fpm_database import _recover_reconstructed_metadata
+
+    # Complete the same validated schema-6 contract as native staging before
+    # interpreting DP coordinates. Original metadata bytes/hashes stay pinned.
+    metadata, _ = _recover_reconstructed_metadata(metadata, artifact)
     selector = metadata["configuration_selector"]
     dp = selector.get("dp", 1)
     if isinstance(dp, bool) or not isinstance(dp, int) or dp < 1:
@@ -278,6 +346,7 @@ def self_benchmark_iterations(case: MeasurementCase, artifact: FpmArtifact) -> t
     rows = pq.read_table(artifact.local_path).to_pylist()
     if len(rows) != artifact.row_count or len(rows) != metadata["row_count"]:
         raise DataError("Self-benchmark row count does not match the pinned manifest.")
+    effective_targets = _effective_seed_targets(case, artifact, rows)
     workers = sorted({item.iteration.ranks[0].worker_id for item in case.observations})
     result = []
     for index, row in enumerate(rows):
@@ -322,6 +391,12 @@ def self_benchmark_iterations(case: MeasurementCase, artifact: FpmArtifact) -> t
             if dp > 1
             else {}
         )
+        if index in effective_targets:
+            target = effective_targets[index]
+            latency = target["effective_latency_ms"]
+            provenance["self_benchmark_target"] = target
+            if target["replaced"] and "source_metadata" in provenance:
+                provenance["source_metadata"]["target_scope"] = "native_normalized_aggregate_latency"
         for worker in workers:
             result.append(
                 ForwardPassIteration(
@@ -346,6 +421,112 @@ def self_benchmark_iterations(case: MeasurementCase, artifact: FpmArtifact) -> t
     if not result:
         raise DependencyError("Self-benchmark artifact has no compatible measured rows for this case.")
     return tuple(result)
+
+
+def _effective_seed_targets(
+    case: MeasurementCase, artifact: FpmArtifact, rows: Sequence[Mapping[str, Any]]
+) -> dict[int, dict[str, Any]]:
+    """Transport the native loader's correction; never estimate labels in Python.
+
+    Profiles without fake markers in the selected worker phase keep the existing
+    path and incur no model construction. Otherwise one preparation call returns
+    every marked source row for validation, independent of logical-worker count
+    or the later number of queries.
+    """
+    marked = {index for index, row in enumerate(rows) if row.get("kv_seed_regime") == "fake_fallback"}
+    if not marked or (
+        case.worker_role != "aggregated"
+        and not any(rows[index].get("workload_kind") == case.worker_role for index in marked)
+    ):
+        return {}
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role=case.worker_role,
+        fpm_artifact=artifact,
+    )
+    predictor = create_scenario_predictor("warmup", context)
+    try:
+        operation = getattr(predictor, "fpm_seed_target_normalization", None)
+        if not callable(operation):
+            raise DependencyError("Self-benchmark fake-KV targets require native seed target normalization.")
+        report = operation()
+    finally:
+        predictor.close()
+    if report.get("row_count") != len(rows) or not isinstance(report.get("replacement_enabled"), bool):
+        raise DataError("Native seed normalization does not describe the selected profile.")
+    if report.get("policy") != "same_cell_batch_real_kv_extrapolation_v1":
+        raise DependencyError("Unsupported native self-benchmark target normalization policy.")
+    targets = {}
+    for record in report.get("rows", ()):
+        index = record.get("row_index")
+        if type(index) is not int or index not in marked or index in targets:
+            raise DataError("Native seed normalization has invalid or duplicate source row indices.")
+        row = rows[index]
+        if any(
+            record.get(field) != row.get(field)
+            for field in ("workload_kind", "batch_size", "total_prefill_tokens", "total_kv_read_tokens")
+        ) or record.get("raw_latency_ms") != row.get("latency_ms"):
+            raise DataError("Native seed normalization does not match the pinned source row.")
+        effective = record.get("effective_latency_ms")
+        if (
+            isinstance(effective, bool)
+            or not isinstance(effective, int | float)
+            or not math.isfinite(effective)
+            or effective <= 0
+            or not isinstance(record.get("replaced"), bool)
+        ):
+            raise DataError("Native seed normalization returned an invalid effective target.")
+        if not record["replaced"] and effective != record["raw_latency_ms"]:
+            raise DataError("Native seed normalization changed a retained original target.")
+        if record["replaced"] and not report["replacement_enabled"]:
+            raise DataError("Native seed normalization replaced targets while replacement was disabled.")
+        targets[index] = {
+            **record,
+            "policy": report["policy"],
+            "replacement_enabled": report["replacement_enabled"],
+            "artifact_id": artifact.artifact_id,
+            "source_parquet_sha256": artifact.sha256,
+            "source_metadata_sha256": artifact.metadata_sha256,
+            "target_scope": "native_normalized_aggregate_latency"
+            if record["replaced"]
+            else "recorded_aggregate_latency",
+        }
+    if set(targets) != marked or report.get("replaced_count") != sum(r["replaced"] for r in targets.values()):
+        raise DataError("Native seed normalization omitted marked rows or has inconsistent counts.")
+    if report.get("kept_count") != sum(not r["replaced"] for r in targets.values()):
+        raise DataError("Native seed normalization has inconsistent retained-target counts.")
+    return targets
+
+
+def seed_target_normalization_evidence(iterations: Sequence[ForwardPassIteration]) -> dict | None:
+    """Hash-bind effective source targets separately from replicated seed rows."""
+    unique = {}
+    seeded = 0
+    for iteration in iterations:
+        record = iteration.ranks[0].extra_metadata.get("self_benchmark_target")
+        if record is None:
+            continue
+        seeded += 1
+        key = (record["source_parquet_sha256"], record["row_index"])
+        if key in unique and unique[key] != record:
+            raise ValueError("Replicated self-benchmark targets disagree on normalization provenance.")
+        unique[key] = record
+    if not unique:
+        return None
+    records = [unique[key] for key in sorted(unique)]
+    payload = json.dumps(records, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    return {
+        "policies": sorted({r["policy"] for r in records}),
+        "source_parquet_sha256": sorted({r["source_parquet_sha256"] for r in records}),
+        "source_metadata_sha256": sorted({r["source_metadata_sha256"] for r in records}),
+        "marked_source_rows": len(records),
+        "replaced_source_rows": sum(r["replaced"] for r in records),
+        "kept_source_rows": sum(not r["replaced"] for r in records),
+        "replicated_seed_rows": seeded,
+        "replacement_enabled": all(r["replacement_enabled"] for r in records),
+        "effective_targets_sha256": hashlib.sha256(payload).hexdigest(),
+        "target_scope": "native_profile_seed_targets_not_additional_measurements",
+    }
 
 
 def _count(row: Mapping[str, Any], field: str, index: int, *, positive: bool = False) -> int:

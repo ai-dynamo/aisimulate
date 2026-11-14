@@ -391,7 +391,7 @@ def test_point_timeout_remains_an_explicit_incomplete_campaign(monkeypatch):
     }
 
 
-@pytest.fixture(params=["aisimulate", "aiconfigurator"])
+@pytest.fixture(params=["aisim", "aisimulate", "aiconfigurator"])
 def artifact(tmp_path, monkeypatch, request):
     source = tmp_path / "tables.json"
     source.write_text(json.dumps(tables()))
@@ -404,14 +404,18 @@ def artifact(tmp_path, monkeypatch, request):
         "wheel_identity",
         lambda path: {
             "wheel_sha256": "a" * 64,
-            "packages": {"aisimulate": "0.12.0"},
+            "packages": {
+                "aisim" if request.param == "aisim" else "aisimulate": "0.14.0"
+                if request.param == "aisim"
+                else "0.12.0"
+            },
             "baseline_api": "aiconfigurator.cli.api"
             if request.param == "aiconfigurator"
-            else "aisimulate.legacy_cli.api",
+            else request.param + ".legacy_cli.api",
             "config_adapter": request.param + ".sdk.config_adapter",
             "cli_entry_point": "aiconfigurator.main:main"
             if request.param == "aiconfigurator"
-            else "aisimulate.legacy_cli.entrypoint:main",
+            else request.param + ".legacy_cli.entrypoint:main",
         },
     )
 
@@ -447,7 +451,7 @@ def artifact(tmp_path, monkeypatch, request):
             "dynamo_ttft_ms": 110,
             "dynamo_tpot_ms": 12,
             "aisimulate_status": "success",
-            "aisimulate_runner": "aisimulate.engine_replay",
+            "aisimulate_runner": "aisim.engine_replay",
         }
         return {
             "id": point["id"],
@@ -817,9 +821,9 @@ def test_same_commit_publication_compares_completion_times(
     summary, run = artifact
     run["head_sha"] = "a" * 40
     summary["snapshot"]["campaign"]["completed_at"] = current_time
-    summary["snapshot"]["aisimulate_completed_at"] = current_time
+    summary["snapshot"]["aisim_completed_at"] = current_time
     previous = deepcopy(summary)
-    previous["snapshot"]["aisimulate_completed_at"] = previous_time
+    previous["snapshot"]["aisim_completed_at"] = previous_time
     responses = {
         "actions/workflows/e2e-accuracy.yml/runs?status=completed&branch=main&per_page=100": {"workflow_runs": [run]},
         "actions/runs/123": run,
@@ -991,7 +995,7 @@ def test_invalid_committed_timestamp_does_not_block_other_branches(artifact, tmp
     release = branch_snapshot(summary, "release/0.12.0", "e" * 40)
     publication_api(monkeypatch, run, [summary, release])
     previous = deepcopy(summary)
-    previous["snapshot"]["aisimulate_completed_at"] = previous_time
+    previous["snapshot"]["aisim_completed_at"] = previous_time
     monkeypatch.setattr(
         publish,
         "committed_accuracy",
@@ -1094,10 +1098,10 @@ def test_failed_prior_attempt_requires_that_attempts_successful_branch_job(artif
 def test_same_commit_campaign_selection_uses_completion_time_not_run_order(artifact, tmp_path, monkeypatch, reverse):
     summary, run = artifact
     summary["snapshot"]["campaign"]["completed_at"] = "2026-09-15T09:00:00Z"
-    summary["snapshot"]["aisimulate_completed_at"] = "2026-09-15T09:00:00Z"
+    summary["snapshot"]["aisim_completed_at"] = "2026-09-15T09:00:00Z"
     newer = deepcopy(summary)
     newer["snapshot"]["campaign"].update(run_id="124", completed_at="2026-09-15T11:00:00.500000+02:00")
-    newer["snapshot"]["aisimulate_completed_at"] = newer["snapshot"]["campaign"]["completed_at"]
+    newer["snapshot"]["aisim_completed_at"] = newer["snapshot"]["campaign"]["completed_at"]
     newer_run = {**run, "id": 124}
     responses = publication_api(monkeypatch, run, [summary])
     runs = [run, newer_run]
@@ -1271,16 +1275,17 @@ def test_dump_part_retry_fails_closed_after_three_attempts(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "api,adapter",
+    "api,adapter,application",
     [
-        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
-        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
+        ("aisim.legacy_cli.api", "aisim.sdk.config_adapter", "aisim"),
+        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter", "aisimulate"),
+        ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter", "aisimulate"),
     ],
 )
-def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkeypatch, api, adapter):
+def test_wheel_identity_accepts_packaged_predictor_layouts(tmp_path, monkeypatch, api, adapter, application):
     members = {
-        "aisimulate/_runtime.py": b"runtime",
-        "aisimulate/runner.py": b"runner",
+        f"{application}/_runtime.py": b"runtime",
+        f"{application}/runner.py": b"runner",
         api.replace(".", "/") + ".py": b"baseline",
         adapter.replace(".", "/") + "/__init__.py": b"adapter",
     }
@@ -1291,8 +1296,10 @@ def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkey
             path = tmp_path / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
-    dist = SimpleNamespace(locate_file=lambda name: tmp_path / name, version="test", files=list(members))
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: dist)
+    dist = SimpleNamespace(
+        locate_file=lambda name: tmp_path / name, version="test", files=list(members), metadata={"Name": application}
+    )
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: dist)
     imported = []
 
     def load(name):
@@ -1301,8 +1308,8 @@ def test_wheel_identity_accepts_both_packaged_predictor_layouts(tmp_path, monkey
         return SimpleNamespace(__file__=str(tmp_path / path))
 
     monkeypatch.setattr(campaign.importlib, "import_module", load)
-    assert campaign.wheel_identity(wheel)["packages"] == {"aisimulate": "test"}
-    assert imported == ["aisimulate._runtime", "aisimulate.runner", api, adapter]
+    assert campaign.wheel_identity(wheel)["packages"] == {application: "test"}
+    assert imported == [f"{application}._runtime", f"{application}.runner", api, adapter]
     (tmp_path / (api.replace(".", "/") + ".py")).write_bytes(b"tampered")
     with pytest.raises(ValueError, match="differs from qualified wheel"):
         campaign.wheel_identity(wheel)
@@ -1312,14 +1319,12 @@ def test_predictor_layout_rejects_missing_or_mixed_namespaces():
     with pytest.raises(ValueError, match="no supported baseline"):
         campaign.predictor_module_names([])
     with pytest.raises(ValueError, match="matching config adapter"):
-        campaign.predictor_module_names(
-            ["aisimulate/legacy_cli/api.py", "aiconfigurator/sdk/config_adapter/__init__.py"]
-        )
+        campaign.predictor_module_names(["aisim/legacy_cli/api.py", "aiconfigurator/sdk/config_adapter/__init__.py"])
 
 
 @pytest.mark.parametrize("adapters", [[], ["aisimulate"], ["aiconfigurator"], ["aisimulate", "aiconfigurator"]])
 def test_predictor_layout_rejects_multiple_baseline_apis(adapters):
-    files = ["aisimulate/legacy_cli/api.py", "aiconfigurator/cli/api.py"]
+    files = ["aisim/legacy_cli/api.py", "aiconfigurator/cli/api.py"]
     files += [name + "/sdk/config_adapter/__init__.py" for name in adapters]
     with pytest.raises(ValueError, match="ambiguous"):
         campaign.predictor_module_names(files)
@@ -1328,14 +1333,14 @@ def test_predictor_layout_rejects_multiple_baseline_apis(adapters):
 @pytest.mark.parametrize(
     "api,adapter_name",
     [
-        ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
+        ("aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
         ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
     ],
 )
 def test_predict_point_calls_selected_api_and_adapter(monkeypatch, api, adapter_name):
     files = [api.replace(".", "/") + ".py", adapter_name.replace(".", "/") + "/__init__.py"]
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
-    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=files))
+    monkeypatch.setitem(sys.modules, "aisim.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
     calls = []
     request = SimpleNamespace(
         topology=SimpleNamespace(kind="agg", worker=SimpleNamespace(replicas=1, gpus_per_replica=0))
@@ -1396,10 +1401,10 @@ def test_publication_checks_aic_success_count_against_point_statuses(artifact, s
 
 @pytest.mark.parametrize("output", [None, 0, -1, float("nan"), 400])
 def test_campaign_does_not_infer_measured_output_from_total(monkeypatch, output):
-    api, adapter_name = "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"
+    api, adapter_name = "aisim.legacy_cli.api", "aisim.sdk.config_adapter"
     monkeypatch.setattr(campaign, "predictor_module_names", lambda _: (api, adapter_name))
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[]))
-    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=[]))
+    monkeypatch.setitem(sys.modules, "aisim.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
     worker = SimpleNamespace(
         tp_size=4, pp_size=1, attention_dp_size=1, moe_tp_size=4, moe_ep_size=1, replicas=1, gpus_per_replica=4
     )
@@ -1448,15 +1453,15 @@ def test_publication_accepts_failure_details_but_rejects_success_errors(artifact
     topology = gpu["topologies"][0]
     failed = topology["points"][0]
     failed["status"] = "failed"
-    failed["aisimulate"] = dict.fromkeys(failed["aisimulate"])
-    failed["aisimulate"]["unavailable_metrics"] = dict.fromkeys(
+    failed["aisim"] = dict.fromkeys(failed["aisim"])
+    failed["aisim"]["unavailable_metrics"] = dict.fromkeys(
         ("ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"), "prediction_failed"
     )
     for item in (summary["totals"], model, workload, gpu, topology):
-        item["aisimulate"]["points"] -= 1
-        item["aisimulate"]["status_counts"]["success"] -= 1
-        item["aisimulate"]["status_counts"]["failed"] += 1
-    summary["totals"]["by_configuration_quality"]["not_recorded"]["aisimulate"]["points"] -= 1
+        item["aisim"]["points"] -= 1
+        item["aisim"]["status_counts"]["success"] -= 1
+        item["aisim"]["status_counts"]["failed"] += 1
+    summary["totals"]["by_configuration_quality"]["not_recorded"]["aisim"]["points"] -= 1
     failed["aisim_error"] = "ValueError: no KV budget"
     assert publish.validate_artifact(archive(summary), run) == summary
     success = topology["points"][1]
@@ -1471,14 +1476,14 @@ def test_publication_accepts_failure_details_but_rejects_success_errors(artifact
 
 
 @pytest.mark.parametrize(
-    "entry", ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main", None, "foreign.main:main", 42]
+    "entry", ["aiconfigurator.main:main", "aisim.legacy_cli.entrypoint:main", None, "foreign.main:main", 42]
 )
 def test_site_builder_validates_baseline_entry_point(artifact, tmp_path, entry):
     summary, _ = artifact
     summary["snapshot"]["aic_source"]["cli_entry_point"] = entry
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(summary))
-    if entry in ("aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"):
+    if entry in ("aiconfigurator.main:main", "aisim.legacy_cli.entrypoint:main"):
         pages._accuracy_summary(path.read_text())
     else:
         with pytest.raises(pages.PagesBuildError, match="legacy AIC CLI source"):
@@ -1523,14 +1528,14 @@ def source_config_adapter(monkeypatch):
     existing_modules = set(sys.modules)
     monkeypatch.syspath_prepend(str(ROOT / "python" / "aisimulate" / "src"))
     try:
-        from aisimulate.sdk import config_adapter
+        from aisim.sdk import config_adapter
 
         yield config_adapter
     finally:
         # Do not make later Pages tests mistake source imports for an installed
         # wheel with a native runtime, after monkeypatch restores sys.path.
         for name in set(sys.modules) - existing_modules:
-            if name.split(".")[0] in {"aisimulate", "aisimulate_core"}:
+            if name.split(".")[0] in {"aisimulate", "aisim_core"}:
                 sys.modules.pop(name, None)
 
 
@@ -1582,15 +1587,15 @@ def test_ep_prediction_preserves_physical_gpus_through_publication(
 
     monkeypatch.setitem(
         sys.modules,
-        "aisimulate.runner",
+        "aisim.runner",
         SimpleNamespace(EngineReplayRunnerFactory=lambda: SimpleNamespace(create=lambda _: Runner())),
     )
     modules = {
-        "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=estimate),
-        "aisimulate.sdk.config_adapter": source_config_adapter,
+        "aisim.legacy_cli.api": SimpleNamespace(cli_estimate=estimate),
+        "aisim.sdk.config_adapter": source_config_adapter,
     }
-    files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    files = ["aisim/legacy_cli/api.py", "aisim/sdk/config_adapter/__init__.py"]
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=files))
     monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
     result = campaign.predict_point(point)
     row = result["row"]
@@ -1672,13 +1677,13 @@ def test_old_wheel_incorrect_topology_cannot_publish(monkeypatch, dp_attention):
         adapt_config=lambda _: SimpleNamespace(requests=[request]),
     )
     modules = {
-        "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=None),
-        "aisimulate.sdk.config_adapter": adapter,
+        "aisim.legacy_cli.api": SimpleNamespace(cli_estimate=None),
+        "aisim.sdk.config_adapter": adapter,
     }
-    files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    files = ["aisim/legacy_cli/api.py", "aisim/sdk/config_adapter/__init__.py"]
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=files))
     monkeypatch.setattr(campaign.importlib, "import_module", modules.__getitem__)
-    monkeypatch.setitem(sys.modules, "aisimulate.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
+    monkeypatch.setitem(sys.modules, "aisim.runner", SimpleNamespace(EngineReplayRunnerFactory=object))
     assert campaign.predict_point(point) == {
         "id": "ep-point",
         "outcome": "unsupported",
@@ -1832,7 +1837,7 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     assert summary["totals"]["rows"] == 1
     assert summary["totals"]["aic"]["status_counts"]["failed"] == 1
     assert summary["totals"]["aic"]["coverage_pct"] == 0
-    assert summary["totals"]["by_configuration_quality"]["verified"]["aisimulate"]["points"] == 1
+    assert summary["totals"]["by_configuration_quality"]["verified"]["aisim"]["points"] == 1
 
 
 def test_resolved_cohort_joins_provenance_and_accounts_for_every_row():
@@ -1975,16 +1980,16 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
 
     monkeypatch.setitem(
         sys.modules,
-        "aisimulate.runner",
+        "aisim.runner",
         SimpleNamespace(EngineReplayRunnerFactory=lambda: SimpleNamespace(create=lambda _: Runner())),
     )
     modules = {
-        "aisimulate.legacy_cli.api": SimpleNamespace(cli_estimate=estimate),
-        "aisimulate.sdk.config_adapter": source_config_adapter,
-        "aisimulate.sdk.perf_database": SimpleNamespace(get_latest_database_version=lambda **_: "database-2.0"),
+        "aisim.legacy_cli.api": SimpleNamespace(cli_estimate=estimate),
+        "aisim.sdk.config_adapter": source_config_adapter,
+        "aisim.sdk.perf_database": SimpleNamespace(get_latest_database_version=lambda **_: "database-2.0"),
     }
-    files = ["aisimulate/legacy_cli/api.py", "aisimulate/sdk/config_adapter/__init__.py"]
-    monkeypatch.setattr(campaign.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=files))
+    files = ["aisim/legacy_cli/api.py", "aisim/sdk/config_adapter/__init__.py"]
+    monkeypatch.setattr(campaign, "installed_distribution", lambda: SimpleNamespace(files=files))
     original_import = campaign.importlib.import_module
     monkeypatch.setattr(
         campaign.importlib,
@@ -2067,7 +2072,7 @@ def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_pat
     "name,field",
     [
         (name, field)
-        for name in ("aic", "aisimulate")
+        for name in ("aic", "aisim")
         for field in (
             "ttft_ms",
             "tpot_ms",
@@ -2076,7 +2081,7 @@ def test_failed_campaign_without_artifact_keeps_failure_status(artifact, tmp_pat
             "interactivity_tok_s",
         )
     ]
-    + [("aisimulate", "total_per_gpu")],
+    + [("aisim", "total_per_gpu")],
 )
 def test_serving_metric_contract_rejects_missing_success_metrics(artifact, name, field):
     summary, run = artifact
@@ -2092,10 +2097,10 @@ def test_serving_metrics_survive_qualification_and_explain_unavailable(artifact)
     summary, run = artifact
     validated = publish.validate_artifact(archive(summary), run)
     point = validated["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
-    assert point["aisimulate"]["output_per_gpu"] == 760
-    assert point["aisimulate"]["total_per_gpu"] == 1520
-    assert point["aisimulate"]["e2e_ms"] == 1300
-    assert point["aisimulate"]["interactivity_tok_s"] == 1000 / 12
+    assert point["aisim"]["output_per_gpu"] == 760
+    assert point["aisim"]["total_per_gpu"] == 1520
+    assert point["aisim"]["e2e_ms"] == 1300
+    assert point["aisim"]["interactivity_tok_s"] == 1000 / 12
     assert point["aic"]["total_per_gpu"] is None
     assert point["aic"]["unavailable_metrics"] == {"total_per_gpu": "unsupported_by_predictor"}
     assert point["measured"]["unavailable_metrics"]["e2e_ms"] == "not_recorded"
@@ -2119,7 +2124,7 @@ def test_measurement_metrics_preserve_recorded_rates_and_units():
 def test_serving_metrics_reject_invalid_values(artifact, bad):
     summary, run = artifact
     point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
-    point["aisimulate"]["output_per_gpu"] = bad
+    point["aisim"]["output_per_gpu"] = bad
     with pytest.raises((pages.PagesBuildError, ValueError)):
         publish.validate_artifact(archive(summary), run)
 
@@ -2127,7 +2132,7 @@ def test_serving_metrics_reject_invalid_values(artifact, bad):
 def test_serving_metrics_check_interactivity_definition(artifact):
     summary, run = artifact
     point = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0]
-    point["aisimulate"]["interactivity_tok_s"] = 12
+    point["aisim"]["interactivity_tok_s"] = 12
     with pytest.raises(pages.PagesBuildError, match="interactivity definition"):
         publish.validate_artifact(archive(summary), run)
 
@@ -2576,3 +2581,58 @@ def test_mtp_staleness_uses_current_cohort_without_changing_stp():
     assert points == stp
     assert stats["excluded"] == {"stale": 1}
     assert len(points) + sum(stats["excluded"].values()) == 2
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_publisher_and_digest_accept_both_public_summary_versions(artifact, version):
+    from test_e2e_accuracy_overview import _legacy_public_summary
+
+    from scripts.notifications.accuracy_digest import e2e_snapshot
+
+    current, _ = artifact
+    summary = _legacy_public_summary(current) if version == 1 else current
+    original = deepcopy(summary)
+    normalized = publish.unpack_artifact(archive(summary))
+    assert normalized == current
+    assert summary == original
+    assert normalized["snapshot"]["campaign"]["schema_version"] == 1
+    assert e2e_snapshot(summary, "rules", "url") == e2e_snapshot(current, "rules", "url")
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_publisher_checks_source_bytes_before_summary_normalization(artifact, version):
+    from test_e2e_accuracy_overview import _legacy_public_summary
+
+    current, _ = artifact
+    summary = _legacy_public_summary(current) if version == 1 else current
+    qualification = {**summary["snapshot"]["campaign"], "summary_sha256": "0" * 64}
+    # A schema/field error must not precede verification of the source bytes.
+    summary["schema_version"] = 999
+    with pytest.raises(ValueError, match="summary checksum mismatch"):
+        publish.unpack_artifact(archive(summary, qualification=qualification))
+
+
+@pytest.mark.parametrize("wrong_checksum", [False, True])
+def test_v1_artifact_is_verified_before_normalizing_to_canonical_ui_v2(artifact, wrong_checksum):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    original, run = artifact
+    legacy = normalize_summary(original, target_version=1)
+    assert legacy["schema_version"] == 1
+    assert "aisimulate" in legacy["totals"] and "aisim" not in legacy["totals"]
+    before = deepcopy(legacy)
+    qualification = None
+    if wrong_checksum:
+        qualification = {
+            **original["snapshot"]["campaign"],
+            "summary_sha256": hashlib.sha256(campaign.encoded(original)).hexdigest(),
+        }
+    payload = archive(legacy, qualification=qualification)
+    if wrong_checksum:
+        with pytest.raises(ValueError, match="summary checksum mismatch"):
+            publish.validate_artifact(payload, run)
+    else:
+        normalized = publish.validate_artifact(payload, run)
+        assert normalized == original
+        assert normalized["snapshot"]["campaign"]["schema_version"] == 1
+    assert legacy == before

@@ -13,7 +13,7 @@ configuration does not carry a generic measured eager/graph CPU-dispatch timing
 contract. Supplying `cuda_graph_reserved_bytes` changes cache capacity; it does
 not select or measure host execution latency.
 
-The [GPT-OSS trace evidence](../../python/aisimulate/collector/trtllm/gym-gpt-eager-20260918.md)
+The [GPT-OSS trace evidence](../../python/aisim/collector/trtllm/gym-gpt-eager-20260918.md)
 records this gap for its pinned runtime and workload. Its observed client TTFT
 residual cannot be treated as a universal constant or charged to the shared MoE
 kernel table: graph decode has a different execution boundary, and queue/frontend

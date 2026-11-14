@@ -9,7 +9,7 @@ Start with the [CLI tutorial](quickstart.md#predict-one-deployment) and retain
 per-request output when investigating a result:
 
 ```bash
-aisimulate predict --stack engine --config prediction.yaml \
+aisim predict --stack engine --config prediction.yaml \
   --capture-per-request --output-dir prediction-output
 ```
 
@@ -74,24 +74,30 @@ the milestones `scheduler_received_ms`, `selected_ms` and `prefill_complete_ms`,
 plus `frontend_ready_ms` when the worker prices frontend stages and, with a
 native pool, `encoder_ready_ms`.
 
-## Latency populations: ITL is not TPOT
+## Latency populations
 
 | Metric | Native replay sample |
 |---|---|
 | TTFT | Arrival to first output token, including modeled queueing, for each completed request with an output token. |
 | E2E latency | Arrival to last output token for each completed request with an output token. |
 | TPOT | One average per completed request with at least two output tokens: `(last_token - first_token) / (output_tokens - 1)`. |
-| ITL | Individual gaps between adjacent output tokens from completed, admitted requests. Longer outputs contribute more gaps. |
-| Output token throughput per user | Individual `1000 / gap_ms` values for positive token gaps; its mean is not generally `1000 / mean_tpot_ms`. |
+| ITL | The TPOT sample of each request, as in AIPerf. `max_itl_ms` is the largest per-request average, not the largest single gap. |
+| Output token throughput per user | `1000 / TPOT` for each request with a positive TPOT; its mean is not generally `1000 / mean_tpot_ms`. |
+
+Each distribution reports `mean`, `min`, `max`, `std` and the nearest-rank
+percentiles `median`, `p75`, `p90`, `p95` and `p99`.
+These populations match [AIPerf request metrics](../sweeper/optimization-goals.md#aiperf-metric-selectors);
+AIPerf interpolates percentiles linearly instead.
 
 A token's time is the end of the engine pass that produced it, or, with
 [`engine.detokenization`](../replay/engine/README.md#detokenization), the time the client
 receives it.
 
 For example, one request with a single 10 ms gap and another with three 30 ms
-gaps give a mean TPOT of `(10 + 30) / 2 = 20` ms, but a mean ITL of
-`(10 + 30 + 30 + 30) / 4 = 25` ms. Their percentiles also describe different
-populations. A single-output-token request contributes TTFT but no TPOT sample.
+gaps give a mean ITL of `(10 + 30) / 2 = 20` ms, not the per-gap
+`(10 + 30 + 30 + 30) / 4 = 25` ms. Their user TPS samples are 100 and about 33.3,
+with a mean of about 66.7. A single-output-token request contributes TTFT but no
+ITL or user TPS sample.
 
 The terminal table displays ITL. Aggregate SLA filtering uses mean TPOT for
 the `itl_ms` bound. Use the saved report's explicit field names when comparing
@@ -127,7 +133,7 @@ Encoder pools are not supported by this capture path. It uses ordinary replay,
 not the DP1-only detailed-artifact path.
 
 ```bash
-aisimulate predict --stack engine --config examples/cli/agentic-profile.yaml \
+aisim predict --stack engine --config examples/cli/agentic-profile.yaml \
   --capture-telemetry --telemetry-sample-interval-ms 1000 \
   --output-dir ./agentic-telemetry
 ```
@@ -210,7 +216,7 @@ Use `--export-html` to write an interactive, simulation-only `report.html` next
 to the normal prediction output:
 
 ```bash
-aisimulate predict --config examples/cli/agentic-profile.yaml \
+aisim predict --config examples/cli/agentic-profile.yaml \
   --export-html --output-dir ./agentic-dashboard
 ```
 
@@ -316,7 +322,7 @@ helper warms up requests; a fresh replay's startup/cache history can differ.
 Record the difference or align the measurement windows before attributing
 error to the performance model.
 
-Save the input YAML, concrete recommended YAML, AISimulate version/source SHA,
+Save the input YAML, concrete recommended YAML, AISim version/source SHA,
 wheel identity when applicable, `prediction.json`, per-request records, and
 the benchmark command/results. For recommendations also retain
 `recommendation.json`: it records failed attempts and the candidate IDs behind

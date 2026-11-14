@@ -37,7 +37,7 @@ def training_observation_ids(observations: Sequence[Any]) -> frozenset[str]:
 
 
 class LearnedFpm5Predictor(ForwardPassTimePredictor):
-    """Rust inference over an artifact trained by ``aisimulate_core.sdk.fpm_learned``."""
+    """Rust inference over an artifact trained by ``aisim_core.sdk.fpm_learned``."""
 
     def __init__(self, model: Any, artifact: Mapping[str, Any]) -> None:
         self._model = model
@@ -50,8 +50,8 @@ class LearnedFpm5Predictor(ForwardPassTimePredictor):
     @classmethod
     def fit(cls, context: PredictorContext, iterations: Sequence[ForwardPassIteration]) -> LearnedFpm5Predictor:
         try:
-            from aisimulate_core.sdk import fpm_learned
-            from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+            from aisim_core.sdk import fpm_learned
+            from aisim_core.sdk.rust_engine_step import RustForwardPassPerfModel
         except ImportError as exc:  # pragma: no cover - depends on the evaluated wheel
             raise DependencyError("This AISim revision does not provide the learned forward-pass model.") from exc
         if FEATURE_PRESET not in getattr(fpm_learned, "FEATURE_PRESETS", {}):

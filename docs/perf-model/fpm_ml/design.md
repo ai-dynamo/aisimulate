@@ -4,7 +4,7 @@ A gradient-boosted tree model that predicts the wall time of one engine forward 
 (one scheduler step of a prefill or decode worker) from the composition of the batch,
 trained on `ForwardPassMetrics` (FPM) recorded from real traffic. It is a third variant
 of `ForwardPassPerfModel` next to the native analytic model and the regression store,
-and is exposed today through the SDK (`aisimulate_core.sdk.fpm_learned` for training,
+and is exposed today through the SDK (`aisim_core.sdk.fpm_learned` for training,
 `RustForwardPassPerfModel.from_learned` for inference).
 
 Companion document in this directory: [`learned-forward-pass-model.md`](learned-forward-pass-model.md)
@@ -30,7 +30,7 @@ model turns that stream into a predictor with these goals:
    on 0 past.
 2. **No engine source changes.** Stock Dynamo FPM v1 carries aggregates only. The
    per-request lists are added at runtime by import hooks that live in this repo
-   (`aisimulate_core.fpm_hooks`), so any stock Dynamo image produces trainable data.
+   (`aisim_core.fpm_hooks`), so any stock Dynamo image produces trainable data.
 3. **Inference in Rust, microseconds per call.** The simulator calls the perf model
    once per simulated step; the model must be a pure function over a fixed feature
    vector, evaluated without Python.
@@ -90,7 +90,7 @@ scheduled request, the pair
 
 Neither field exists in Dynamo main or SGLang main. Instead of patching either code
 base, the two lists are added at runtime inside the engine process by
-`aisimulate_core.fpm_hooks`; no engine source is changed.
+`aisim_core.fpm_hooks`; no engine source is changed.
 
 ### How the hooks work
 
@@ -130,9 +130,9 @@ base, the two lists are added at runtime inside the engine process by
 5. **Reaching every process.** Engines fork scheduler subprocesses that do not run the
    parent's Python code. `fpm_hooks/sitecustomize.py` calls `install()` at interpreter
    start, so putting the package directory on `PYTHONPATH`
-   (`export PYTHONPATH=$(python -c 'import aisimulate_core.fpm_hooks as h; print(h.hook_path())'):$PYTHONPATH`)
+   (`export PYTHONPATH=$(python -c 'import aisim_core.fpm_hooks as h; print(h.hook_path())'):$PYTHONPATH`)
    installs the hooks in the launcher and in every spawned interpreter. Alternatively
-   `python -m aisimulate_core.fpm_hooks dynamo.sglang -- <args>` sets this up and
+   `python -m aisim_core.fpm_hooks dynamo.sglang -- <args>` sets this up and
    execs the module.
 6. **Consumers must not re-type the payload.** The relay sink writes the raw msgpack
    as JSON and keeps the two keys. Any consumer that decodes with the stock typed
@@ -197,10 +197,12 @@ Why these and not raw lists: trees need a fixed-width input; sums, extremes and 
 attention proxy capture the two cost drivers (GEMM work ∝ Σ e_i, attention work
 ∝ Σ e_i·p_i) plus the batch shape (n, spread) that decides kernel selection and
 padding. `v1` and `hisim` land within 0.3–0.6 pp of `sglang18` on every deployment
-tested; `sglang18` is the default. §3.1 works out how many of the 18 are actually needed:
-five suffice for decode without any measured loss, prefill needs all 18. The shipped code
-has no reduced preset; a reduced set is trained by passing the feature names to
-`--features` as a comma-separated list.
+tested; `sglang18` was the default when these were measured. §3.1 works out how many of
+the 18 are actually needed: five suffice for decode without any measured loss, prefill
+needs all 18. The reduced sets ship as the `atomic5` and `atomic10` presets, and any other
+set is trained by passing the feature names to `--features` as a comma-separated list.
+The trainer now defaults to `fpm5`; like `v1`, it needs no request lists, while the other
+presets cannot train on aggregate-only FPM data.
 
 ### 3.1 How many of the 18 features are needed
 
@@ -751,7 +753,11 @@ quantified, not guessed. Raw data: `estimator_threads_grace_node.csv`,
 
 ### 8.7 Simplifying the model: fewer features, fewer and shallower trees
 
-**Conclusion.** The default model (18 features, 400 trees × 31 leaves) can be replaced by
+These measurements predate the `fpm5` default (§3). In §8.7 and §8.8, "default" means the
+baseline these evaluations used: the 18 `sglang18` features, then the trainer's default,
+with 400 trees × 31 leaves.
+
+**Conclusion.** That default model (18 features, 400 trees × 31 leaves) can be replaced by
 one with the atomic features and 4–5× fewer tree nodes, with no measurable loss where the
 model is meant to be used, i.e. on the workload it was trained on:
 

@@ -20,12 +20,18 @@ on:
       - "scripts/pages/**"
       - "scripts/e2e_accuracy/**"
       - "tests/e2e_accuracy_source/**"
-      - "python/aisimulate/src/aisimulate/sdk/config_adapter/**"
+      - "python/aisim/src/aisim/sdk/config_adapter/**"
       - ".github/workflows/e2e-accuracy.yml"
       - ".github/workflows/e2e-accuracy-branch.yml"
       - ".github/e2e-accuracy-dataset.json"
       - "tests/test_pages_site.py"
       - "tests/test_e2e_accuracy_overview.py"
+      - "tests/test_agentx_accuracy.py"
+      - "tests/test_agentx_inputs.py"
+      - "tests/test_simulation_features.py"
+      - "tests/test_agentx_curves.py"
+      - "tests/test_benchmark_features.py"
+      - "python/aisim/src/aisim/replay/dashboard*"
       - "tests/test_e2e_accuracy_ui.mjs"
       - "tests/test_e2e_accuracy_nightly.py"
       - "tests/test_e2e_hf_measurements.py"
@@ -44,8 +50,8 @@ on:
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
       - "pages/feature-support-matrix/**"
-      - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
+      - "python/aisim/src/aisim_core/systems/support_matrix/**"
+      - "python/aisim/src/aisim_core/systems/fpe_support_matrix/**"
   push:
     branches: [main]
     paths:
@@ -57,7 +63,7 @@ on:
       - "scripts/e2e_accuracy/**"
       - "scripts/fpm_accuracy/**"
       - "tests/e2e_accuracy_source/**"
-      - "python/aisimulate/src/aisimulate/sdk/config_adapter/**"
+      - "python/aisim/src/aisim/sdk/config_adapter/**"
       - ".github/workflows/e2e-accuracy.yml"
       - ".github/workflows/e2e-accuracy-branch.yml"
       - ".github/e2e-accuracy-dataset.json"
@@ -75,8 +81,8 @@ on:
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
       - "pages/feature-support-matrix/**"
-      - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
-      - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
+      - "python/aisim/src/aisim_core/systems/support_matrix/**"
+      - "python/aisim/src/aisim_core/systems/fpe_support_matrix/**"
 
 permissions:
   # Build and validate repository content without Pages access.
@@ -98,7 +104,7 @@ jobs:
       github.event.workflow_run.conclusion == 'failure')) &&
       github.event.workflow_run.head_repository.full_name == github.repository)))
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
@@ -112,6 +118,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Install publication dependencies
+        run: python -m pip install --require-hashes -r scripts/pages/requirements.txt
       - name: Fetch release snapshot refs
         run: git fetch --no-tags --prune origin "+refs/heads/release/*:refs/remotes/origin/release/*"
       - name: Prepare qualified main and release FPE snapshots
@@ -124,7 +132,9 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/pages/prepare_e2e_accuracy_pages.py --output "${RUNNER_TEMP}/qualified-accuracy"
+        run: |
+          python scripts/pages/prepare_e2e_accuracy_pages.py --output "${RUNNER_TEMP}/qualified-accuracy"
+          python scripts/pages/agentx_pages.py --output "${RUNNER_TEMP}/qualified-accuracy/agentx"
       - name: Prepare qualified FPM accuracy snapshots
         if: github.event_name != 'pull_request'
         env:
@@ -141,8 +151,7 @@ jobs:
         run: python scripts/pages/build_pages_site.py --accuracy-refs --output-dir _site
       - name: Test public artifact and accuracy contracts
         run: |
-          python -m pip install --require-hashes -r scripts/pages/requirements.txt
-          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_e2e_accuracy_nightly.py tests/test_e2e_hf_measurements.py tests/fpm_accuracy tests/e2e_accuracy_source -q
+          python -m pytest -c /dev/null tests/test_pages_site.py tests/test_e2e_accuracy_overview.py tests/test_agentx_accuracy.py tests/test_agentx_inputs.py tests/test_simulation_features.py tests/test_agentx_curves.py tests/test_benchmark_features.py tests/test_e2e_accuracy_nightly.py tests/test_e2e_hf_measurements.py tests/fpm_accuracy tests/e2e_accuracy_source -q
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -155,6 +164,7 @@ jobs:
           python scripts/pages/check_fpm_accuracy_browser.py
           python scripts/pages/check_fpm_scenarios_browser.py
           python scripts/pages/check_e2e_accuracy_browser.py
+          python scripts/pages/check_agentx_browser.py
       - name: Upload GitHub Pages artifact
         if: >-
           github.event_name != 'pull_request' &&

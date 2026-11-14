@@ -9,8 +9,8 @@ Rendered by scripts/pages/feature_support_matrix.py from features.toml.
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="Serving techniques AISimulate simulates for each inference engine">
-<title>AISimulate — Feature Support Matrix</title>
+<meta name="description" content="Serving techniques AISim simulates for each inference engine">
+<title>AISim — Feature Support Matrix</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
@@ -26,13 +26,13 @@ tailwind.config = {
   <div class="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-3">
     <a href="../" class="flex items-center gap-2 no-underline text-slate-800 dark:text-slate-100">
       <img src="https://avatars.githubusercontent.com/u/201626793" alt="" width="28" height="28" class="rounded-full">
-      <span class="font-bold">AISimulate</span>
+      <span class="font-bold">AISim</span>
     </a>
     <span class="hidden sm:inline text-slate-300 dark:text-slate-600">/</span>
     <span class="hidden sm:inline text-sm text-slate-500 dark:text-slate-400 truncate">Feature Support Matrix</span>
     <label for="branch" class="ml-auto text-sm font-semibold text-slate-600 dark:text-slate-300">Branch:</label>
     <select id="branch" class="text-sm rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1">{{BRANCH_OPTIONS}}</select>
-    <a href="https://github.com/ai-dynamo/aisimulate" class="hidden sm:inline text-sm text-slate-500 dark:text-slate-400 no-underline hover:text-accent">GitHub</a>
+    <a href="https://github.com/ai-dynamo/aisim" class="hidden sm:inline text-sm text-slate-500 dark:text-slate-400 no-underline hover:text-accent">GitHub</a>
     <button id="theme-toggle" title="Toggle dark/light mode"
       class="border border-slate-200 dark:border-slate-700 rounded-md w-8 h-8 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800"></button>
   </div>
@@ -41,11 +41,11 @@ tailwind.config = {
 <main class="max-w-6xl mx-auto px-4 sm:px-6 py-8">
   <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight mb-2">Feature Support Matrix</h1>
   <p class="text-slate-600 dark:text-slate-300 max-w-3xl mb-2">
-    Serving techniques AISimulate simulates for each inference engine. <em>Supported</em> means the
+    Serving techniques AISim simulates for each inference engine. <em>Supported</em> means the
     technique is replayed within the limits on its linked page; <em>Limited</em> means common
     configurations are rejected or only an analytical estimate exists, as the row's note says.
     Techniques supported on their own do not automatically combine:
-    <a class="underline" href="https://github.com/ai-dynamo/aisimulate/blob/main/docs/replay/features.md">Replay feature support</a>
+    <a class="underline" href="https://github.com/ai-dynamo/aisim/blob/main/docs/replay/features.md">Replay feature support</a>
     lists the composition boundaries, and the AgentX section covers agentic traffic.
   </p>
 {{VIEWS}}
@@ -53,7 +53,7 @@ tailwind.config = {
   <section class="mb-10 grid gap-4 sm:grid-cols-3">
     <div class="rounded-lg border border-slate-200 dark:border-slate-700 p-4">
       <h3 class="font-semibold text-sm mb-1">Combining techniques</h3>
-      <p class="text-xs text-slate-500 dark:text-slate-400 m-0">Supported techniques are not automatically supported together. <a class="underline" href="https://github.com/ai-dynamo/aisimulate/blob/main/docs/replay/features.md">Replay feature support</a> lists each composition boundary.</p>
+      <p class="text-xs text-slate-500 dark:text-slate-400 m-0">Supported techniques are not automatically supported together. <a class="underline" href="https://github.com/ai-dynamo/aisim/blob/main/docs/replay/features.md">Replay feature support</a> lists each composition boundary.</p>
     </div>
     <a href="../fpe-support-matrix/" class="rounded-lg border border-slate-200 dark:border-slate-700 p-4 no-underline text-slate-800 dark:text-slate-200 hover:border-accent">
       <h3 class="font-semibold text-sm mb-1">Which models and GPUs? &rarr;</h3>
@@ -67,7 +67,7 @@ tailwind.config = {
 </main>
 
 <footer class="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-200 dark:border-slate-700">
-  <a href="https://github.com/ai-dynamo/aisimulate" class="text-slate-400 dark:text-slate-500 no-underline hover:underline">ai-dynamo/aisimulate</a>
+  <a href="https://github.com/ai-dynamo/aisim" class="text-slate-400 dark:text-slate-500 no-underline hover:underline">ai-dynamo/aisim</a>
 </footer>
 
 <script>
@@ -81,7 +81,10 @@ tailwind.config = {
   apply(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   btn.addEventListener('click', function() {
     const next = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
-    try { localStorage.setItem('sm-theme', next); } catch (e) {}
+    try {
+      localStorage.setItem('sm-theme', next);
+      localStorage.setItem('aisim-theme-mode', next);
+    } catch (e) {}
     apply(next);
   });
 

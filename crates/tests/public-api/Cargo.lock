@@ -23,13 +23,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-core"
-version = "0.13.0"
+name = "aisim-core"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "bincode",
  "blake3",
- "ddsketchy",
  "derive_builder",
  "fixedbitset",
  "flate2",
@@ -57,15 +56,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-core-public-api"
+name = "aisim-core-public-api"
 version = "0.0.0"
 dependencies = [
- "aisimulate-core",
+ "aisim-core",
  "anyhow",
  "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]
@@ -294,12 +294,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "ddsketchy"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "724389b6953e2cef5558663e625e64220f473443132a7c64477742a0caeff621"
 
 [[package]]
 name = "derive_builder"

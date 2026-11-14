@@ -27,12 +27,14 @@ self-benchmark. Its only input is the telemetry the engine already produces.
 Frozen calibration, online tree adaptation and their causal selector are
 standalone telemetry APIs:
 pass complete `ForwardPassMetrics` for one iteration to the model returned by
-`best_available`. Engine replay, engine CLI prediction and Sweeper's current
-timing interfaces supply phase aggregates and cannot reconstruct the full
-learned feature vector. Python prediction and Sweeper reject learned mode during
-configuration validation; native replay rejects it before loading a source.
-This release does not populate missing
-rank or request features from mean phase values.
+`best_available`. Engine replay, engine CLI prediction and recommendation, and
+Sweeper timing price every pass of a learned role with one such query over the
+worker's attention-DP ranks; when the artifact reads `req_*`, `slot*` or
+length-variance features, replay supplies each rank's per-request
+`extend_lengths` / `past_kv_lengths` and variances from its scheduled requests
+(see [engine replay timing](../configuration.md#engine-replay-timing)). Replay
+rejects a learned role without a forest store for the work it schedules, a rank
+hosting the vision encoder, and speculative decoding.
 
 The original PR 280 design rationale, model details, evaluation method and result
 tables are in [`design.md`](design.md). Online update equations, causal selection
@@ -94,17 +96,17 @@ consumer sorts; only the alignment of the two lists matters):
 "past_kv_lengths": [32768, 7100, 950]  // KV tokens already present before the step
 ```
 
-Neither producer emits them natively yet. `aisimulate_core.fpm_hooks` adds
+Neither producer emits them natively yet. `aisim_core.fpm_hooks` adds
 them at runtime, in memory, when the producer modules are imported inside the
 engine process (including SGLang's spawned scheduler subprocesses); no engine
 source is modified and any stock Dynamo image produces the fields:
 
 ```bash
 # in the engine container (both backends), before launching the worker
-export PYTHONPATH=$(python -c 'import aisimulate_core.fpm_hooks as h; print(h.hook_path())'):$PYTHONPATH
+export PYTHONPATH=$(python -c 'import aisim_core.fpm_hooks as h; print(h.hook_path())'):$PYTHONPATH
 python -m dynamo.sglang ...        # or: python -m dynamo.vllm ...
 # or, equivalently
-python -m aisimulate_core.fpm_hooks dynamo.sglang -- ...
+python -m aisim_core.fpm_hooks dynamo.sglang -- ...
 ```
 
 What the hooks add (FPM `version` stays 1, the two fields are additive and
@@ -136,7 +138,7 @@ before training.
 Where each step runs: collection happens inside the engine container (the
 Dynamo `sglang-runtime` / `vllm-runtime` image, nothing extra installed) and
 only writes FPM `jsonl.gz` files. Training reads those files on any CPU
-machine with the `aisimulate[learned]` extra installed (scikit-learn is used
+machine with the `aisim[learned]` extra installed (scikit-learn is used
 only here; a login node or laptop is fine: 2.7M decode steps fit in ~25 s on
 16 threads, loading the gzip stream takes longer than the fit). The output is
 a plain JSON artifact that the standalone Rust FPM model loads with no
@@ -145,8 +147,8 @@ Python ML dependency.
 Training environment, pick one:
 
 - **Plain Python on the host** (login node, workstation, laptop):
-  `pip install "aisimulate[learned]"` or, from a checkout,
-  `uv sync --project python/aisimulate --extra learned`. This is what the
+  `pip install "aisim[learned]"` or, from a checkout,
+  `uv sync --project python/aisim --extra learned`. This is what the
   numbers in §4 were produced with (a venv on a cluster login node).
 - **A container, when the site only allows containerised jobs** (Slurm with
   pyxis/enroot, Kubernetes): the Dynamo runtime images do **not** ship
@@ -156,9 +158,9 @@ Training environment, pick one:
 
   ```bash
   srun -N1 --container-image=nvcr.io#nvidia/pytorch:25.08-py3 \
-       --container-mounts=/path/to/traces:/traces,/path/to/aisimulate:/aisimulate \
-       bash -c 'pip install -q /aisimulate/python/aisimulate[learned] && \
-                python -m aisimulate_core.sdk.fpm_learned train --fpm /traces/decode/*.jsonl.gz \
+       --container-mounts=/path/to/traces:/traces,/path/to/aisim:/aisim \
+       bash -c 'pip install -q /aisim/python/aisim[learned] && \
+                python -m aisim_core.sdk.fpm_learned train --fpm /traces/decode/*.jsonl.gz \
                   --worker-type decode --out /traces/decode_learned.json'
   ```
 
@@ -168,9 +170,9 @@ Training environment, pick one:
   be one Slurm job. The artifact is a small JSON file either way.
 
 ```bash
-uv sync --project python/aisimulate --extra learned   # installs scikit-learn
-# or: pip install "aisimulate[learned]"
-python -m aisimulate_core.sdk.fpm_learned train \
+uv sync --project python/aisim --extra learned   # installs scikit-learn
+# or: pip install "aisim[learned]"
+python -m aisim_core.sdk.fpm_learned train \
   --fpm decode_worker/*.jsonl.gz \
   --worker-type decode \
   --holdout-frac 0.2 \
@@ -272,7 +274,7 @@ the deployment identity, so the same identity can select the exported seed
 after training. Then train and export together:
 
 ```bash
-python -m aisimulate_core.sdk.fpm_learned train \
+python -m aisim_core.sdk.fpm_learned train \
   --fpm decode_worker/*.jsonl.gz \
   --worker-type decode \
   --features fpm5 \
@@ -315,7 +317,7 @@ are not independent online overrides:
 ## 3. Use it
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-32B",
@@ -459,7 +461,8 @@ fallback. These summarize retained state rather than query-weighted behavior.
 
 The returned canonical model accepts complete per-iteration FPM queries and
 feedback. Callers that only hold phase aggregates cannot use this interface
-without supplying the required iteration and request features.
+without supplying the required iteration and request features; engine replay
+supplies them from each pass's scheduled requests.
 
 ### Online tree adaptation
 
@@ -760,7 +763,7 @@ merge, so no prefill cross-mode number is quoted.
 
 ### Workload coverage: AgentX, ShareGPT and LongBench on DeepSeek-V4.1-Flash
 
-Three workloads on the same deployment (DeepSeek-V4.1-Flash, Dynamo SGLang runtime, one 4×GB300 node per role, TP4/EP4, `--disable-overlap-schedule`, per-request lists via `aisimulate_core.fpm_hooks`):
+Three workloads on the same deployment (DeepSeek-V4.1-Flash, Dynamo SGLang runtime, one 4×GB300 node per role, TP4/EP4, `--disable-overlap-schedule`, per-request lists via `aisim_core.fpm_hooks`):
 
 - **AgentX**: aiperf `inferencex-agentx-mvp`, SemiAnalysis CC traces (agent sessions, 262k context).
 - **ShareGPT**: aiperf `--public-dataset sharegpt` (chatbot conversations).
@@ -898,10 +901,10 @@ pooled ten-run training time are in `design.md` §8. Artifacts are 100–450 KB 
 ## Limitations
 
 - Learned mode uses explicit `estimation_mode: fpm_learned` through
-  `best_available(config)`. Its supported callers provide complete iteration
-  telemetry. Engine replay, engine CLI and Sweeper phase timing interfaces
-  reject learned execution because their aggregate inputs omit required
-  features. Speculative decoding is also unsupported by learned mode.
+  `best_available(config)`. Its callers provide complete iteration telemetry;
+  engine replay, engine CLI and Sweeper build it per pass from the scheduled
+  requests and never tune the model. Speculative decoding is unsupported by
+  learned mode.
 
 - Stock Dynamo FPM v1 carries aggregates only (counts, sums, variances). The
   per-request `extend_lengths` / `past_kv_lengths` lists are an additive

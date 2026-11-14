@@ -1,0 +1,1204 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+General-purpose AllReduce Performance Collector
+
+Supported Backends:
+    TensorRT-LLM
+    vLLM
+    SGLang
+
+This script uses CUDA Graph based benchmarking for AllReduce operations,
+supporting TensorRT-LLM, vLLM, and SGLang backends.
+
+Usage:
+    # With MPI for TensorRT-LLM
+    mpirun -n 4 python collector/network/collect_all_reduce.py --backend trtllm
+
+    # With vLLM (requires appropriate environment setup)
+    torchrun --nproc_per_node=8 collector/network/collect_all_reduce.py --backend vllm
+
+    # With SGLang (requires appropriate environment setup)
+    torchrun --nproc_per_node=8 collector/network/collect_all_reduce.py --backend sglang
+
+    # With SLURM
+    python collector/network/collect_all_reduce.py --use-slurm
+
+    # Custom range and output file
+    python collector/network/collect_all_reduce.py --range "128,1000000,2" --perf-filename "my_perf.txt"
+"""
+
+import gc
+import inspect
+import os
+import sys
+from argparse import ArgumentParser
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Optional
+
+import torch
+import torch.distributed as dist
+
+try:
+    # Serving aliases torch.cuda.Stream -> torch.xpu.Stream via this wrapper; the
+    # collector needs the same so vLLM's graph_capture context works on XPU.
+    from vllm.v1.worker.xpu_model_runner import _torch_cuda_wrapper
+except Exception:
+    _torch_cuda_wrapper = None
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from helper import (
+    PowerMonitor,
+    get_device_module,
+    get_device_str,
+    get_vllm_version,
+    log_perf,
+    xpu_graph_measure_enabled,
+)
+
+
+def _init_process_group_with_device_id(backend: str, init_method: str, world_size: int, rank: int, local_rank: int):
+    """Pre-initialize torch.distributed with explicit device_id.
+
+    Without device_id, PyTorch guesses the rank-to-GPU mapping which can hang
+    on multi-GPU nodes (e.g. B200 SXM 8-GPU) when nproc < total GPUs.
+    Calling this before vLLM/SGLang's own init_distributed_environment() is
+    safe because those functions check is_initialized() and skip the call.
+
+    Uses inspect to stay compatible with older PyTorch that lacks device_id.
+    """
+    sig = inspect.signature(dist.init_process_group)
+    params = {
+        "backend": backend,
+        "init_method": init_method,
+        "world_size": world_size,
+        "rank": rank,
+    }
+    if "device_id" in sig.parameters:
+        params["device_id"] = torch.device(f"cuda:{local_rank}")
+    dist.init_process_group(**params)
+
+
+def get_input_shape_and_comm_size(size, token_dim=4096):
+    """Convert size to appropriate input shape for AllReduce operations"""
+    if size <= token_dim:
+        return [1, size]
+    else:
+        num_token = size // token_dim
+        return [num_token, token_dim]
+
+
+def _resolve_rank(env):
+    """Resolve a Slurm task rank without silently aliasing tasks to rank 0."""
+    return int(env.get("RANK") or env["SLURM_PROCID"])
+
+
+def import_trtllm():
+    """Import TensorRT-LLM modules"""
+    try:
+        import tensorrt_llm as tllm
+
+        try:
+            from cuda.bindings import runtime as cudart
+        except:
+            from cuda import cudart
+        from tensorrt_llm import Mapping
+        from tensorrt_llm._torch.distributed import AllReduce, AllReduceFusionOp
+        from tensorrt_llm._torch.distributed import AllReduceParams as TorchAllReduceParams
+        from tensorrt_llm._torch.distributed import ops as distributed_ops
+        from tensorrt_llm._utils import OMPI_COMM_TYPE_HOST, mpi_comm
+        from tensorrt_llm.functional import AllReduceStrategy
+
+        return {
+            "tllm": tllm,
+            "cudart": cudart,
+            "Mapping": Mapping,
+            "AllReduce": AllReduce,
+            "AllReduceFusionOp": AllReduceFusionOp,
+            "TorchAllReduceParams": TorchAllReduceParams,
+            "distributed_ops": distributed_ops,
+            "OMPI_COMM_TYPE_HOST": OMPI_COMM_TYPE_HOST,
+            "mpi_comm": mpi_comm,
+            "AllReduceStrategy": AllReduceStrategy,
+        }
+    except ImportError as e:
+        print(f"Failed to import TensorRT-LLM modules: {e}")
+        print("Please ensure TensorRT-LLM is installed and PYTHONPATH is set correctly")
+        sys.exit(1)
+
+
+def _trtllm_mnnvl_kernel_source(allreduce, input_tensor, world_size, distributed_ops):
+    """Return the observable TRT-LLM implementation family that will run."""
+    # TensorRT-LLM v1.3.0rc20
+    # tensorrt_llm/_torch/distributed/ops.py:769-786 constructs this object only
+    # when MNNVL is available; forward():871-876 returns its output before
+    # regular AUTO dispatch. The regular C++ AUTO selector does not expose its
+    # selected sub-implementation, so retain the established generic TRTLLM
+    # family label when MNNVL is inactive.
+    if getattr(allreduce, "mnnvl_allreduce", None) is None:
+        return "TRTLLM"
+
+    # TensorRT-LLM v1.3.0rc20
+    # tensorrt_llm/_torch/distributed/ops.py:32,575-590 and
+    # cpp/tensorrt_llm/thop/allreduceOp.cpp:1932-1942 use this exact
+    # aggregate-byte threshold to dispatch MNNVL one-shot or two-shot.
+    threshold = getattr(distributed_ops, "_MNNVL_ONE_SHOT_THRESHOLD_BYTES", None)
+    if not isinstance(threshold, int) or threshold <= 0:
+        raise RuntimeError("TensorRT-LLM does not expose the pinned MNNVL variant threshold")
+    aggregate_bytes = input_tensor.numel() * input_tensor.element_size() * world_size
+    variant = "oneshot" if aggregate_bytes <= threshold else "twoshot"
+    return f"TRTLLM_MNNVL_{variant}"
+
+
+def benchmark_trtllm_allreduce(
+    dtype: str,
+    test_range: str,
+    world_size: int,
+    rank: int,
+    use_slurm: bool,
+    perf_filename: str,
+    measure_power: bool = False,
+    power_min_duration: float = 1.0,
+):
+    """Benchmark TensorRT-LLM AllReduce implementation"""
+    # Disable the autotuner so that the strategy lookup table (selectImplementation)
+    # is used directly.  Without this, tunable_allreduce may override the strategy
+    # to NCCL symmetric, which is significantly slower than the Lamport custom
+    # allreduce kernels used during actual inference.
+    os.environ["TLLM_DISABLE_ALLREDUCE_AUTOTUNE"] = "1"
+
+    trtllm_mods = import_trtllm()
+    tllm = trtllm_mods["tllm"]
+
+    # Get MPI communicator for barriers
+    mpi_comm = trtllm_mods["mpi_comm"]()
+
+    if use_slurm:
+        gpus_per_node = int(os.environ["SLURM_NTASKS_PER_NODE"])
+        local_rank = int(os.environ["SLURM_LOCALID"])
+    else:
+        local_comm = trtllm_mods["mpi_comm"]().Split_type(split_type=trtllm_mods["OMPI_COMM_TYPE_HOST"])
+        local_rank = local_comm.Get_rank()
+        gpus_per_node = local_comm.Get_size()
+
+    torch.cuda.set_device(local_rank)
+    trtllm_mods["cudart"].cudaSetDevice(local_rank)
+    mapping = trtllm_mods["Mapping"](world_size=world_size, rank=rank, gpus_per_node=gpus_per_node, tp_size=world_size)
+
+    # Parse test range
+    min_size, max_size, ratio = [int(i) for i in test_range.split(",")]
+    torch_dtype = tllm._utils.str_dtype_to_torch(dtype)
+
+    # AllReduce parameters
+    all_reduce_params = trtllm_mods["TorchAllReduceParams"](
+        strategy=trtllm_mods["AllReduceStrategy"].AUTO,
+        fusion_op=trtllm_mods["AllReduceFusionOp"].NONE,
+        residual=None,
+        norm_weight=None,
+        scale=None,
+        bias=None,
+        eps=1e-6,
+    )
+
+    # Benchmark parameters
+    repeat_n = 5
+    num_warmups = 3
+    num_runs = 20
+
+    size = min_size
+    while size < max_size:
+        input_shape = get_input_shape_and_comm_size(size)
+        input_tensor = torch.ones(input_shape, dtype=torch_dtype, device="cuda")
+
+        # dtype enables MNNVL for multi-node TP:
+        # _torch/distributed/ops.py builds
+        # `MNNVLAllReduce(mapping, dtype) if dtype else None`.
+        first_allreduce = trtllm_mods["AllReduce"](mapping=mapping, dtype=torch_dtype).cuda()
+        kernel_source = _trtllm_mnnvl_kernel_source(
+            first_allreduce,
+            input_tensor,
+            world_size,
+            trtllm_mods["distributed_ops"],
+        )
+        first_allreduce(input_tensor, all_reduce_params=all_reduce_params)  # dry run to init
+        op_list = [first_allreduce]
+        for _ in range(1, repeat_n):
+            allreduce = trtllm_mods["AllReduce"](mapping=mapping, dtype=torch_dtype).cuda()
+            allreduce(input_tensor, all_reduce_params=all_reduce_params)  # dry run to init
+            op_list.append(allreduce)
+
+        # Capture CUDA Graph
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            for op in op_list:
+                op(input_tensor, all_reduce_params=all_reduce_params)
+
+        # Adaptive num_runs calculation for power measurement
+        actual_num_runs = num_runs
+        if measure_power:
+            # Estimate single iteration time (only on rank 0)
+            if rank == 0:
+                start_warmup = torch.cuda.Event(enable_timing=True)
+                end_warmup = torch.cuda.Event(enable_timing=True)
+
+                torch.cuda.synchronize()
+                start_warmup.record()
+                for i in range(num_warmups):
+                    g.replay()
+                end_warmup.record()
+                torch.cuda.synchronize()
+
+                single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
+                actual_num_runs = max(num_runs, int(power_min_duration / (single_iter_time * repeat_n)) + 1)
+                actual_num_runs = min(actual_num_runs, 1000)  # Cap at 1000 to avoid excessive runtime
+            else:
+                # Other ranks do warmup but don't calculate
+                torch.cuda.synchronize()
+                for i in range(num_warmups):
+                    g.replay()
+                torch.cuda.synchronize()
+
+            # Broadcast actual_num_runs from rank 0 to all ranks
+            actual_num_runs = mpi_comm.bcast(actual_num_runs, root=0)
+        else:
+            # Normal warmup
+            torch.cuda.synchronize()
+            for i in range(num_warmups):
+                g.replay()
+            torch.cuda.synchronize()
+
+        # Initialize power monitoring
+        power_monitor = None
+        power_stats = None
+        if measure_power:
+            power_monitor = PowerMonitor(local_rank)
+            if not power_monitor.start_sampling():
+                power_monitor = None  # Failed to start
+
+        # Timing
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        start_event.record()
+        for i in range(actual_num_runs):
+            g.replay()
+        end_event.record()
+        torch.cuda.synchronize()
+
+        # Stop power monitoring
+        if power_monitor:
+            power_stats = power_monitor.stop_sampling()
+
+        latency = start_event.elapsed_time(end_event) / actual_num_runs / repeat_n
+
+        if rank == 0 and local_rank == 0:
+            print(f"[TensorRT-LLM] Size: {size}, Latency: {latency:.4f} ms")
+            if power_stats:
+                print(f"  Power: {power_stats['power']:.2f}W (limit: {power_stats['power_limit']:.2f}W)")
+
+            # Get TensorRT-LLM version
+            trtllm_version = tllm.__version__ if hasattr(tllm, "__version__") else "unknown"
+
+            log_perf(
+                item_list=[
+                    {
+                        "allreduce_dtype": dtype,
+                        "num_gpus": world_size,
+                        "message_size": size,
+                        "latency": latency,
+                        "implementation": "trtllm",
+                    }
+                ],
+                framework="TRTLLM",
+                version=trtllm_version,
+                device_name=get_device_module().get_device_name(),
+                op_name="all_reduce",
+                kernel_source=kernel_source,
+                perf_filename=perf_filename,
+                power_stats=power_stats,
+            )
+
+        # Synchronize all ranks after each iteration to prevent hanging
+        torch.cuda.synchronize()
+        mpi_comm.Barrier()  # MPI barrier to ensure all ranks complete this iteration
+
+        size *= ratio
+
+    # Synchronize all ranks before exit to prevent hanging
+    torch.cuda.synchronize()
+    mpi_comm.Barrier()  # Final MPI barrier before exit
+
+
+def setup_vllm_distributed(world_size, rank, use_slurm):
+    """Setup vLLM distributed environment"""
+    try:
+        from vllm.distributed.communication_op import tensor_model_parallel_all_reduce
+        from vllm.distributed.parallel_state import (
+            destroy_model_parallel,
+            graph_capture,
+            init_distributed_environment,
+            initialize_model_parallel,
+        )
+
+        try:
+            from vllm.utils import get_open_port
+        except ImportError:
+            # vllm 0.14.0
+            from vllm.utils.network_utils import get_open_port
+
+        # vLLM >= 0.14.0 requires set_current_vllm_config() context for
+        # initialize_model_parallel() (https://github.com/vllm-project/vllm/pull/31747).
+        try:
+            from vllm.config import VllmConfig as _vllm_config_cls  # noqa: N813
+            from vllm.config import set_current_vllm_config as _set_vllm_config
+        except ImportError:
+            _vllm_config_cls = None  # type: ignore[assignment, misc]
+            _set_vllm_config = None  # type: ignore[assignment]
+
+        vllm_mods = {
+            "tensor_model_parallel_all_reduce": tensor_model_parallel_all_reduce,
+            "init_distributed_environment": init_distributed_environment,
+            "initialize_model_parallel": initialize_model_parallel,
+            "graph_capture": graph_capture,
+            "destroy_model_parallel": destroy_model_parallel,
+            "get_open_port": get_open_port,
+        }
+    except ImportError as e:
+        print(f"Failed to import vLLM modules: {e}")
+        print("Please ensure vLLM is installed and PYTHONPATH is set correctly")
+        sys.exit(1)
+
+    if use_slurm:
+        # Use SLURM environment variables
+        local_rank = int(os.environ.get("SLURM_LOCALID", "0"))
+    else:
+        # For non-SLURM, assume single node or use environment variables
+        local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+
+    # Set device
+    get_device_module().set_device(local_rank)
+
+    # Initialize distributed environment
+    if not torch.distributed.is_initialized():
+        # Get master address and port
+        master_addr = os.environ.get("MASTER_ADDR", "localhost")
+        master_port = os.environ.get("MASTER_PORT", "29500")
+
+        # Construct the init method string
+        distributed_init_method = f"tcp://{master_addr}:{master_port}"
+
+        print("Setting up distributed environment:")
+        print(f"  Init method: {distributed_init_method}")
+        print(f"  World size: {world_size}")
+        print(f"  Rank: {rank}")
+        print(f"  Local rank: {local_rank}")
+
+        try:
+            if torch.xpu.is_available():
+                dist.init_process_group(
+                    backend="xccl",
+                    init_method="env://",
+                )
+            else:
+                # Pre-initialize with explicit device_id to prevent hangs
+                # on multi-GPU nodes where PyTorch guesses wrong rank-to-GPU
+                # mapping. vLLM's init will skip init_process_group since
+                # is_initialized() is already True.
+                _init_process_group_with_device_id(
+                    backend="nccl",
+                    init_method=distributed_init_method,
+                    world_size=world_size,
+                    rank=rank,
+                    local_rank=local_rank,
+                )
+            vllm_mods["init_distributed_environment"](
+                world_size=world_size,
+                rank=rank,
+                distributed_init_method=distributed_init_method,
+                local_rank=local_rank,
+                backend="xccl" if torch.xpu.is_available() else "nccl",
+            )
+        except Exception as e:
+            print(f"\nERROR: Failed to initialize distributed environment: {e}")
+            raise
+
+    # Initialize model parallel groups
+    # vLLM >= 0.14.0 requires set_current_vllm_config() context.
+    init_mp = vllm_mods["initialize_model_parallel"]
+    if _set_vllm_config is not None:
+        with _set_vllm_config(_vllm_config_cls()):
+            init_mp(tensor_model_parallel_size=world_size, pipeline_model_parallel_size=1)
+    else:
+        init_mp(tensor_model_parallel_size=world_size, pipeline_model_parallel_size=1)
+
+    return vllm_mods, local_rank
+
+
+def import_sglang():
+    """Import SGLang modules"""
+    try:
+        from sglang.srt.distributed.communication_op import tensor_model_parallel_all_reduce
+        from sglang.srt.distributed.parallel_state import (
+            destroy_model_parallel,
+            graph_capture,
+            init_distributed_environment,
+            initialize_model_parallel,
+            set_custom_all_reduce,
+            set_mscclpp_all_reduce,
+            set_torch_symm_mem_all_reduce,
+        )
+
+        return {
+            "tensor_model_parallel_all_reduce": tensor_model_parallel_all_reduce,
+            "init_distributed_environment": init_distributed_environment,
+            "initialize_model_parallel": initialize_model_parallel,
+            "graph_capture": graph_capture,
+            "destroy_model_parallel": destroy_model_parallel,
+            "set_custom_all_reduce": set_custom_all_reduce,
+            "set_mscclpp_all_reduce": set_mscclpp_all_reduce,
+            "set_torch_symm_mem_all_reduce": set_torch_symm_mem_all_reduce,
+        }
+    except ImportError as e:
+        print(f"Failed to import SGLang modules: {e}")
+        print("Please ensure SGLang is installed and PYTHONPATH is set correctly")
+        sys.exit(1)
+
+
+def setup_sglang_distributed(world_size, rank, use_slurm):
+    """Setup SGLang distributed environment"""
+    sglang_mods = import_sglang()
+
+    if use_slurm:
+        # Use SLURM environment variables
+        local_rank = int(os.environ.get("SLURM_LOCALID", "0"))
+    else:
+        # For non-SLURM, assume single node or use environment variables
+        local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+
+    # Set CUDA device
+    torch.cuda.set_device(local_rank)
+
+    # Initialize distributed environment
+    if not torch.distributed.is_initialized():
+        # Get master address and port
+        master_addr = os.environ.get("MASTER_ADDR", "localhost")
+        master_port = os.environ.get("MASTER_PORT", "29500")
+
+        # Construct the init method string
+        distributed_init_method = f"tcp://{master_addr}:{master_port}"
+
+        print("Setting up SGLang distributed environment:")
+        print(f"  Init method: {distributed_init_method}")
+        print(f"  World size: {world_size}")
+        print(f"  Rank: {rank}")
+        print(f"  Local rank: {local_rank}")
+
+        try:
+            # Pre-initialize with explicit device_id to prevent hangs
+            # on multi-GPU nodes (same fix as vLLM path above).
+            _init_process_group_with_device_id(
+                backend="nccl",
+                init_method=distributed_init_method,
+                world_size=world_size,
+                rank=rank,
+                local_rank=local_rank,
+            )
+            sglang_mods["init_distributed_environment"](
+                world_size=world_size,
+                rank=rank,
+                distributed_init_method=distributed_init_method,
+                local_rank=local_rank,
+                backend="nccl",
+            )
+        except Exception as e:
+            print(f"\nERROR: Failed to initialize distributed environment: {e}")
+            raise
+
+    # Initialize model parallel groups
+    # SGLang requires world_size == tensor_model_parallel_size * pipeline_model_parallel_size
+    sglang_mods["initialize_model_parallel"](
+        tensor_model_parallel_size=world_size,
+        pipeline_model_parallel_size=1,
+    )
+
+    # Enable CustomAllReduce and disable other allreduce implementations
+    sglang_mods["set_custom_all_reduce"](True)
+    sglang_mods["set_mscclpp_all_reduce"](False)
+    sglang_mods["set_torch_symm_mem_all_reduce"](False)
+
+    return sglang_mods, local_rank
+
+
+def _vllm_graph_pool():
+    """Serving's CUDA graph pool, registered with vLLM's NCCL allocator when present."""
+    try:
+        from vllm.distributed.device_communicators.pynccl_allocator import set_graph_pool_id
+        from vllm.platforms import current_platform
+    except ImportError:
+        return None
+    pool = current_platform.graph_pool_handle()
+    set_graph_pool_id(pool)
+    return pool
+
+
+def benchmark_vllm_allreduce(
+    dtype: str,
+    test_range: str,
+    world_size: int,
+    rank: int,
+    use_slurm: bool,
+    perf_filename: str,
+    measure_power: bool = False,
+    power_min_duration: float = 1.0,
+):
+    """Benchmark vLLM custom AllReduce backend"""
+    vllm_mods, local_rank = setup_vllm_distributed(world_size, rank, use_slurm)
+
+    # Parse test range
+    min_size, max_size, ratio = [int(i) for i in test_range.split(",")]
+
+    # Map dtype string to torch dtype
+    dtype_map = {"float32": torch.float32, "bfloat16": torch.bfloat16}
+    torch_dtype = dtype_map.get(dtype, torch.bfloat16)
+
+    # Benchmark parameters
+    repeat_n = 5
+    num_warmups = 3
+    num_runs = 20
+
+    # Warmup communication
+    warmup_tensor = torch.ones(1, dtype=torch_dtype, device=get_device_str())
+    _ = vllm_mods["tensor_model_parallel_all_reduce"](warmup_tensor)
+    get_device_module().synchronize()
+
+    vllm_version = get_vllm_version()
+    dev_mod = get_device_module()
+    is_cuda = torch.cuda.is_available()
+    graph_cls = torch.cuda.CUDAGraph if is_cuda else torch.xpu.XPUGraph
+    graph_ctx = torch.cuda.graph if is_cuda else torch.xpu.graph
+
+    size = min_size
+    while size < max_size:
+        input_shape = get_input_shape_and_comm_size(size)
+
+        # Test both graph capture and eager mode
+        if torch.xpu.is_available():
+            flag_lst = [True, False] if xpu_graph_measure_enabled() else [False]
+        else:
+            flag_lst = [True, False]
+        for use_graph in flag_lst:
+            mode_str = "graph" if use_graph else "eager"
+
+            if use_graph:
+                # CUDA-only serving parity; XPU warms inside the capture below.
+                graph_pool = None
+                if is_cuda:
+                    # Serving warms every captured shape eagerly before CUDA graph
+                    # capture. vLLM creates the FlashInfer all-reduce workspace
+                    # lazily on the first eligible 2-D call
+                    # (flashinfer_all_reduce.py:414-463 via cuda_communicator.py:
+                    # 335-369; byte-identical to :403-452 / :327-361);
+                    # doing that inside capture fails with
+                    # CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED. One eager call per
+                    # shape reproduces serving's order; it changes when state is
+                    # initialized, not which all-reduce implementation runs.
+                    # 0.31.0 memoizes a failed creation
+                    # (flashinfer_all_reduce.py:186-187,229): the eager
+                    # call then disables FlashInfer AR for the process exactly as
+                    # serving's first call would, and dispatch falls through to
+                    # the next backend in cuda_communicator.py:335-400.
+                    warm = torch.ones(input_shape, dtype=torch_dtype, device="cuda")
+                    _ = vllm_mods["tensor_model_parallel_all_reduce"](warm)
+                    torch.cuda.synchronize()
+                    del warm
+                    # Serving captures into the platform graph pool and publishes
+                    # it to the NCCL symmetric-memory allocator first
+                    # (compilation/cuda_graph.py:305-318); the symm-mem
+                    # all-reduce asserts it under capture
+                    # (pynccl_allocator.py:169-174).
+                    # Dispatch order and size thresholds:
+                    # CudaCommunicator.all_reduce (cuda_communicator.py:335-400),
+                    # FlashInferAllReduce.should_use_fi_ar
+                    # (flashinfer_all_reduce.py:432-483), CustomAllreduce
+                    # .should_custom_ar (custom_all_reduce.py:493-508), symm_mem.py
+                    # and all_reduce_utils.py size tables are identical to v0.30.0.
+                    graph_pool = _vllm_graph_pool()
+                # Graph capture mode
+                cuda_shim = (
+                    _torch_cuda_wrapper()
+                    if (torch.xpu.is_available() and _torch_cuda_wrapper is not None)
+                    else nullcontext()
+                )
+                with cuda_shim, vllm_mods["graph_capture"](device=dev_mod.current_device()) as graph_capture_context:
+                    # Create input tensors
+                    input_tensors = []
+                    for _ in range(repeat_n):
+                        inp = torch.ones(input_shape, dtype=torch_dtype, device=get_device_str())
+                        input_tensors.append(inp)
+
+                    # XPU: warm up at this size so the collective's one-time init runs before capture.
+                    if torch.xpu.is_available():
+                        for _ in range(num_warmups):
+                            for inp in input_tensors:
+                                vllm_mods["tensor_model_parallel_all_reduce"](inp)
+                        dev_mod.synchronize()
+                    graph = graph_cls()
+
+                    capture = (
+                        torch.cuda.graph(graph, pool=graph_pool, stream=graph_capture_context.stream)
+                        if is_cuda
+                        else graph_ctx(graph, stream=graph_capture_context.stream)
+                    )
+                    with capture:
+                        outputs = []
+                        for inp in input_tensors:
+                            out = vllm_mods["tensor_model_parallel_all_reduce"](inp)
+                            outputs.append(out)
+
+                # Adaptive num_runs calculation for power measurement
+                actual_num_runs = num_runs
+                if measure_power:
+                    # Estimate single iteration time (only on rank 0)
+                    if rank == 0:
+                        start_warmup = dev_mod.Event(enable_timing=True)
+                        end_warmup = dev_mod.Event(enable_timing=True)
+
+                        dev_mod.synchronize()
+                        start_warmup.record()
+                        for i in range(num_warmups):
+                            graph.replay()
+                        end_warmup.record()
+                        dev_mod.synchronize()
+
+                        single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
+                        actual_num_runs = max(num_runs, int(power_min_duration / (single_iter_time * repeat_n)) + 1)
+                        actual_num_runs = min(actual_num_runs, 1000)
+                    else:
+                        # Other ranks do warmup but don't calculate
+                        dev_mod.synchronize()
+                        for i in range(num_warmups):
+                            graph.replay()
+                        dev_mod.synchronize()
+
+                    # Broadcast actual_num_runs from rank 0 to all ranks
+                    actual_num_runs_tensor = torch.tensor([actual_num_runs], device=get_device_str())
+                    torch.distributed.broadcast(actual_num_runs_tensor, src=0)
+                    actual_num_runs = actual_num_runs_tensor.item()
+                else:
+                    # Normal warmup
+                    dev_mod.synchronize()
+                    for i in range(num_warmups):
+                        graph.replay()
+                    dev_mod.synchronize()
+
+                # Initialize power monitoring
+                power_monitor = None
+                power_stats = None
+                if measure_power:
+                    power_monitor = PowerMonitor(local_rank)
+                    if not power_monitor.start_sampling():
+                        power_monitor = None
+
+                # Timing
+                start_event = dev_mod.Event(enable_timing=True)
+                end_event = dev_mod.Event(enable_timing=True)
+
+                start_event.record()
+                for i in range(actual_num_runs):
+                    graph.replay()
+                end_event.record()
+                dev_mod.synchronize()
+
+                # Stop power monitoring
+                if power_monitor:
+                    power_stats = power_monitor.stop_sampling()
+
+                # XPU: free the captured graph + pool before the next size.
+                if torch.xpu.is_available():
+                    # inp/out are loop vars still holding the last tensors; drop them too.
+                    del graph, input_tensors, outputs, inp, out
+                    gc.collect()
+                    dev_mod.synchronize()
+                    dev_mod.empty_cache()
+
+            else:
+                # Eager mode
+                input_tensor = torch.ones(input_shape, dtype=torch_dtype, device=get_device_str())
+
+                # Adaptive num_runs calculation for power measurement
+                actual_num_runs = num_runs
+                if measure_power:
+                    # Estimate single iteration time (only on rank 0)
+                    if rank == 0:
+                        start_warmup = dev_mod.Event(enable_timing=True)
+                        end_warmup = dev_mod.Event(enable_timing=True)
+
+                        dev_mod.synchronize()
+                        start_warmup.record()
+                        for _ in range(num_warmups):
+                            for _ in range(repeat_n):
+                                _ = vllm_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                        end_warmup.record()
+                        dev_mod.synchronize()
+
+                        single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
+                        actual_num_runs = max(num_runs, int(power_min_duration / (single_iter_time * repeat_n)) + 1)
+                        actual_num_runs = min(actual_num_runs, 1000)
+                    else:
+                        # Other ranks do warmup but don't calculate
+                        dev_mod.synchronize()
+                        for _ in range(num_warmups):
+                            for _ in range(repeat_n):
+                                _ = vllm_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                        dev_mod.synchronize()
+
+                    # Broadcast actual_num_runs from rank 0 to all ranks
+                    actual_num_runs_tensor = torch.tensor([actual_num_runs], device=get_device_str())
+                    torch.distributed.broadcast(actual_num_runs_tensor, src=0)
+                    actual_num_runs = actual_num_runs_tensor.item()
+                else:
+                    # Normal warmup
+                    get_device_module().synchronize()
+                    for _ in range(num_warmups):
+                        for _ in range(repeat_n):
+                            _ = vllm_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                    get_device_module().synchronize()
+
+                # Initialize power monitoring
+                power_monitor = None
+                power_stats = None
+                if measure_power:
+                    power_monitor = PowerMonitor(local_rank)
+                    if not power_monitor.start_sampling():
+                        power_monitor = None
+
+                # Timing
+                start_event = get_device_module().Event(enable_timing=True)
+                end_event = get_device_module().Event(enable_timing=True)
+
+                start_event.record()
+                for _ in range(actual_num_runs):
+                    for _ in range(repeat_n):
+                        _ = vllm_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                end_event.record()
+                get_device_module().synchronize()
+
+                # Stop power monitoring
+                if power_monitor:
+                    power_stats = power_monitor.stop_sampling()
+
+            latency = start_event.elapsed_time(end_event) / actual_num_runs / repeat_n
+
+            if rank == 0:
+                print(f"[vLLM-{mode_str}] Size: {size}, Latency: {latency:.4f} ms")
+                if power_stats:
+                    print(f"  Power: {power_stats['power']:.2f}W (limit: {power_stats['power_limit']:.2f}W)")
+
+                log_perf(
+                    item_list=[
+                        {
+                            "allreduce_dtype": dtype,
+                            "num_gpus": world_size,
+                            "message_size": size,
+                            "latency": latency,
+                            "backend": f"vllm_{mode_str}",
+                        }
+                    ],
+                    framework="vLLM",
+                    version=vllm_version,
+                    device_name=get_device_module().get_device_name(),
+                    op_name="all_reduce",
+                    kernel_source=f"vLLM_custom_{mode_str}",
+                    perf_filename=perf_filename,
+                    power_stats=power_stats,
+                )
+
+        size *= ratio
+
+    # Skip barrier + destroy_model_parallel — they can deadlock when
+    # vLLM's internal NCCL communicators (pynccl / custom_all_reduce)
+    # have pending async ops that ncclCommDestroy blocks on.
+    # torchrun manages process lifecycle; let it handle cleanup.
+    get_device_module().synchronize()
+    os._exit(0)
+
+
+def benchmark_sglang_allreduce(
+    dtype: str,
+    test_range: str,
+    world_size: int,
+    rank: int,
+    use_slurm: bool,
+    perf_filename: str,
+    measure_power: bool = False,
+    power_min_duration: float = 1.0,
+):
+    class MockServerArgs:
+        def __init__(self):
+            self.enable_symm_mem = False
+
+    from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
+
+    if hasattr(ServerArgs, "resolve_once"):
+        # SGLang 0.5.20 publishes through runtime_context, which resolves the
+        # real ServerArgs (publish -> resolve_once); a bare mock is rejected.
+        # model_path="dummy" returns early from resolution
+        # (arg_groups/pipeline.py:121); enable_symm_mem stays False.
+        set_global_server_args_for_scheduler(ServerArgs(model_path="dummy", enable_symm_mem=False))
+    else:
+        set_global_server_args_for_scheduler(MockServerArgs())
+
+    """Benchmark SGLang custom AllReduce implementation"""
+    sglang_mods, local_rank = setup_sglang_distributed(world_size, rank, use_slurm)
+
+    # Parse test range
+    min_size, max_size, ratio = [int(i) for i in test_range.split(",")]
+
+    # Map dtype string to torch dtype
+    dtype_map = {"float32": torch.float32, "bfloat16": torch.bfloat16}
+    torch_dtype = dtype_map.get(dtype, torch.bfloat16)
+
+    # Benchmark parameters
+    repeat_n = 5
+    num_warmups = 3
+    num_runs = 20
+
+    # Warmup communication
+    warmup_tensor = torch.ones(1, dtype=torch_dtype, device="cuda")
+    _ = sglang_mods["tensor_model_parallel_all_reduce"](warmup_tensor)
+    torch.cuda.synchronize()
+
+    size = min_size
+    while size < max_size:
+        input_shape = get_input_shape_and_comm_size(size)
+
+        # Test both graph capture and eager mode
+        for use_graph in [True, False]:
+            mode_str = "graph" if use_graph else "eager"
+
+            if use_graph:
+                # Graph capture mode
+                with sglang_mods["graph_capture"]() as graph_capture_context:
+                    # Create input tensors
+                    input_tensors = []
+                    for _ in range(repeat_n):
+                        inp = torch.ones(input_shape, dtype=torch_dtype, device="cuda")
+                        input_tensors.append(inp)
+
+                    torch.cuda.synchronize()
+                    graph = torch.cuda.CUDAGraph()
+
+                    with torch.cuda.graph(graph, stream=graph_capture_context.stream):
+                        outputs = []
+                        for inp in input_tensors:
+                            out = sglang_mods["tensor_model_parallel_all_reduce"](inp)
+                            outputs.append(out)
+
+                # Adaptive num_runs calculation for power measurement
+                actual_num_runs = num_runs
+                if measure_power:
+                    # Estimate single iteration time (only on rank 0)
+                    if rank == 0:
+                        start_warmup = torch.cuda.Event(enable_timing=True)
+                        end_warmup = torch.cuda.Event(enable_timing=True)
+
+                        torch.cuda.synchronize()
+                        start_warmup.record()
+                        for i in range(num_warmups):
+                            graph.replay()
+                        end_warmup.record()
+                        torch.cuda.synchronize()
+
+                        single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
+                        actual_num_runs = max(num_runs, int(power_min_duration / (single_iter_time * repeat_n)) + 1)
+                        actual_num_runs = min(actual_num_runs, 1000)
+                    else:
+                        # Other ranks do warmup but don't calculate
+                        torch.cuda.synchronize()
+                        for i in range(num_warmups):
+                            graph.replay()
+                        torch.cuda.synchronize()
+
+                    # Broadcast actual_num_runs from rank 0 to all ranks
+                    actual_num_runs_tensor = torch.tensor([actual_num_runs], device="cuda")
+                    torch.distributed.broadcast(actual_num_runs_tensor, src=0)
+                    actual_num_runs = actual_num_runs_tensor.item()
+                else:
+                    # Normal warmup
+                    torch.cuda.synchronize()
+                    for i in range(num_warmups):
+                        graph.replay()
+                    torch.cuda.synchronize()
+
+                # Initialize power monitoring
+                power_monitor = None
+                power_stats = None
+                if measure_power:
+                    power_monitor = PowerMonitor(local_rank)
+                    if not power_monitor.start_sampling():
+                        power_monitor = None
+
+                # Timing
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+
+                start_event.record()
+                for i in range(actual_num_runs):
+                    graph.replay()
+                end_event.record()
+                torch.cuda.synchronize()
+
+                # Stop power monitoring
+                if power_monitor:
+                    power_stats = power_monitor.stop_sampling()
+
+            else:
+                # Eager mode
+                input_tensor = torch.ones(input_shape, dtype=torch_dtype, device="cuda")
+
+                # Adaptive num_runs calculation for power measurement
+                actual_num_runs = num_runs
+                if measure_power:
+                    # Estimate single iteration time (only on rank 0)
+                    if rank == 0:
+                        start_warmup = torch.cuda.Event(enable_timing=True)
+                        end_warmup = torch.cuda.Event(enable_timing=True)
+
+                        torch.cuda.synchronize()
+                        start_warmup.record()
+                        for _ in range(num_warmups):
+                            for _ in range(repeat_n):
+                                _ = sglang_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                        end_warmup.record()
+                        torch.cuda.synchronize()
+
+                        single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
+                        actual_num_runs = max(num_runs, int(power_min_duration / (single_iter_time * repeat_n)) + 1)
+                        actual_num_runs = min(actual_num_runs, 1000)
+                    else:
+                        # Other ranks do warmup but don't calculate
+                        torch.cuda.synchronize()
+                        for _ in range(num_warmups):
+                            for _ in range(repeat_n):
+                                _ = sglang_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                        torch.cuda.synchronize()
+
+                    # Broadcast actual_num_runs from rank 0 to all ranks
+                    actual_num_runs_tensor = torch.tensor([actual_num_runs], device="cuda")
+                    torch.distributed.broadcast(actual_num_runs_tensor, src=0)
+                    actual_num_runs = actual_num_runs_tensor.item()
+                else:
+                    # Normal warmup
+                    torch.cuda.synchronize()
+                    for _ in range(num_warmups):
+                        for _ in range(repeat_n):
+                            _ = sglang_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                    torch.cuda.synchronize()
+
+                # Initialize power monitoring
+                power_monitor = None
+                power_stats = None
+                if measure_power:
+                    power_monitor = PowerMonitor(local_rank)
+                    if not power_monitor.start_sampling():
+                        power_monitor = None
+
+                # Timing
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+
+                start_event.record()
+                for _ in range(actual_num_runs):
+                    for _ in range(repeat_n):
+                        _ = sglang_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                end_event.record()
+                torch.cuda.synchronize()
+
+                # Stop power monitoring
+                if power_monitor:
+                    power_stats = power_monitor.stop_sampling()
+
+            latency = start_event.elapsed_time(end_event) / actual_num_runs / repeat_n
+
+            if rank == 0:
+                print(f"[SGLang-{mode_str}] Size: {size}, Latency: {latency:.4f} ms")
+                if power_stats:
+                    print(f"  Power: {power_stats['power']:.2f}W (limit: {power_stats['power_limit']:.2f}W)")
+
+                # Get SGLang version
+                try:
+                    import importlib.metadata
+
+                    sglang_version = importlib.metadata.version("sglang")
+                except:
+                    sglang_version = "unknown"
+
+                log_perf(
+                    item_list=[
+                        {
+                            "allreduce_dtype": dtype,
+                            "num_gpus": world_size,
+                            "message_size": size,
+                            "latency": latency,
+                            "backend": f"sglang_{mode_str}",
+                        }
+                    ],
+                    framework="SGLang",
+                    version=sglang_version,
+                    device_name=torch.cuda.get_device_name(),
+                    op_name="all_reduce",
+                    kernel_source=f"SGLang_CustomAllReduce_{mode_str}",
+                    perf_filename=perf_filename,
+                    power_stats=power_stats,
+                )
+
+        size *= ratio
+
+    # Skip barrier + destroy_model_parallel — same deadlock risk as vLLM
+    # path. torchrun manages process lifecycle.
+    torch.cuda.synchronize()
+    os._exit(0)
+
+
+def allreduce_benchmark(
+    backend: str,
+    dtype: str,
+    test_range: str = "128,1073741824,2",
+    use_slurm: bool = False,
+    perf_filename: str = "custom_allreduce_perf.txt",
+    world_size: Optional[int] = None,
+    rank: Optional[int] = None,
+    measure_power: bool = False,
+    power_min_duration: float = 1.0,
+):
+    """
+    CUDA Graph based AllReduce benchmark method supporting multiple backends
+
+    Args:
+        backend: Backend to benchmark ("trtllm", "vllm", or "sglang")
+        dtype: Data type for AllReduce operations
+        test_range: Comma-separated string "min_size,max_size,ratio"
+        use_slurm: Whether to use SLURM environment variables
+        perf_filename: Output file for performance results
+        world_size: Number of GPUs (for vLLM/SGLang without SLURM)
+        rank: Current rank (for vLLM/SGLang without SLURM)
+        measure_power: Enable GPU power monitoring
+        power_min_duration: Minimum duration for power measurement
+    """
+    # Setup distributed environment based on backend
+    if use_slurm:
+        world_size = int(os.environ["SLURM_NTASKS"])
+        rank = _resolve_rank(os.environ)
+
+    if backend == "trtllm":
+        # TensorRT-LLM uses MPI by default
+        tllm_mods = import_trtllm()
+        tllm = tllm_mods["tllm"]
+
+        if not use_slurm:
+            world_size = tllm.mpi_world_size()
+            rank = tllm.mpi_rank()
+
+        if world_size == 1:
+            raise RuntimeError("Benchmark must run with world_size > 1")
+
+        benchmark_trtllm_allreduce(
+            dtype, test_range, world_size, rank, use_slurm, perf_filename, measure_power, power_min_duration
+        )
+
+    elif backend == "vllm":
+        if not use_slurm:
+            # Check if running under torchrun (it sets these env vars)
+            if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+                world_size = int(os.environ["WORLD_SIZE"])
+                rank = int(os.environ["RANK"])
+                print(f"Detected torchrun environment: world_size={world_size}, rank={rank}")
+            else:
+                # Use provided values or environment variables
+                if world_size is None:
+                    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+                if rank is None:
+                    rank = int(os.environ.get("RANK", "0"))
+
+        if world_size == 1:
+            raise RuntimeError("Benchmark must run with world_size > 1")
+
+        benchmark_vllm_allreduce(
+            dtype, test_range, world_size, rank, use_slurm, perf_filename, measure_power, power_min_duration
+        )
+
+    elif backend == "sglang":
+        if not use_slurm:
+            # Check if running under torchrun (it sets these env vars)
+            if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+                world_size = int(os.environ["WORLD_SIZE"])
+                rank = int(os.environ["RANK"])
+                print(f"Detected torchrun environment: world_size={world_size}, rank={rank}")
+            else:
+                # Use provided values or environment variables
+                if world_size is None:
+                    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+                if rank is None:
+                    rank = int(os.environ.get("RANK", "0"))
+
+        if world_size == 1:
+            raise RuntimeError("Benchmark must run with world_size > 1")
+
+        benchmark_sglang_allreduce(
+            dtype, test_range, world_size, rank, use_slurm, perf_filename, measure_power, power_min_duration
+        )
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--backend", "-b", choices=["trtllm", "vllm", "sglang"], default="trtllm", help="AllReduce backend to benchmark"
+    )
+    parser.add_argument("--dtype", "-t", default="bfloat16")
+    parser.add_argument(
+        "--range",
+        "-r",
+        default="128,1073741824,2",  # 128B to 1024MB
+        help="min_size,max_size,multiplicative_ratio",
+    )
+    parser.add_argument("--use-slurm", action="store_true", help="Use SLURM environment variables")
+    parser.add_argument(
+        "--perf-filename",
+        "-f",
+        default="custom_allreduce_perf.txt",
+        help="Output performance file name",
+    )
+    # Additional arguments for vLLM/SGLang when not using MPI/SLURM
+    parser.add_argument("--world-size", default=8, type=int, help="World size for distributed setup (vLLM/SGLang)")
+    parser.add_argument("--rank", default=0, type=int, help="Rank for distributed setup (vLLM/SGLang)")
+    # Power measurement arguments
+    parser.add_argument(
+        "--measure_power",
+        action="store_true",
+        help="Enable power monitoring during AllReduce execution (samples at 100ms intervals)",
+    )
+    parser.add_argument(
+        "--power_test_duration_sec",
+        type=float,
+        default=1.0,
+        help="Minimum duration for benchmark runs when power measurement is enabled (default: 1.0s)",
+    )
+
+    args = parser.parse_args()
+
+    allreduce_benchmark(
+        args.backend,
+        args.dtype,
+        args.range,
+        args.use_slurm,
+        args.perf_filename,
+        args.world_size,
+        args.rank,
+        args.measure_power,
+        args.power_test_duration_sec,
+    )

@@ -1,5 +1,5 @@
 {
-  "name": "AISimulate required CI validation",
+  "name": "AISim required CI validation",
   "target": "branch",
   "enforcement": "active",
   "bypass_actors": [],

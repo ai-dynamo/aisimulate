@@ -17,6 +17,16 @@ on:
         required: true
         default: main
         type: string
+      agentx_campaign_catalog:
+        description: Optional unscored campaign catalog for a labeled partial preview
+        required: false
+        default: ''
+        type: string
+      agentx_revision:
+        description: Immutable HF candidate commit for AgentX preview (empty follows reviewed dataset)
+        required: false
+        default: ''
+        type: string
       configuration_mode:
         description: Verified settings only, or include labeled research assumptions
         type: choice
@@ -42,7 +52,7 @@ jobs:
   resolve:
     name: Resolve exact accuracy source
     if: >-
-      github.repository == 'ai-dynamo/aisimulate' &&
+      github.repository == 'ai-dynamo/aisim' &&
       (github.ref == 'refs/heads/main' ||
       (github.event_name == 'workflow_dispatch' && inputs.preview && startsWith(github.ref, 'refs/heads/pull-request/')))
     runs-on: ubuntu-24.04
@@ -60,6 +70,8 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
           PREVIEW: ${{ inputs.preview }}
+          AGENTX_REVISION: ${{ inputs.agentx_revision }}
+          AGENTX_CAMPAIGN_CATALOG: ${{ inputs.agentx_campaign_catalog }}
         with:
           script: |
             const {createHash} = require('node:crypto');
@@ -67,6 +79,13 @@ jobs:
             let branch = process.env.EVALUATED_BRANCH;
             let nightlyRun = '';
             const preview = process.env.PREVIEW === 'true';
+            if (process.env.AGENTX_REVISION && (!preview || !/^[0-9a-f]{40}$/.test(process.env.AGENTX_REVISION))) {
+              throw new Error('Candidate AgentX revisions require an immutable SHA and a trusted preview');
+            }
+            if (process.env.AGENTX_CAMPAIGN_CATALOG && (!preview || !process.env.AGENTX_REVISION ||
+                !/^catalog\/e2e\/agentx\/qualifications\/[a-z0-9-]+\.json$/.test(process.env.AGENTX_CAMPAIGN_CATALOG))) {
+              throw new Error('Partial campaigns require a pinned trusted preview');
+            }
             if (preview) {
               const match = /^refs\/heads\/pull-request\/(\d+)$/.exec(context.ref);
               if (context.eventName !== 'workflow_dispatch' || !match || sha !== context.sha) {
@@ -180,5 +199,7 @@ jobs:
       branch: ${{ matrix.branch }}
       artifact_key: ${{ matrix.artifact_key }}
       nightly_run: ${{ matrix.nightly_run }}
+      agentx_revision: ${{ inputs.agentx_revision || '' }}
+      agentx_campaign_catalog: ${{ inputs.agentx_campaign_catalog || '' }}
       preview: ${{ matrix.preview || false }}
       configuration_mode: ${{ inputs.configuration_mode || 'estimated' }}

@@ -59,7 +59,7 @@ This is **Option 1**. Select an FPM explicitly so construction cannot choose an
 OP estimator, and leave `speculation` unset and `nextn` at zero:
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 stp_config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-0.6B",
@@ -159,6 +159,12 @@ execution_profile:
   timing_scope: model_step_cuda
 ```
 
+`method` accepts `eagle3` or `mtp`. MTP draft heads ship inside the target
+checkpoint, so an `mtp` deployment records the profile `model` and
+`model_revision` as `draft_model` and `draft_revision`. Validation does not
+enforce this, but selectors compare these fields exactly. A table recorded with
+other draft values fails with `No FPM cell matches`.
+
 The initial identity contract permits vLLM pure TP with DP1/PP1/CP1 and 1–5
 draft tokens. Acceptance length belongs to replay progress, not this timing
 selector. Omitting `execution_profile` preserves existing AR profile JSON and
@@ -224,7 +230,7 @@ For a reviewed profile and table whose identity matches the values below:
 import json
 from pathlib import Path
 
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 sd_config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-8B",
@@ -307,7 +313,7 @@ Replay need finalized resource evidence.
 Set `estimator_config.fpm_interpolation.fpm_parquet_path` on the canonical configuration to use an external parquet and its required same-stem `.metadata.json` sidecar:
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="Qwen/Qwen3-0.6B",
@@ -325,7 +331,7 @@ model = RustForwardPassPerfModel.best_available(config)
 
 The parquet identity must match the requested model, hardware, backend version, topology, and quantization. The systems YAML is still required, but a backend timing-data directory is unnecessary. Relative paths bind to the working directory when the model is constructed; resolved provenance stores the absolute path. The control applies when FPM interpolation is selected; other estimators retain it in provenance without opening the file. Saved legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` inputs migrate to the same canonical control, which is preserved in replay and per-role recommendation output.
 
-`model.static_phase_latency(batch_size=1, input_tokens=512, output_tokens=4, prefill=False)` exposes the native engine's existing static integration before online correction. Prefill returns one prefill latency; decode returns total decode latency for the output sequence. This method requires a native estimator. AFD+PD uses it for an external-FPM regular companion, dividing total decode latency by `max(1, output_tokens - 1)` for TPOT. AFD attention and FFN workers retain their existing timing provider.
+`model.static_phase_latency(batch_size=1, input_tokens=512, output_tokens=4, prefill=False)` exposes the native engine's existing static integration before online correction. Prefill returns one prefill latency; decode returns total decode latency for the output sequence. This method requires a native estimator. Ordinary companions of AFD roles use the canonical replay timing provider; they do not use a separate static-phase execution path. AFD pools require op-level estimation for their source-ordered execution plans.
 
 ### Direct-FPM query coverage
 
@@ -383,16 +389,21 @@ scheduled per-rank FPM telemetry, including mixed work and its existing online
 correction behavior.
 
 Ordinary replay uses this returned model for FPM timing and emits
-`fpm_query_coverage` in its report when collection is enabled. A vLLM or
-TensorRT-LLM replay pass that computes prefill alongside decode steps runs as
-one forward. Replay charges the prefill at the pass's exact totals plus only
-the latency the decode requests add, `max(0, decode - decode_pass_baseline)`
-at their totals. A tuned model applies the online correction of that mixed
-iteration to both parts, so the pass costs what
-`estimate_forward_pass_time_ms()` returns for it. Measured SD-round profiles,
-MTP drafts (`nextn > 0`) and operation-level draft tails define no such decode
-share; replay prices their decode work as a separate decode pass. The CLI also
-saves `fpm-coverage.json`, including partial evidence when a native timing
+`fpm_query_coverage` in its report when collection is enabled. It prices each
+pass with one `estimate_forward_pass_time_ms()` query over every attention-DP
+rank (see [engine replay timing](../configuration.md#engine-replay-timing)).
+A vLLM or TensorRT-LLM rank that computes prefill alongside decode steps runs
+as one forward: the prefill at the rank's exact totals plus only the latency
+the decode requests add, `max(0, decode - decode_pass_baseline)` at their
+totals. A tuned model applies the online correction of that mixed iteration,
+so the pass costs what `estimate_forward_pass_time_ms()` returns for it.
+Measured SD-round profiles define no such decode share: their mixed rank costs
+the prefill plus a full decode round as one forward. Without online corrections
+that is the total of a separate prefill pass and decode pass; a tuned model
+applies the mixed iteration's correction to the sum instead of each phase's
+own. MTP drafts (`nextn > 0`) and operation-level draft tails keep pricing
+their decode work as a separate decode pass. The CLI also saves
+`fpm-coverage.json`, including partial evidence when a native timing
 error stops replay; the Python exception retains a `fpm_query_coverage`
 attribute for that failure path. A passing replay coverage status requires completed requests,
 nonempty resolved queries and no unsupported lookup. It is distinct from
@@ -456,7 +467,7 @@ is unchanged.
 For a Kimi K3 text profile, an explicit configuration can be:
 
 ```python
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 config = ForwardPassPerfModelConfig(
     model="moonshotai/Kimi-K3", system="gb300", backend="vllm",
@@ -495,7 +506,7 @@ the canonical quant-mode fields and `attention_backend`, alongside estimator
 selection and controls. DCP FPM replay requires explicit fixed KV block capacity;
 automatic DCP/hybrid capacity sizing is not implemented. Host offload or P/D
 transfer also requires explicit KV bytes per token with DCP.
-`decode_context` is currently supported by AISimulate's `--stack engine` only.
+`decode_context` is currently supported by AISim's `--stack engine` only.
 Dynamo Replay and Planner do not yet support this field; their configuration
 propagation, cache identity, and dependency version need a downstream update.
 These timing precision/backend overrides are prediction-only; recommendation

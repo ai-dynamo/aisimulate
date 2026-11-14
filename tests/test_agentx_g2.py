@@ -13,15 +13,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aisimulate import _runtime
-from aisimulate import main as cli
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.runner import (
+from aisim import _runtime
+from aisim import main as cli
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig
+from aisim.runner import (
     EngineReplayRunnerFactory,
     _materialize_engine_execution_spec,
 )
-from aisimulate.sweeper.replay import AdapterReplaySpec, ReplayOutputRequirements, RuntimeHookSpec
+from aisim.sweeper.replay import AdapterReplaySpec, ReplayOutputRequirements, RuntimeHookSpec
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -143,9 +144,82 @@ def test_weka_g2_runs_on_multiple_replicas(name) -> None:
         worker["parallelism"] = {**worker["parallelism"], "replicas": 2}
     report = _run(config)
     assert report["completed_requests"] == single["completed_requests"]
-    assert len({route["logical_worker_id"] for row in report["per_request"] for route in row["routing_history"]}) == 2
+    pools = ("prefill", "decode") if config["engine"]["mode"] == "disaggregated" else ("agg",)
+    for pool in pools:
+        assert {
+            route["logical_worker_id"]
+            for row in report["per_request"]
+            for route in row["routing_history"]
+            if route["pool"] == pool
+        } == {0, 1}
     # One cluster-shared pool, counted once whatever the replica count.
     assert report.get("g2_domains", []) == single.get("g2_domains", [])
+
+
+@pytest.mark.parametrize("name", ["agentx-g2-local.yaml", "agentx-g2-shared-pd.yaml"])
+def test_multi_replica_g2_restores_evicted_prefixes(name, tmp_path) -> None:
+    config = _multi_replica_pressure_config(name, tmp_path)
+    report = _run(config)
+    restored = next(row for row in report["per_request"] if row["request_id"].endswith(":outer:4"))
+    assert report["completed_requests"] == 5
+    assert restored["first_admission_g1_reused_input_tokens"] == 0
+    assert restored["first_admission_host_reused_input_tokens"] == 8
+
+    for worker in config["engine"]["workers"].values():
+        worker["kv_cache"].pop("host_offload", None)
+    hbm = _run(config)
+    assert sum(row["first_admission_host_reused_input_tokens"] for row in hbm["per_request"]) == 0
+    assert report["committed_prefill_tokens"] < hbm["committed_prefill_tokens"]
+
+
+def _multi_replica_pressure_config(name: str, tmp_path: Path) -> dict:
+    config = _config(name)
+    trace = json.loads(Path(config["traffic"]["source"]["paths"][0]).read_text())
+    # Round robin sends 0, 2, 4 to worker 0. Request 2 evicts request 0's
+    # entire GPU prefix, so request 4 must restore it from G2 in either scope.
+    template = trace["requests"][0]
+    trace["requests"] = [
+        {**template, "t": index * 0.1, "hash_ids": hashes}
+        for index, hashes in enumerate(([1, 2, 3], [11, 12, 13], [21, 22, 23], [31, 32, 33], [1, 2, 3]))
+    ]
+    path = tmp_path / "multi-replica-pressure.jsonl"
+    path.write_text(json.dumps(trace) + "\n")
+    config["traffic"]["source"]["paths"] = [str(path)]
+    for worker in config["engine"]["workers"].values():
+        worker["parallelism"] = {**worker["parallelism"], "replicas": 2}
+        # Retain every source prefix across several plays; a cold next play
+        # must follow from identity isolation, not host-capacity eviction.
+        worker["kv_cache"]["host_offload"]["num_host_blocks"] = 128
+    return config
+
+
+@pytest.mark.parametrize("name", ["agentx-g2-local.yaml", "agentx-g2-shared-pd.yaml"])
+def test_multi_replica_g2_isolates_recycled_profile_plays(name, tmp_path) -> None:
+    config = _multi_replica_pressure_config(name, tmp_path)
+    load = config["traffic"]["load"]
+    load["agentic_snapshot"] = {"seed": 42}
+    sampled = _run(config)["agentic_snapshots"][0]
+    # Start the first play at turn zero so it fills G2 with every source prefix
+    # before any recycled play can start at a sampled cut.
+    load["agentic_snapshot"].update(
+        initial_selections=[{"source_play_id": sampled["source_play_id"], "t_star_ms": 0}],
+        corpus_cursor=1,
+    )
+    load["agentic_profile"] = {"duration_seconds": 2, "response_grace_seconds": 1}
+    report = _run(config)
+    snapshots = report["agentic_snapshots"]
+    assert report["agentic_profile"]["plays_started"] >= 2
+    assert len({snapshot["cache_id"] for snapshot in snapshots}) == len(snapshots)
+    plays = {}
+    for row in report["per_request"]:
+        plays.setdefault(row["play_id"], []).append(row)
+    assert len(plays) >= 2
+    first_play = min(plays.values(), key=lambda rows: min(row["first_admit_ms"] for row in rows))
+    assert any(row["first_admission_host_reused_input_tokens"] == 8 for row in first_play)
+    for rows in plays.values():
+        first = min(rows, key=lambda row: row["first_admit_ms"])
+        assert first["first_admission_g1_reused_input_tokens"] == 0
+        assert first["first_admission_host_reused_input_tokens"] == 0
 
 
 def test_weka_shared_g2_contract_across_replicas() -> None:
@@ -195,9 +269,9 @@ def test_weka_g2_rejects_incompatible_shared_layout() -> None:
     [
         ("dp", "agentic host offload requires attention DP=1 on every role"),
         ("backend", "agentic host offload requires backend=vllm on every role"),
-        ("aic_nextn", "agentic replay requires speculative decoding disabled"),
-        ("nextn", "agentic replay requires speculative decoding disabled"),
-        ("speculation", "agentic replay requires speculative decoding disabled"),
+        ("aic_nextn", "requires canonical mtp speculation"),
+        ("nextn", "requires canonical mtp speculation"),
+        ("speculation", "agentic G2 replay requires speculative decoding disabled"),
         ("g3", "agentic replay does not support G3 offload"),
         ("scope", "dp_rank_local"),
         ("scaling", "agentic host offload requires static worker pools without a scaling policy"),
@@ -245,13 +319,107 @@ def test_agentic_invalid_configuration_matrix_rejects_python_and_native(role, fa
         raise AssertionError(f"unhandled semantic fault: {fault}")
     with pytest.raises(ValueError, match=message):
         EngineReplayRunnerFactory().capabilities().require_compatible(spec)
-    native_message = (
-        "agentic host offload requires speculative decoding disabled"
-        if fault in {"aic_nextn", "nextn", "speculation"}
-        else message
-    )
+    native_message = "requires.*canonical" if fault in {"aic_nextn", "nextn", "speculation"} else message
     with pytest.raises(RuntimeError, match=native_message):
         _runtime.run_replay_json(json.dumps(payload))
+
+
+def test_agentic_g2_runs_on_several_aggregated_workers_with_private_pools() -> None:
+    """Each aggregated worker owns a dp_rank_local G2, so both checks accept several workers."""
+    config = _config("agentx-g2-local.yaml")
+    config["engine"]["workers"]["aggregated"]["parallelism"]["replicas"] = 2
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    payload = _materialize_engine_execution_spec(spec, trace_block_size=4, record_per_request=True)
+    assert payload["spec"]["topology"]["workers"]["initial_workers"] == 2
+    report = json.loads(_runtime.run_replay_json(json.dumps(payload)))
+    assert report["completed_requests"] == 4
+    assert report["agentic_qualification"] == "functional_only"
+    workers = {entry["logical_worker_id"] for row in report["per_request"] for entry in row["routing_history"]}
+    assert workers == {0, 1}
+
+
+def _planner_pass(prefills: int, prefill_tokens: int, decodes: int, kv: int) -> list[dict]:
+    ms = 2.0 + 0.004 * prefill_tokens + 0.3 * decodes + 2e-5 * kv
+    counters = {"num_prefill_requests": prefills, "sum_prefill_tokens": prefill_tokens}
+    counters |= {"num_decode_requests": decodes, "sum_decode_kv_tokens": kv}
+    return [{"version": 1, "wall_time": ms / 1000, "scheduled_requests": counters}]
+
+
+def _planner_snapshot(path: Path, worker_type: str, kinds: tuple[str, ...]) -> str:
+    """A planner fits its regression for an unknown deployment, so the snapshot records attention DP as unknown."""
+    unknown = dict.fromkeys(("system", "backend_version", "tp", "pp", "attention_dp"), "unknown")
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model=str(ROOT / "tests/e2e/configs/unified_cli/fixtures/tiny-model"),
+            backend="vllm",
+            worker_type=worker_type,
+            kv_block_size=4,
+            estimation_mode="fpm_regression",
+            **unknown,
+        )
+    )
+    passes = []
+    for i in range(48):
+        decodes, kv = 1 + i % 8, (1 + i % 8) * (128 + 37 * (i % 11))
+        shapes = {
+            "prefill": (1 + i % 3, 128 * (1 + i % 5), 0, 0),
+            "decode": (0, 0, decodes, kv),
+            "mixed": (1, 32 * (1 + i % 6), decodes, kv),
+        }
+        passes += [_planner_pass(*shapes[kind]) for kind in kinds]
+    model.tune_with_fpms(passes)
+    model.save_state_snapshot(str(path))
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "name,kinds",
+    [
+        ("agentx-g2-local.yaml", {"aggregated": ("prefill", "decode", "mixed")}),
+        ("agentx-g2-shared-pd.yaml", {"prefill": ("prefill",), "decode": ("decode",)}),
+    ],
+)
+def test_agentic_g2_replays_planner_snapshots_with_an_unknown_attention_dp(name, kinds, tmp_path) -> None:
+    config = _config(name)
+    workers = config["engine"]["workers"]
+    for role, role_kinds in kinds.items():
+        snapshot = _planner_snapshot(tmp_path / role, role, role_kinds)
+        timing = {"estimation_mode": "fpm_regression", "estimator_config": {"state_snapshot": {"path": snapshot}}}
+        workers[role] = {**workers[role], "timing": timing}  # The P/D example aliases one worker block.
+    report = _run(config)
+    assert report["completed_requests"] == 4
+    # The snapshots, not the example's fixed timing, price the passes.
+    fixed = _run(_config(name))
+    assert [row["ttft_ms"] for row in report["per_request"]] != [row["ttft_ms"] for row in fixed["per_request"]]
+
+
+@pytest.mark.parametrize(
+    "name,args_field,fault",
+    [
+        ("agentx-g2-local.yaml", "agg_engine_args", None),
+        ("agentx-g2-local.yaml", "agg_engine_args", "role"),
+        ("agentx-g2-local.yaml", "agg_engine_args", "identity"),
+        ("agentx-g2-shared-pd.yaml", "decode_engine_args", None),
+        ("agentx-g2-shared-pd.yaml", "decode_engine_args", "role"),
+    ],
+)
+def test_agentic_g2_takes_the_role_dp_when_the_timing_identity_spells_it_unknown(name, args_field, fault) -> None:
+    """An unknown attention DP in the timing identity leaves the role's own DP, which must still be 1."""
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_config(name)))
+    args = getattr(spec.backend_deployment, args_field)
+    identity = {"backend": "vllm", "tp": "unknown", "attention_dp": "unknown"}
+    args["timing_model"] = {"type": "external", "provider": "aic", "config": identity}
+    if fault == "role":
+        args["aic_attention_dp_size"] = 2
+    elif fault == "identity":
+        identity["attention_dp_size"] = 2
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    if fault is None:
+        capabilities.require_compatible(spec)
+    else:
+        with pytest.raises(ValueError, match="agentic host offload requires attention DP=1 on every role"):
+            capabilities.require_compatible(spec)
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -273,3 +441,36 @@ def test_agentic_g3_rejection_matches_without_requiring_g2(backend, with_g2) -> 
         EngineReplayRunnerFactory().capabilities().require_compatible(spec)
     with pytest.raises(RuntimeError, match=message):
         _runtime.run_replay_json(json.dumps(payload))
+
+
+@pytest.mark.parametrize("replicas", [1, 2])
+def test_agentic_canonical_mtp_with_local_g2_requires_one_worker(replicas) -> None:
+    config = _config("agentx-g2-local.yaml")
+    engine = config["engine"]
+    engine.update(
+        model="meta-llama/Meta-Llama-3.1-8B",
+        backend_version="0.24.0",
+        estimation_mode="op_level",
+        speculation={
+            "kind": "mtp",
+            "params": {"depth": 2},
+            "expected_accepted_tokens": 1.5,
+            "seed": 17,
+        },
+    )
+    engine["workers"]["aggregated"]["timing"] = {"type": "default"}
+    engine["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 4
+    if replicas == 2:
+        engine["workers"]["aggregated"]["parallelism"]["replicas"] = replicas
+        spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+        payload = _materialize_engine_execution_spec(spec, trace_block_size=4, record_per_request=True)
+        with pytest.raises(ValueError, match="agentic G2 replay requires speculative decoding disabled"):
+            EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+        with pytest.raises(RuntimeError, match="agentic host offload requires speculative decoding disabled"):
+            _runtime.run_replay_json(json.dumps(payload))
+        return
+    report = _run(config)
+    assert report["completed_requests"] == 4
+    assert report["total_output_tokens"] == 4
+    assert report["agentic_qualification"] == "functional_only"
+    assert _restored(report)["first_admission_host_reused_input_tokens"] > 0

@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   digest:
-    if: github.repository == 'ai-dynamo/aisimulate'
+    if: github.repository == 'ai-dynamo/aisim'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
@@ -1309,6 +1312,7 @@ fn native_request(request: DirectRequest, kv_hint: Option<KvHintSource>) -> Resu
             .uuid
             .context("offline replay request must have a UUID before dispatch")?,
         tokens: request.tokens,
+        cache_salt: request.cache_salt,
         max_output_tokens: request.max_output_tokens,
         output_token_ids: request.output_token_ids,
         session_id: request
@@ -1476,6 +1480,80 @@ mod tests {
             startup_time_ms,
         )
         .unwrap()
+    }
+
+    #[rstest::rstest]
+    #[case(Backend::Vllm)]
+    #[case(Backend::Sglang)]
+    #[case(Backend::Trtllm)]
+    fn passes_start_in_ascending_worker_then_rank_order(#[case] backend: Backend) {
+        const WORKERS: usize = 3;
+        const DP_SIZE: u32 = 2;
+        let config = ReplayEngineConfig {
+            dp_size: DP_SIZE,
+            rank: EngineConfig {
+                backend,
+                num_gpu_blocks: 32,
+                block_size: 4,
+                enable_prefix_caching: false,
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 10.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::for_backend(backend)
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            WORKERS,
+            None,
+        )
+        .unwrap();
+        // Reverse dispatch separates submission order from worker/rank start order.
+        let schedulers = WORKERS * DP_SIZE as usize;
+        for scheduler_id in (0..schedulers).rev() {
+            component
+                .dispatch(
+                    scheduler_id,
+                    DirectRequest {
+                        tokens: vec![scheduler_id as u32; 8],
+                        max_output_tokens: 2,
+                        uuid: Some(Uuid::from_u128(scheduler_id as u128 + 1)),
+                        ..Default::default()
+                    },
+                    None,
+                    0.0,
+                )
+                .unwrap();
+        }
+        let mut passes = Vec::new();
+        loop {
+            let effects = component.drive_ready(0.0, None).unwrap();
+            if effects.is_empty() {
+                break;
+            }
+            passes.push(
+                effects
+                    .admissions
+                    .iter()
+                    .map(|admission| admission.uuid.as_u128() as usize - 1)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let expected: Vec<Vec<usize>> = (0..WORKERS)
+            .map(|worker| {
+                (0..DP_SIZE as usize)
+                    .map(|rank| worker * DP_SIZE as usize + rank)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(passes, expected);
     }
 
     #[rstest::rstest]
@@ -2407,7 +2485,7 @@ mod tests {
     }
 
     #[test]
-    fn sglang_component_consumes_retries_until_internal_state_converges() {
+    fn sglang_component_rejects_an_impossible_prompt_without_retrying() {
         let config = ReplayEngineConfig {
             rank: EngineConfig {
                 backend: Backend::Sglang,
@@ -2450,21 +2528,20 @@ mod tests {
             )
             .unwrap();
 
-        let error = component.drive_ready(37.0, None).unwrap_err();
+        let effects = component.drive_ready(37.0, None).unwrap();
         let retries = component.workers[0]
             .as_ref()
             .unwrap()
             .same_timestamp_retries_total;
 
-        assert!(
-            retries > 1,
-            "the component must not stop after the first pass"
-        );
-        assert!(retries < MAX_CONSECUTIVE_SAME_TIMESTAMP_RETRIES);
-        assert!(
-            error.to_string().contains("effect-free zero-duration pass"),
-            "{error}"
-        );
+        assert_eq!(retries, 0);
+        assert!(effects.admissions.is_empty());
+        assert!(effects.scheduled_completion.is_none());
+        assert_eq!(effects.immediate_completions.len(), 1);
+        let outputs = &effects.immediate_completions[0].output_signals;
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].uuid, Uuid::from_u128(2));
+        assert!(outputs[0].completed && outputs[0].rejected);
     }
 
     #[test]

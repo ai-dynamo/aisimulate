@@ -1,5 +1,6 @@
 {
-  "source_url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-e2e-gym/-/merge_requests/91",
+  "source_url": null,
+  "source_location_redacted": true,
   "source_commit": "5a7e86ddd331c0aee25eccb57bb28a815089280c",
   "source_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "configuration_scope": "Default is canonical estimator_config={} on the SAME final candidate source; balanced is the previously explored role-specific accuracy/CPU tradeoff, not a global optimum. Fast is a secondary prior selection.",

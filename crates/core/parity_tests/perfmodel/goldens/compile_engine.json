@@ -32,11 +32,11 @@
     },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::mixed_step": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
     },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::static_ctx": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
     },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::static_gen": {
       "engine": "rust",
@@ -160,11 +160,11 @@
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2::mixed_step": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2::static_ctx": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "7b6284d2dbc9b41958c209c54ec60d22ecb12aee"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2::static_gen": {
       "engine": "rust",
@@ -232,8 +232,8 @@
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix0::mixed_step": 18.658235744587767,
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix256::mixed_step": 18.65614760396424,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::decode_step": 2.2452481310182892,
-    "gpt-oss-20b-b200-trtllm-isl1024-osl2::mixed_step": 10.52586497576184,
-    "gpt-oss-20b-b200-trtllm-isl1024-osl2::static_ctx": 10.271340757068511,
+    "gpt-oss-20b-b200-trtllm-isl1024-osl2::mixed_step": 10.209054004333268,
+    "gpt-oss-20b-b200-trtllm-isl1024-osl2::static_ctx": 9.954529785639942,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::static_gen": 2.245245918518904,
     "imbalance_scale::decode_step": 6.67607214565071,
     "imbalance_scale::mixed_step": 27.078066359122754,
@@ -264,8 +264,8 @@
     "minimax-m27-b200-vllm-isl1024-osl2::static_ctx": 22.998026658189286,
     "minimax-m27-b200-vllm-isl1024-osl2::static_gen": 7.038444727222866,
     "nemotron-nas-b200-trtllm-isl1024-osl2::decode_step": 4.79558767201551,
-    "nemotron-nas-b200-trtllm-isl1024-osl2::mixed_step": 24.917404951499083,
-    "nemotron-nas-b200-trtllm-isl1024-osl2::static_ctx": 24.600342557632807,
+    "nemotron-nas-b200-trtllm-isl1024-osl2::mixed_step": 24.270560151499083,
+    "nemotron-nas-b200-trtllm-isl1024-osl2::static_ctx": 23.95349775763281,
     "nemotron-nas-b200-trtllm-isl1024-osl2::static_gen": 4.795587620973455,
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::decode_step": 4.1769560933985606,
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::mixed_step": 13.149779573513968,

@@ -15,7 +15,7 @@ import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 
-REPOSITORY_URL = "https://github.com/ai-dynamo/aisimulate"
+REPOSITORY_URL = "https://github.com/ai-dynamo/aisim"
 DATA_PATH = "pages/feature-support-matrix/features.toml"
 TEMPLATE_PATH = "pages/feature-support-matrix/template.html"
 
@@ -26,7 +26,7 @@ STATUS = {
     "na": ("N/A upstream", "bg-white text-slate-400 dark:bg-slate-900 dark:text-slate-500"),
 }
 
-_TOP_KEYS = {"schema_version", "engines", "sections"}
+_TOP_KEYS = {"schema_version", "engines", "sections", "benchmark_features"}
 _SECTION_KEYS = {"id", "title", "intro", "row_header", "columns", "rows"}
 _ROW_KEYS = {"name", "detail", "doc", "cells", "note"}
 _DOC = re.compile(r"(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md(?:#[a-z0-9_-]+)?")
@@ -65,6 +65,21 @@ def load(text: str, *, source: str) -> dict:
         fail(f"unknown keys {sorted(set(data) - _TOP_KEYS)}")
     if data.get("schema_version") != 1:
         fail("schema_version must be 1")
+    registry = data.get("benchmark_features")
+    if registry is not None:
+        if (
+            not isinstance(registry, dict)
+            or set(registry) != {"schema_version", "ids"}
+            or registry["schema_version"] != 1
+        ):
+            fail("invalid benchmark feature registry")
+        ids = registry["ids"]
+        if (
+            not _strings(ids)
+            or len(set(ids)) != len(ids)
+            or any(not re.fullmatch(r"[a-z][a-z0-9_.]*", identity) for identity in ids)
+        ):
+            fail("invalid or duplicate benchmark feature identifier")
     if not _strings(data.get("engines")):
         fail("engines must be a non-empty list of strings")
     sections = data.get("sections")

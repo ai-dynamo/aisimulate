@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Result, ensure};
 
-use super::{HostLink, HostTier, HostTierConfig};
+use super::{HostEviction, HostLink, HostPolicy, HostTier, HostTierConfig};
 use crate::engine::{G2Scope, NativeHostOffloadConfig};
 
 /// Everything that must agree before ranks may share stored KV blocks.
@@ -53,6 +53,8 @@ impl G2Registry {
                         contract.shared_d2h_bandwidth_gbps,
                         contract.shared_h2d_bandwidth_gbps,
                     )),
+                    policy: HostPolicy::CohortLru,
+                    eviction: HostEviction::TierLru,
                 })?));
                 state.pool = Some((contract, Arc::clone(&tier)));
                 tier
@@ -139,6 +141,8 @@ impl HostClient {
                     capacity_blocks: config.num_host_blocks,
                     block_bytes,
                     shared_gbps: None,
+                    policy: config.connector.rules().policy,
+                    eviction: HostEviction::TierLru,
                 })?;
                 tier.register(0, link)?;
                 Ok(Self {

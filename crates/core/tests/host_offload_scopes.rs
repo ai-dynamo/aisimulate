@@ -6,12 +6,12 @@
 
 use std::num::NonZeroU32;
 
-use aisimulate_core::engine::generalized::{EngineIdentity, SchedulerCommand};
-use aisimulate_core::engine::{
+use aisim_core::engine::generalized::{EngineIdentity, SchedulerCommand};
+use aisim_core::engine::{
     Admission, Command, Engine, EngineConfig, EngineFactory, KvEventData, KvEventTier, Request,
     SharedG2Pool,
 };
-use aisimulate_core::replay::{
+use aisim_core::replay::{
     G2DomainStats, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
     ReplaySpec, Replayer,
 };
@@ -451,6 +451,7 @@ fn serve_prompt(engine: &mut Engine, id: u128, now_ms: &mut f64) -> usize {
             SchedulerCommand::new(
                 0,
                 Command::Submit(Request {
+                    cache_salt: None,
                     images: Vec::new(),
                     request_id,
                     tokens: PROMPT.to_vec(),

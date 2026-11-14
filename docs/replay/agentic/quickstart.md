@@ -26,7 +26,7 @@ You need Python 3.11–3.13, `uv`, Rust/Cargo, and a C/C++ compiler and linker.
 See [source installation](../../getting-started/installation.md#use-current-source) for platform details.
 
 ```bash
-uv sync --project python/aisimulate --extra dev
+uv sync --project python/aisim --extra dev
 ```
 
 This installs the Python environment and builds the native simulator. The
@@ -61,7 +61,7 @@ requests, and occupies 1,198,197 bytes. Its SHA-256 is
 Verify the downloaded subset before running:
 
 ```bash
-python/aisimulate/.venv/bin/python - <<'PY'
+python/aisim/.venv/bin/python - <<'PY'
 import hashlib
 from pathlib import Path
 trace = Path("/tmp/agentx-quickstart/plays-0000-0001.jsonl")
@@ -165,7 +165,7 @@ transfer bandwidth is an example assumption, not a measured link speed.
 ## 4. Run the simulation
 
 ```bash
-python/aisimulate/.venv/bin/python -m aisimulate predict \
+python/aisim/.venv/bin/python -m aisim predict \
   --stack engine \
   --config /tmp/agentx-quickstart/disagg.yaml \
   --capture-per-request \
@@ -180,7 +180,7 @@ To change the admission window to 600 simulated seconds without editing the
 YAML, use a CLI override:
 
 ```bash
-python/aisimulate/.venv/bin/python -m aisimulate predict \
+python/aisim/.venv/bin/python -m aisim predict \
   --stack engine \
   --config /tmp/agentx-quickstart/disagg.yaml \
   --set traffic.load.agentic_profile.duration_seconds=600 \
@@ -228,7 +228,10 @@ defaults to 1,000 simulated milliseconds and can be set with
 [native telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
 
 For an offline HTML dashboard, add `--export-html` instead. It enables telemetry
-automatically and writes `report.html` alongside these files. Open it in a browser
+automatically and writes `report.html` alongside these files. The standalone file
+embeds UTF-8 renderer assets shared with the accuracy dashboard; it requires no
+network access. Silicon comparisons appear only when qualified reference data is
+supplied by the accuracy publisher. Open it in a browser
 to inspect profiling, warmup, caches, throughput, and the scrolling request timeline.
 
 Check `agentic_phases` for preparation success and barrier state, and

@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Adapted and modified for AISimulate from AIConfigurator's .coderabbit.yaml:
+# Adapted and modified for AISim from AIConfigurator's .coderabbit.yaml:
 # https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/.coderabbit.yaml
 # Upstream license: Apache-2.0
 
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # Active repository-level CodeRabbit policy. The copy under
-# python/aisimulate/ is preserved migration provenance and is not active here.
+# python/aisim/ is preserved migration provenance and is not active here.
 language: "en-US"
 tone_instructions: >-
   Be direct, technical, and concise. Report only actionable findings tied to
@@ -98,7 +98,7 @@ reviews:
     - path: "crates/core/src/perfmodel/**"
       instructions: |
         Enforce the single-oracle and golden-diff rules in
-        python/aisimulate/.claude/rules/rust-core/parity.md. Treat formulas,
+        python/aisim/.claude/rules/rust-core/parity.md. Treat formulas,
         table selection, interpolation, quantization, defaults, and fallback
         ordering as numerical behavior. Require an explained before/after
         golden diff or hand-derived oracle evidence for changed answers. Check
@@ -118,7 +118,7 @@ reviews:
         rationale. New behavior needs an independent oracle or justified
         append-only parity case.
 
-    - path: "python/aisimulate/src/aisimulate_core/**"
+    - path: "python/aisim/src/aisim_core/**"
       instructions: |
         Preserve the Rust single oracle: Python may describe operations, load
         raw data, orchestrate, and present results, but must not compute per-op
@@ -126,7 +126,7 @@ reviews:
         explicit absence behavior, and loud handling of corrupt or unsupported
         inputs. Do not reintroduce public per-call query shims.
 
-    - path: "python/aisimulate/src/aisimulate/generator/**"
+    - path: "python/aisim/src/aisim/generator/**"
       instructions: |
         Enforce the mapped generator guidelines. Trace input parsing, defaults,
         rules, parameter mapping, rendering, and emitted artifacts. Preserve
@@ -134,20 +134,26 @@ reviews:
         vLLM, and SGLang consistency plus CLI, validator, docs, and tests when a
         user-facing parameter or supported backend version changes.
 
-    - path: "python/aisimulate/tools/generator_validator/**"
+    - path: "python/aisim/tools/generator_validator/**"
       instructions: |
         Verify the validator checks emitted behavior across applicable backends
         and versions rather than command success alone. New flags, templates,
         or defaults need corresponding output assertions.
 
-    - path: "python/aisimulate/collector/**"
+    - path: "python/aisim/collector/**"
       instructions: |
-        Enforce the mapped collector guidelines. A queued case must execute or
-        raise; only generation-time memory feasibility may filter cases, with
-        counted drops. Reject invented geometry or kernel fallbacks, selector
-        exception machinery, untraceable results, and undocumented producer to
-        consumer schema changes. Verify runtime versions, commands, GPU
-        assumptions, and failure evidence.
+        Enforce the mapped collector guidelines (start from overview.md). Each
+        op has one plan for every backend (collector/op_plans.py), and its
+        getters are the one-line plan_cases call. A queued case must execute
+        or raise. Only collector/skips.py entries, each with its reason as a
+        comment, leave cases out; finer boundaries run and fail. Capacity is
+        refused at run time, before allocation, with a FIXME(kernel-limit):
+        does not fit reason. A worker guard is legal only for a case that would
+        mismeasure, hang or waste significant time. Reject invented geometry
+        or kernel fallbacks, environment switches that change rows, deviations
+        without a note at the deviating code, untraceable results, and
+        undocumented producer to consumer schema changes. Verify runtime
+        versions, commands, GPU assumptions, and failure evidence.
 
     - path: "crates/core/src/engine/**"
       instructions: |
@@ -164,7 +170,7 @@ reviews:
         silent coercion, dropped events, order-dependent behavior, or claims of
         predictive accuracy unsupported by production traces.
 
-    - path: "python/aisimulate/src/aisimulate/**"
+    - path: "python/aisim/src/aisim/**"
       instructions: |
         Check unified CLI, Replay, Sweeper, and orchestration behavior together.
         Preserve documented defaults, plain-output and non-TTY behavior, config
@@ -175,14 +181,14 @@ reviews:
       instructions: |
         Treat these as public and release boundaries. Verify Python imports,
         Rust exports, versions, feature flags, bindings, documentation, and the
-        two-artifact contract stay synchronized. AISimulate must remain
+        two-artifact contract stay synchronized. AISim must remain
         standalone and must not acquire a hard Dynamo runtime dependency.
 
     - path: "**/Cargo.toml"
       instructions: |
         Treat these as public and release boundaries. Verify Python imports,
         Rust exports, versions, feature flags, bindings, documentation, and the
-        two-artifact contract stay synchronized. AISimulate must remain
+        two-artifact contract stay synchronized. AISim must remain
         standalone and must not acquire a hard Dynamo runtime dependency.
 
     - path: "crates/core/src/*.rs"
@@ -191,7 +197,7 @@ reviews:
         Verify Rust exports, Python bindings, feature flags, versions, docs, and
         the two-artifact contract stay synchronized.
 
-    - path: "python/aisimulate/src/aisimulate/__init__.py"
+    - path: "python/aisim/src/aisim/__init__.py"
       instructions: |
         Treat public imports as a compatibility and release boundary. Verify
         exports, bindings, versions, docs, and deprecation behavior stay
@@ -234,7 +240,7 @@ reviews:
         local modification notices, and generated derivative records remain
         complete and internally consistent.
 
-    - path: "python/aisimulate/collector/**/patches/**"
+    - path: "python/aisim/collector/**/patches/**"
       instructions: |
         Verify upstream provenance, license text, collection and overlay hashes,
         local modification notices, and generated derivative records remain
@@ -285,7 +291,7 @@ reviews:
         mode: warning
         instructions: |
           Pass when Python and Rust public surfaces, schemas, versions, bindings,
-          and documented defaults remain synchronized; AISimulate stays
+          and documented defaults remain synchronized; AISim stays
           standalone from Dynamo; and the one-wheel plus one-crate artifact
           contract remains intact or is deliberately updated with evidence.
       - name: "Review evidence"
@@ -328,12 +334,12 @@ knowledge_base:
     filePatterns:
       - files: "REVIEW.md,AGENTS.md"
         applyTo: "**/*"
-      - files: "python/aisimulate/.claude/rules/generator-development.md,python/aisimulate/.claude/rules/generator/*.md"
-        applyTo: "python/aisimulate/src/aisimulate/generator/**,python/aisimulate/tools/generator_validator/**"
-      - files: "python/aisimulate/.claude/rules/collector/*.md"
-        applyTo: "python/aisimulate/collector/**,python/aisimulate/tests/unit/collector/**"
-      - files: "python/aisimulate/.claude/rules/rust-core/parity.md"
-        applyTo: "crates/core/src/perfmodel/**,crates/core/perfmodel/**,crates/core/parity_tests/perfmodel/**,python/aisimulate/src/aisimulate_core/**,python/aisimulate/tests/unit/sdk/test_opspec_coverage.py,python/aisimulate/tests/cross_package/test_single_oracle_contract.py"
+      - files: "python/aisim/.claude/rules/generator-development.md,python/aisim/.claude/rules/generator/*.md"
+        applyTo: "python/aisim/src/aisim/generator/**,python/aisim/tools/generator_validator/**"
+      - files: "python/aisim/.claude/rules/collector/*.md"
+        applyTo: "python/aisim/collector/**,python/aisim/tests/unit/collector/**"
+      - files: "python/aisim/.claude/rules/rust-core/parity.md"
+        applyTo: "crates/core/src/perfmodel/**,crates/core/perfmodel/**,crates/core/parity_tests/perfmodel/**,python/aisim/src/aisim_core/**,python/aisim/tests/unit/sdk/test_opspec_coverage.py,python/aisim/tests/cross_package/test_single_oracle_contract.py"
   learnings:
     scope: local
     approval_delay: 7

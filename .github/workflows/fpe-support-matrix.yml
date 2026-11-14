@@ -95,9 +95,10 @@ jobs:
           python3 - <<'PY'
           import hashlib, os
           from pathlib import Path
-          wheels = list(Path("fpe-wheel").glob("aisimulate-*.whl"))
+          from scripts.release.package_identity import wheels as product_wheels
+          wheels = product_wheels(Path("fpe-wheel"))
           if len(wheels) != 1:
-              raise SystemExit("expected exactly one AISimulate wheel")
+              raise SystemExit("expected exactly one AISim wheel")
           digest = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"sha256={digest}\n")
@@ -187,15 +188,15 @@ jobs:
           python -m pip install --force-reinstall fpe-wheel/*.whl
           python -m pip check
           python - <<'PY'
-          from importlib.metadata import distribution
+          from scripts.release.package_identity import installed_distribution
           from pathlib import Path
-          from aisimulate import _runtime
-          dist = distribution("aisimulate")
+          from aisim import _runtime
+          dist = installed_distribution()
           runtime = Path(_runtime.__file__).resolve()
           owned = {Path(dist.locate_file(p)).resolve() for p in dist.files or ()
-                   if str(p).startswith("aisimulate/_runtime.")}
+                   if str(p).startswith("aisim/_runtime.")}
           if runtime not in owned:
-              raise SystemExit(f"native runtime is not owned by the installed AISimulate wheel: {runtime}")
+              raise SystemExit(f"native runtime is not owned by the installed AISim wheel: {runtime}")
           print(runtime)
           PY
       - name: Generate strict-native op-level coverage through the FPE SDK

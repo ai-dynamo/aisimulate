@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+op: dsv4_attention
+description: >-
+  Decode budget of the DSV4 CSA/HCA attention module plans (collector/op_plans.py),
+  shared by every backend. It is an op-level budget (case_authoring.md "the op's
+  universal math (identities, budgets)"), not a model property, so it lives at the
+  base-op layer; the model file declares the batch and KV-length lists. Context
+  points follow the shared long-context grid (mla_module_plan in mla_module.yaml).
+common_case_values:
+  dsv4_module_budgets:
+    max_generation_kv_tokens: 1048576
+    # decode batch ladder: [seq_len_floor, max_batch] — a decode shape with
+    # sl >= seq_len_floor and bs > max_batch is out of budget.
+    decode_batch_ladder:
+    - [524288, 1]
+    - [262144, 2]
+    - [131072, 4]
+    - [65536, 8]
+    - [32768, 16]
+    - [8192, 64]

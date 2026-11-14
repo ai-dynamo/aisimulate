@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Build the pinned Dynamo replay adapter against one exact AISimulate checkout."""
+"""Build the pinned Dynamo replay adapter against one exact AISim checkout."""
 
 import argparse
 import hashlib
@@ -10,6 +10,10 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.release.package_identity import core_package
 
 DYNAMO_REVISION = "def3b79b15c266805540a678dd400aeb6ccada1d"
 REPLAY_ADAPTER_SHA256 = "2d03eb4fe0d62f2dd09521fc3cb1e5e97f6d956ef9efd2fb43eabc48d2318af3"
@@ -27,7 +31,7 @@ SPECULATION_DEPTH_OLD = """    let nextn = config
         .as_ref()
         .map_or(config.nextn, |spec| spec.num_speculative_tokens());
 """
-SPECULATION_DEPTH_NEW = """    // Modified by AISimulate CI: preserve the Ngram-only replay contract
+SPECULATION_DEPTH_NEW = """    // Modified by AISim CI: preserve the Ngram-only replay contract
     // across the enum-to-struct cost-configuration migration.
     let nextn = match config.speculation.as_ref() {
         None => config.nextn,
@@ -89,7 +93,7 @@ def patch_handoff_timing(core: Path, dynamo: Path) -> dict:
         "bandwidth_gb_s": "Option<f64>",
     }
     if fields not in (legacy, legacy | {"state_bytes": "usize"}):
-        raise ValueError("unreviewed AISimulate handoff API; update the pinned adapter")
+        raise ValueError("unreviewed AISim handoff API; update the pinned adapter")
     patched = original
     if "state_bytes" in fields:
         anchor = b"        kv_bytes_per_token: timing.kv_bytes_per_token,\n"
@@ -98,10 +102,7 @@ def patch_handoff_timing(core: Path, dynamo: Path) -> dict:
         patched = original.replace(
             anchor,
             anchor
-            + (
-                b"        // Modified by AISimulate CI: this legacy DTO models token KV only.\n"
-                b"        state_bytes: 0,\n"
-            ),
+            + (b"        // Modified by AISim CI: this legacy DTO models token KV only.\n        state_bytes: 0,\n"),
         )
         path.write_bytes(patched)
     return {
@@ -117,8 +118,8 @@ class LiteralSite(NamedTuple):
     path: str  # Dynamo source file containing the literal.
     sha256: str  # Reviewed content of that file at DYNAMO_REVISION.
     anchor: str  # Text that occurs once in the file and precedes the literal.
-    struct: str  # AISimulate struct built by the literal.
-    api: str  # AISimulate core source file that defines the struct.
+    struct: str  # AISim struct built by the literal.
+    api: str  # AISim core source file that defines the struct.
 
 
 # Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 sources at DYNAMO_REVISION:
@@ -127,8 +128,8 @@ class LiteralSite(NamedTuple):
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/entrypoints.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
-# Adds `field: None` for new optional AISimulate fields and empty images for the
-# pinned text-only Request; Dynamo behavior is otherwise unchanged.
+# Adds `field: None` for new optional AISim fields and empty images for the
+# pinned text-only Request; retain the recorded Weka client behavior.
 OPTIONAL_FIELD_LITERALS = (
     LiteralSite(
         "lib/mocker/src/grouped_scheduler/compatibility.rs",
@@ -164,6 +165,13 @@ OPTIONAL_FIELD_LITERALS = (
         "fn build_synthetic_workload(",
         "SyntheticTraceSpec",
         "src/replay/loadgen/types.rs",
+    ),
+    LiteralSite(
+        "lib/bindings/python/rust/llm/replay.rs",
+        "5f0f5910a77f6bb1bd315c67b75e161d792dddc8fd6381ea35e2046855470f41",
+        "fn parse_weka_import_options(",
+        "WekaImportOptions",
+        "src/replay/loadgen/weka.rs",
     ),
 )
 _OPTION_TYPE = re.compile(r"(?:(?:std|core)::option::)?Option\s*<.*>", re.DOTALL)
@@ -216,13 +224,13 @@ def _struct_fields(api_source: str, struct: str) -> dict[str, tuple[bool, str]]:
     """Map each field of ``pub struct <struct>`` to (plain ``pub``, type)."""
     matches = list(re.finditer(rf"\bpub struct {struct}\b\s*(?:<[^>{{]*>)?\s*\{{", api_source))
     if len(matches) != 1:
-        raise ValueError(f"expected one AISimulate `pub struct {struct}` with named fields, found {len(matches)}")
+        raise ValueError(f"expected one AISim `pub struct {struct}` with named fields, found {len(matches)}")
     start, end = _braced(api_source, matches[0].start())
     fields = {}
     for item in _top_level_items(api_source[start:end], angle=True):
         field = re.fullmatch(r"(pub(?:\s*\([^)]*\))?\s+)?(?:r#)?(\w+)\s*:\s*(.+)", item, re.DOTALL)
         if not field:
-            raise ValueError(f"cannot parse AISimulate {struct} field {item!r}")
+            raise ValueError(f"cannot parse AISim {struct} field {item!r}")
         fields[field[2]] = ((field[1] or "").strip() == "pub", re.sub(r"\s+", " ", field[3]))
     return fields
 
@@ -243,20 +251,28 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
         present.append(field[1])
     stale = [name for name in present if name not in struct_fields]
     if stale:
-        raise ValueError(f"{site.path}: {site.struct} literal sets fields AISimulate no longer has: {stale}")
+        raise ValueError(f"{site.path}: {site.struct} literal sets fields AISim no longer has: {stale}")
     missing = [name for name in struct_fields if name not in present]
     defaults = {
         "ReplaySpec": {"encoder": ((True, "Option<EncoderSpec>"), "None")},
         "SyntheticTraceSpec": {"images": ((True, "Option<SyntheticImages>"), "None")},
+        "WekaImportOptions": {
+            "client": ((True, "WekaClient"), "WekaImportOptions::default().client"),
+            "chat_template": ((True, "Option<WekaChatTemplate>"), "None"),
+        },
         "SglangConfig": {
+            "hicache": ((True, "Option<SglangHiCacheConfig>"), "None"),
             "host_loop": ((True, "bool"), "false"),
             "vlm_cache_bytes": ((True, "u64"), "SglangConfig::default().vlm_cache_bytes"),
+            "disaggregation_decode_enable_radix_cache": ((True, "bool"), "false"),
+            "num_reserved_decode_tokens": ((True, "usize"), "SglangConfig::default().num_reserved_decode_tokens"),
+            "disaggregation_decode_extra_slots": ((True, "Option<usize>"), "None"),
         },
     }.get(site.struct)
     if defaults is not None:
         unreviewed = [name for name in missing if name not in defaults or struct_fields[name] != defaults[name][0]]
         if unreviewed:
-            raise ValueError(f"{site.path}: unreviewed AISimulate {site.struct} fields: {unreviewed}")
+            raise ValueError(f"{site.path}: unreviewed AISim {site.struct} fields: {unreviewed}")
     empty_images = (
         site.struct == "Request" and "images" in missing and struct_fields["images"] == (True, "Vec<ImageSpec>")
     )
@@ -265,9 +281,7 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
         name for name in optional if not (struct_fields[name][0] and _OPTION_TYPE.fullmatch(struct_fields[name][1]))
     ]
     if required and defaults is None:
-        raise ValueError(
-            f"{site.path}: AISimulate {site.struct} adds fields Dynamo must set (not `pub` Option): {required}"
-        )
+        raise ValueError(f"{site.path}: AISim {site.struct} adds fields Dynamo must set (not `pub` Option): {required}")
     if not missing:
         return source, []
     line_start = source.rindex("\n", 0, close) + 1
@@ -276,13 +290,13 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     indent = re.search(r"\n([ \t]*)\S", source[start - 1 : close])[1]
     inserted = ""
     if defaults is not None:
-        inserted = f"{indent}// Modified by AISimulate CI: retain the pinned text-only replay configuration.\n"
+        inserted = f"{indent}// Modified by AISim CI: retain the pinned text-only replay configuration.\n"
         inserted += "".join(f"{indent}{name}: {defaults[name][1]},\n" for name in missing)
     elif optional:
-        inserted = f"{indent}// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
+        inserted = f"{indent}// Modified by AISim CI: Dynamo does not set these optional fields yet.\n"
         inserted += "".join(f"{indent}{name}: None,\n" for name in optional)
     if empty_images:
-        inserted += f"{indent}// Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
+        inserted += f"{indent}// Modified by AISim CI: the pinned Dynamo request is text-only.\n"
         inserted += (
             f"{indent}images: {{\n"
             f"{indent}    assert!(\n"
@@ -299,13 +313,13 @@ def _patch_ttft_lifecycle(source: str, api: str) -> tuple[str, list[str]]:
     """The legacy Dynamo lifecycle DTO cannot represent host-loop milestones."""
     enums = list(re.finditer(r"\bpub enum LifecycleEvent\s*\{", api))
     if len(enums) != 1:
-        raise ValueError("expected one AISimulate LifecycleEvent enum")
+        raise ValueError("expected one AISim LifecycleEvent enum")
     start, end = _braced(api, enums[0].start())
     variants = {}
     for item in _top_level_items(api[start:end], angle=True):
         variant = re.fullmatch(r"(\w+)\s*\{(.*)\}", item, re.DOTALL)
         if not variant:
-            raise ValueError(f"unreviewed AISimulate lifecycle variant: {item}")
+            raise ValueError(f"unreviewed AISim lifecycle variant: {item}")
         variants[variant[1]] = re.sub(r"\s+", "", variant[2])
     legacy = {"SourceHeld", "DestinationReserved"}
     if set(variants) == legacy:
@@ -313,11 +327,11 @@ def _patch_ttft_lifecycle(source: str, api: str) -> tuple[str, list[str]]:
     if set(variants) != legacy | {"TtftMilestone"} or variants["TtftMilestone"] != (
         "request_id:Uuid,stage:TtftMilestone,at_ms:f64,"
     ):
-        raise ValueError("unreviewed AISimulate lifecycle API; update the pinned adapter")
+        raise ValueError("unreviewed AISim lifecycle API; update the pinned adapter")
     anchor = "        Ok(match event {\n"
     if source.count(anchor) != 1:
         raise ValueError("pinned Dynamo lifecycle conversion anchor is not unique")
-    arm = """            // Modified by AISimulate CI: host-loop/frontend events are unsupported.
+    arm = """            // Modified by AISim CI: host-loop/frontend events are unsupported.
             LifecycleEvent::TtftMilestone { request_id, stage, at_ms } => {
                 return Err(anyhow!(
                     "pinned Dynamo CI adapter does not support TTFT milestone {stage:?} for {request_id} at {at_ms}ms"
@@ -370,7 +384,7 @@ def patch_replay_engine_config(core: Path, dynamo: Path) -> dict:
         for struct in ("ReplayEngineConfig", "ReplayRoleConfig")
     ]
     if fields not in ([None, None], [(True, "u32"), (True, "u32")]):
-        raise ValueError("unreviewed AISimulate replay PCP API; update the pinned adapter")
+        raise ValueError("unreviewed AISim replay PCP API; update the pinned adapter")
     patched = original
     if fields[0] is not None:
         anchor = b"        num_gpu_blocks_is_explicit: Some(true),\n"
@@ -378,7 +392,7 @@ def patch_replay_engine_config(core: Path, dynamo: Path) -> dict:
             raise ValueError("pinned replay adapter must have four capacity anchors")
         patched = original.replace(
             anchor,
-            b"        // Modified by AISimulate CI: the pinned adapter has no PCP control.\n"
+            b"        // Modified by AISim CI: the pinned adapter has no PCP control.\n"
             b"        prefill_context_parallel_size: 1,\n" + anchor,
         )
     site = LiteralSite(
@@ -411,6 +425,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
         raise ValueError("unexpected Dynamo revision")
     subprocess.run(["git", "-C", str(dynamo), "diff", "--exit-code", "HEAD"], check=True)
     core = source / "crates/core"
+    package = core_package(core)
     handoff_compatibility = patch_handoff_timing(core, dynamo)
     literal_compatibility = patch_optional_literal_fields(core, dynamo)
     speculation_compatibility = patch_speculation_depth(dynamo)
@@ -422,12 +437,14 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
     ):
         text, count = re.subn(
             r"^aisimulate-core = .*",
-            lambda _: f"aisimulate-core = {{ path = {json.dumps(str(core))}{options} }}",
+            lambda _: (
+                f"aisimulate-core = {{ package = {json.dumps(package)}, path = {json.dumps(str(core))}{options} }}"
+            ),
             manifest.read_text(),
             flags=re.MULTILINE,
         )
         if count != 1:
-            raise ValueError(f"expected one AISimulate dependency in {manifest}")
+            raise ValueError(f"expected one AISim dependency in {manifest}")
         manifest.write_text(text)
     # Resolve the local core's dependency graph from Dynamo's existing lock.
     # Compilation stays locked to this resolved graph, which is saved below.
@@ -438,9 +455,9 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
             cwd=bindings,
         )
     )
-    linked = [p["manifest_path"] for p in metadata["packages"] if p["name"] == "aisimulate-core"]
+    linked = [p["manifest_path"] for p in metadata["packages"] if p["name"] == package]
     if linked != [str(core / "Cargo.toml")]:
-        raise ValueError(f"Dynamo resolved a different AISimulate core: {linked}")
+        raise ValueError(f"Dynamo resolved a different AISim core: {linked}")
     subprocess.run(
         [
             sys.executable,

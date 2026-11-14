@@ -13,11 +13,22 @@ use crate::engine::host_offload::HostBlockKey;
 /// relinks in O(1). The caller keeps each block's node in a slot, normally a
 /// field of the block's own entry; node 0 is the sentinel between the newest
 /// and oldest blocks. Callers make a cohort newest in key order, the tiers'
-/// deterministic tie-break.
+/// deterministic tie-break, unless a G2 tier keeps release order (a free
+/// queue) or ranks blocks when their store starts.
+///
+/// A caller that keeps making the same blocks the newest has them join a run
+/// as it moves them. The run is whole while each of its blocks is linked
+/// where the caller last put it, so the caller can move them again without
+/// finding them. A run stops being whole when one of its blocks is touched
+/// alone, removed or joined to another run.
 pub(crate) struct Lru {
     nodes: Vec<LruNode>,
     /// Unlinked nodes reused before the slab grows.
     vacant: Vec<NonZeroU32>,
+    /// See [`Self::touches`].
+    touches: u64,
+    /// Whether each run is whole, by run. [`NO_RUN`] never is.
+    whole_runs: Vec<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -25,9 +36,12 @@ struct LruNode {
     key: HostBlockKey,
     older: u32,
     newer: u32,
+    /// The block's run, [`NO_RUN`] until it joins one.
+    run: u32,
 }
 
 const SENTINEL: u32 = 0;
+const NO_RUN: u32 = 0;
 
 impl Default for Lru {
     fn default() -> Self {
@@ -36,8 +50,11 @@ impl Default for Lru {
                 key: HostBlockKey::new(0),
                 older: SENTINEL,
                 newer: SENTINEL,
+                run: NO_RUN,
             }],
             vacant: Vec::new(),
+            touches: 0,
+            whole_runs: vec![false],
         }
     }
 }
@@ -48,18 +65,91 @@ impl Lru {
         let node = match *slot {
             Some(node) => {
                 self.unlink(node);
+                self.join_run(node, NO_RUN);
                 node
             }
             None => *slot.insert(self.allocate(key)),
         };
         self.push_newest(node);
+        self.touches += 1;
+    }
+
+    /// Make the adjacent blocks from `oldest` through `newest` the newest,
+    /// keeping their order. No run is marked, so the span's blocks must
+    /// already be in the caller's run.
+    pub(crate) fn touch_span(&mut self, oldest: NonZeroU32, newest: NonZeroU32) {
+        let after = self.nodes[newest.get() as usize].newer;
+        if after == SENTINEL {
+            return;
+        }
+        let before = self.nodes[oldest.get() as usize].older;
+        self.nodes[before as usize].newer = after;
+        self.nodes[after as usize].older = before;
+        let last = self.nodes[SENTINEL as usize].older;
+        self.nodes[last as usize].newer = oldest.get();
+        self.nodes[oldest.get() as usize].older = last;
+        self.nodes[newest.get() as usize].newer = SENTINEL;
+        self.nodes[SENTINEL as usize].older = newest.get();
+        self.touches += 1;
+    }
+
+    /// From `oldest`, take the newer neighbours while their keys match `keys`
+    /// read backwards, join them all to `run` and make the span the newest.
+    /// Returns its newest block and how many keys matched.
+    pub(crate) fn touch_matching_span(
+        &mut self,
+        run: u32,
+        oldest: NonZeroU32,
+        keys: &[HostBlockKey],
+    ) -> (NonZeroU32, usize) {
+        let mut newest = oldest;
+        let mut rest = keys;
+        loop {
+            self.join_run(newest, run);
+            let newer = self.nodes[newest.get() as usize].newer;
+            match (NonZeroU32::new(newer), rest.split_last()) {
+                (Some(node), Some((key, before))) if self.nodes[newer as usize].key == *key => {
+                    newest = node;
+                    rest = before;
+                }
+                _ => break,
+            }
+        }
+        self.touch_span(oldest, newest);
+        (newest, keys.len() - rest.len())
+    }
+
+    /// A new run, whole and without blocks.
+    pub(crate) fn new_run(&mut self) -> u32 {
+        let run = u32::try_from(self.whole_runs.len()).expect("offload LRU run overflow");
+        self.whole_runs.push(true);
+        run
+    }
+
+    /// Whether `run` was whole. It is whole afterwards: the caller rejoins
+    /// its blocks.
+    pub(crate) fn resume_run(&mut self, run: u32) -> bool {
+        std::mem::replace(&mut self.whole_runs[run as usize], true)
     }
 
     pub(crate) fn remove(&mut self, slot: &mut Option<NonZeroU32>) {
         if let Some(node) = slot.take() {
             self.unlink(node);
+            self.join_run(node, NO_RUN);
             self.vacant.push(node);
         }
+    }
+
+    /// How many times a block or a run was made the newest. While the count
+    /// stands, the newest blocks are the same, in the same order, less any
+    /// removed.
+    pub(crate) fn touches(&self) -> u64 {
+        self.touches
+    }
+
+    /// Number of linked blocks.
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len() - 1 - self.vacant.len()
     }
 
     /// The `count` oldest blocks that pass `is_eligible`.
@@ -106,8 +196,17 @@ impl Lru {
             key,
             older: SENTINEL,
             newer: SENTINEL,
+            run: NO_RUN,
         });
         node
+    }
+
+    /// Move `node` into `run`. The run it leaves is no longer whole.
+    fn join_run(&mut self, node: NonZeroU32, run: u32) {
+        let left = std::mem::replace(&mut self.nodes[node.get() as usize].run, run);
+        if left != run {
+            self.whole_runs[left as usize] = false;
+        }
     }
 
     fn unlink(&mut self, node: NonZeroU32) {
@@ -150,7 +249,7 @@ mod tests {
         for _ in 0..20_000 {
             let index = rng.random_range(0..slots.len());
             let block = HostBlockKey::new(index as u64);
-            match rng.random_range(0..3) {
+            match rng.random_range(0..4) {
                 0 => {
                     lru.touch(&mut slots[index], block);
                     expected.retain(|key| *key != block);
@@ -159,6 +258,16 @@ mod tests {
                 1 => {
                     lru.remove(&mut slots[index]);
                     expected.retain(|key| *key != block);
+                }
+                2 => {
+                    // A span of adjacent blocks, from `block` on, moves as one.
+                    if let Some(start) = expected.iter().position(|key| *key == block) {
+                        let end = rng.random_range(start..expected.len());
+                        let node = |key: HostBlockKey| slots[key.sequence_hash() as usize].unwrap();
+                        lru.touch_span(node(expected[start]), node(expected[end]));
+                        let span: Vec<_> = expected.drain(start..=end).collect();
+                        expected.extend(span);
+                    }
                 }
                 _ => {
                     let count = rng.random_range(0..8);

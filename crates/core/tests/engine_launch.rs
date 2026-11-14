@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aisimulate_core::engine::{Backend, EngineConfig, EngineLaunchConfig};
+use aisim_core::engine::{Backend, EngineConfig, EngineLaunchConfig};
 use serde_json::json;
 
 #[test]

@@ -198,6 +198,13 @@ parallelism:
 Omitted parallelism knobs then use their table-defined default ranges, and the Sweeper evaluates the
 Cartesian product before feasibility filtering.
 
+A role timed by a [calibrated state snapshot](../perf-model/configuration.md#recommending-with-a-calibrated-snapshot)
+searches only the snapshot's tensor, pipeline, attention-data and MoE shape and its KV block size.
+A preset list keeps only matching mappings, and per-knob domains must include the saved values;
+replicas keep their domain. A width a [regression or learned snapshot](../perf-model/configuration.md#regression-and-learned-snapshots)
+records as `"unknown"` must be one explicit value, and its recorded `deployment_limits` fix the
+role's KV capacity and cap its scheduler domains.
+
 <a id="optimizer-controls"></a>
 
 ## Optimizer Controls
@@ -330,16 +337,13 @@ search_space:
 A disaggregated entry contains `prefill` and `decode` shapes. Every pinned shape must be legal,
 KV-feasible, supported by at least one selected backend, and accepted by the configured Replay
 runner. If every selected backend/topology pair is runner-incompatible, preflight raises
-`aisimulate.sweeper.RunnerIncompatibleError` with the rejected mode and backend names.
+`aisim.sweeper.RunnerIncompatibleError` with the rejected mode and backend names.
 
 <a id="sampler-algorithm-override"></a>
 
 ## SDK: Sampler Algorithm Override
 
-The experimental `AISIMULATE_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier
-algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandit designer.
-`SPICA_VIZIER_ALGO` remains a deprecated fallback during migration; when both are set, the
-AI Simulate variable takes precedence.
+The experimental `AISIM_SWEEPER_VIZIER_ALGO` environment variable overrides the Vizier algorithm. For example, set it to `RANDOM_SEARCH` to bypass the default GP-bandit designer. The legacy `AISIMULATE_SWEEPER_VIZIER_ALGO` remains a compatibility fallback, followed by the deprecated `SPICA_VIZIER_ALGO`; the canonical AISim variable takes precedence when multiple names are set.
 
 ## `kv_load_ratio` (candidate-relative concurrency)
 
@@ -396,40 +400,44 @@ when unset (`max(1, …)` keeps at least one request).
 
 ## Attention-FFN disaggregation
 
-Public CLI uses `engine.mode: afd` and `engine.afd`; SDK uses deployment modes
-`afd` and `afd+pd`. This is an analytical path, and runners must advertise the
-backend/topology pair. It does not execute native A/F worker handoffs.
+Public CLI separates `engine.mode: aggregated|disaggregated` from each worker's
+`type: monolithic|afd`. The SDK deployment modes remain `agg|disagg`;
+`SearchSpace.afd_roles` holds AFD worker domains by `aggregated`, `prefill` or `decode`.
+Each role chooses its type explicitly; worker type is not a search axis.
 
-In the SDK, `afd_pinned_topologies` supplies complete shapes. Otherwise an
-explicit `afd_batch_size_candidates` list bounds the finite domain; optional
-`afd_tp_a_candidates`, `afd_f_moe_ep_size_candidates`, `afd_microbatch_candidates`,
-`afd_pipeline_model_candidates` and `afd_max_candidates` constrain it further.
-`afd+pd` uses `afd_phase: prefill` or `decode` and the opposite phase's ordinary
-worker knobs; `afd_companion_parallel_configs` can pin companion shapes.
+| SDK field | Default | Behavior |
+| --- | --- | --- |
+| `afd_roles` | `{}` | Role-indexed AFD worker domains; ordinary roles use the existing per-role controls. |
+| `max_topology_candidates` | `10000` | Public `optimization.max_topology_candidates`; limits AFD role enumeration and the complete legal compositions. |
 
-AFD requires concrete positive input/output lengths and synthetic request-rate
-or absolute-concurrency traffic. Candidate-relative KV load is rejected because
-the analytical path does not expose scheduler-visible KV capacity. The candidate
-GPU total includes attention, FFN and any P/D companion. Read
-[Replay AFD](../replay/engine/analytical.md#afd) for the full
-shape contract, staging and analytical limits.
+AFD domains enumerate A/F nodes, attention TP, explicit batch size, F-side EP,
+and microbatches. Attention supports legal node-local TP × DP (default TP1);
+the F pool uses pure routed EP with MoE TP1.
+`AFDSearchConfig.pinned_topologies` remains available for standalone topology enumeration.
+Each role's A/F geometry is independent. SDK custom and independent parallel
+constraints apply to AFD roles too: TP denotes A TP, attention DP denotes A
+replicas, and MoE EP denotes the F pool's expert width. Conflicting topology
+constraints fail explicitly. Ordinary-role controls remain active when the
+opposite role is AFD.
 
-### Finite AFD topology enumeration
+Supported SDK runtime knobs such as `<role>_max_num_seqs`,
+`<role>_max_num_batched_tokens`, `<role>_num_gpu_blocks` and
+`<role>_enable_prefix_caching` normalize into the common AFD worker settings.
+Role estimator controls normalize into that role's `timing` block. Saved searches
+emit only the normalized role settings, avoiding ordinary defaults on reload.
+Unsupported explicit overrides (including memory fractions and custom timing
+models) are rejected rather than silently discarded.
 
-`AFDSearchConfig.pinned_topologies` preserves complete pinned shapes exactly.
-Otherwise `enumerate_afd_topologies` enumerates A/F node counts, attention TP
-and batch size, F-side EP, microbatches and pipeline model. One F replica spans
-all F GPUs; F TP equals that pool size. EP must divide both F TP and the known
-model expert count. The GPU budget is an upper bound: a remainder smaller than
-`gpus_per_node` may be unused.
+P/D composition groups Decode candidates by GPU count, excludes impossible budget
+pairs, then traverses legal candidates in stable Prefill-major/Decode-minor order.
+The minimum and maximum GPU budgets apply to the whole deployment. Exceeding
+`max_topology_candidates` is an explicit error; no candidate domain is truncated.
+One logical AFD worker accounts for all GPUs in its A/F pair. Dual-sided AFD
+adds the two independent pairs' GPU totals.
 
-The finite domain retains canonical ordering. If it exceeds `max_candidates`,
-enumeration fails with `candidate_limit` instead of silently truncating it.
-For AFD+P/D, the full legal topology-by-companion product must also fit
-`afd_max_candidates`. Candidate provenance records the phase, shape, A/F GPU
-accounting, generated dimensions and filters; pinned shapes identify their
-explicit source. Performance measurements and staged scheduling are documented
-in [Replay's AFD contract](../replay/engine/analytical.md#afd).
+Saved candidates preserve role identities, physical geometry and provenance through
+prediction YAML and ReplaySpec reload. See [SDK enumeration](afd-topology.md#pinned-and-searched-shapes)
+and [AFD configuration](../replay/engine/analytical.md#afd) for timing and workload limits.
 
 ## Analytical encoder search
 

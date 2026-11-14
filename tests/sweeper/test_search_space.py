@@ -7,20 +7,20 @@ from pathlib import Path
 
 import pytest
 
-import aisimulate.sweeper as sweeper_api
-import aisimulate.sweeper.search_space as search_space_module
-from aisimulate.sweeper.config import SmartSearchConfig
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.kv_estimate import NoPerfDatabase, resolve_backend_version
-from aisimulate.sweeper.model_hw import ModelHardware, NoViableParallelConfig
-from aisimulate.sweeper.parallel_enum import (
+import aisim.sweeper as sweeper_api
+import aisim.sweeper.search_space as search_space_module
+from aisim.sweeper.config import SmartSearchConfig
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.kv_estimate import NoPerfDatabase, resolve_backend_version
+from aisim.sweeper.model_hw import ModelHardware, NoViableParallelConfig
+from aisim.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
     ReplicaParallelConfig,
 )
-from aisimulate.sweeper.replay import RunnerCapabilities
-from aisimulate.sweeper.sample import unroll_sample
-from aisimulate.sweeper.search_space import (
+from aisim.sweeper.replay import RunnerCapabilities
+from aisim.sweeper.sample import unroll_sample
+from aisim.sweeper.search_space import (
     RunnerIncompatibleError,
     branch_knob_choices,
     enumerate_branches,
@@ -242,7 +242,7 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         calls.append((deployment_mode, backend))
         return [_DISAGG_DP1_CFG]
 
-    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
+    monkeypatch.setattr("aisim.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["disagg"],
         backend=["trtllm", "vllm"],
@@ -280,8 +280,8 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
         calls.append((hardware, deployment_mode, backend_version, role_runtime, role_max_seq_len, worker_type))
         return [_AGG_CFG if hardware == "h200_sxm" else _DP8_CFG]
 
-    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
-    monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_backend_version", lambda *args, **kwargs: "1.0")
+    monkeypatch.setattr("aisim.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
+    monkeypatch.setattr("aisim.sweeper.search_space.resolve_backend_version", lambda *args, **kwargs: "1.0")
     config = _config(
         deployment_mode=["disagg"],
         hardware_sku="gb200",
@@ -310,9 +310,9 @@ def test_heterogeneous_disagg_requires_one_common_implicit_backend_version(monke
         del backend
         return {"h200_sxm": "prefill-version", "gb200": "decode-version"}[hardware]
 
-    monkeypatch.setattr("aisimulate.sweeper.search_space.resolve_backend_version", role_version)
+    monkeypatch.setattr("aisim.sweeper.search_space.resolve_backend_version", role_version)
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: pytest.fail("shape lookup must wait for a common backend version"),
     )
     config = _config(
@@ -335,7 +335,7 @@ def test_all_backends_runner_incompatible_raises_typed_terminal_error(monkeypatc
         pytest.fail("runner-incompatible backends must be rejected before perf lookup")
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         unexpected_parallel_lookup,
     )
     config = _config(
@@ -359,7 +359,7 @@ def test_all_modes_runner_incompatible_reports_each_mode(monkeypatch):
         pytest.fail("runner-incompatible backends must be rejected before perf lookup")
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         unexpected_parallel_lookup,
     )
     config = _config(
@@ -384,7 +384,7 @@ def test_duplicate_runner_incompatible_backends_are_reported_once(monkeypatch):
         pytest.fail("runner-incompatible backends must be rejected before perf lookup")
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         unexpected_parallel_lookup,
     )
     config = _config(
@@ -410,7 +410,7 @@ def test_duplicate_runner_compatible_backends_are_looked_up_once(monkeypatch):
         return [_AGG_CFG]
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         fake_parallel_configs,
     )
     config = _config(
@@ -437,7 +437,7 @@ def test_mixed_terminal_failure_preserves_runner_details(monkeypatch):
         raise NoPerfDatabase(f"no performance data for {backend}")
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         no_perf_database,
     )
     config = _config(
@@ -478,7 +478,7 @@ def test_explicit_mode_runner_incompatibility_is_not_global(
         return [_DISAGG_DP1_CFG]
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         fake_parallel_configs,
     )
     config = _config(
@@ -529,7 +529,7 @@ def test_explicit_all_modes_runner_incompatible_reports_each_mode(
         pytest.fail("runner-incompatible backends must be rejected before perf lookup")
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         unexpected_parallel_lookup,
     )
     config = _config(
@@ -565,7 +565,7 @@ def test_explicit_parallel_config_preserves_runner_incompatibility(
         pytest.fail("runner-incompatible backends must be rejected before perf lookup")
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         unexpected_parallel_lookup,
     )
     config = _config(
@@ -603,7 +603,7 @@ def test_explicit_parallel_config_preserves_mixed_runner_details(
         raise NoPerfDatabase(f"no performance data for {backend}")
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         no_perf_database,
     )
     config = _config(
@@ -628,7 +628,7 @@ def test_explicit_parallel_config_preserves_mixed_runner_details(
 
 def test_runner_prunes_disaggregated_attention_dp_before_sampling(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: [_DISAGG_DP1_CFG, _DISAGG_DP8_CFG],
     )
     config = _config(
@@ -648,7 +648,7 @@ def test_runner_prunes_disaggregated_attention_dp_before_sampling(monkeypatch):
 
 def test_runner_can_advertise_disaggregated_attention_dp(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: [_DISAGG_DP1_CFG, _DISAGG_DP8_CFG],
     )
     config = _config(
@@ -689,7 +689,7 @@ def test_pinned_parallel_configs_replace_generated_menu():
 )
 def test_explicit_hybrid_pin_uses_backend_and_capacity_checks(monkeypatch, backend, budget, has_capacity, accepted):
     monkeypatch.setattr(
-        "aisimulate.sweeper.model_hw.resolve_model_hardware",
+        "aisim.sweeper.model_hw.resolve_model_hardware",
         lambda *args, **kwargs: ModelHardware(
             model_name="model",
             hardware_sku="hardware",
@@ -709,7 +709,7 @@ def test_explicit_hybrid_pin_uses_backend_and_capacity_checks(monkeypatch, backe
         seen.extend(shapes)
         return dict.fromkeys(shapes, 4096) if has_capacity else {}
 
-    monkeypatch.setattr("aisimulate.sweeper.model_hw.feasible_shape_tokens", feasible)
+    monkeypatch.setattr("aisim.sweeper.model_hw.feasible_shape_tokens", feasible)
     config = _config(
         deployment_mode=["agg"],
         backend=[backend],
@@ -729,7 +729,7 @@ def test_explicit_hybrid_pin_uses_backend_and_capacity_checks(monkeypatch, backe
 @pytest.mark.parametrize("replicas", [[3], [1, 2, 3]])
 def test_pinned_gpu_budget_rejection_names_requirement_and_limit(monkeypatch, replicas):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: [_AGG_CFG],
     )
     config = _config(
@@ -743,6 +743,122 @@ def test_pinned_gpu_budget_rejection_names_requirement_and_limit(monkeypatch, re
         match=r"used_gpus=3 exceeds gpu_budget=2 \(optimization.constraints.max_candidate_gpus in recommend\)",
     ):
         enumerate_branches(config)
+
+
+@pytest.fixture
+def mixed_parallel_config(monkeypatch):
+    """Use real topology/budget checks with deterministic model capacity."""
+
+    def model_hardware(model, hardware, *, backend, **kwargs):
+        return ModelHardware(
+            model_name=model,
+            hardware_sku=hardware,
+            backend=backend,
+            is_moe=False,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+        )
+
+    monkeypatch.setattr("aisim.sweeper.model_hw.resolve_model_hardware", model_hardware)
+    monkeypatch.setattr("aisim.sweeper.search_space.resolve_model_hardware", model_hardware)
+    monkeypatch.setattr(
+        "aisim.sweeper.model_hw.feasible_shape_tokens",
+        lambda shapes, **kwargs: dict.fromkeys(shapes, 4096),
+    )
+    return _config(
+        model_name="model",
+        deployment_mode=["disagg"],
+        backend=["vllm"],
+        gpu_budget=2,
+        parallel_custom_configs_by_mode={"disagg": {"prefill": [{"tp": 2, "replicas": 1}]}},
+        parallel_independent_by_mode={
+            "disagg": {f"decode_{name}": [1] for name in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "replicas")}
+        },
+    )
+
+
+def test_mixed_parallel_budget_probe_handles_large_replica_range(mixed_parallel_config):
+    mixed_parallel_config.search_space.parallel_independent_log_ranges_by_mode = {
+        "disagg": {"decode_replicas": [1_000_000, 2_000_000]}
+    }
+
+    with pytest.raises(NoViableParallelConfig, match="used_gpus=1000002 exceeds gpu_budget=2"):
+        enumerate_branches(mixed_parallel_config)
+
+
+def test_mixed_parallel_budget_diagnostic_requires_kv_feasible_evidence(monkeypatch, mixed_parallel_config):
+    monkeypatch.setattr(
+        "aisim.sweeper.model_hw.feasible_shape_tokens",
+        lambda shapes, **kwargs: {shape: 4096 for shape in shapes if shape.tp >= 2},
+    )
+    mixed_parallel_config.search_space.parallel_independent_by_mode["disagg"]["decode_tp"] = [1, 2]
+
+    # TP1 would use only three GPUs, but it cannot hold the requested context.
+    with pytest.raises(NoViableParallelConfig, match="used_gpus=4 exceeds gpu_budget=2"):
+        enumerate_branches(mixed_parallel_config)
+
+
+@pytest.mark.parametrize("failure", ["illegal-shape", "outside-search-menu", "kv-capacity", "missing-perf-database"])
+def test_mixed_parallel_nonbudget_failure_is_not_reported_as_budget(monkeypatch, mixed_parallel_config, failure):
+    if failure in {"illegal-shape", "outside-search-menu"}:
+        preset = {"tp": 1, "attention_dp": 2} if failure == "illegal-shape" else {"tp": 32}
+        mixed_parallel_config.search_space.parallel_custom_configs_by_mode = {"disagg": {"prefill": [preset]}}
+    elif failure == "kv-capacity":
+        monkeypatch.setattr("aisim.sweeper.model_hw.feasible_shape_tokens", lambda shapes, **kwargs: {})
+    elif failure == "missing-perf-database":
+
+        def missing_database(*args, **kwargs):
+            raise NoPerfDatabase("no performance database for this backend")
+
+        monkeypatch.setattr("aisim.sweeper.model_hw.feasible_shape_tokens", missing_database)
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(mixed_parallel_config)
+
+    assert "used_gpus=" not in str(error.value)
+    assert "increase the GPU budget" not in str(error.value)
+
+
+def test_mixed_parallel_diagnostic_preserves_complete_pinned_constraints(mixed_parallel_config):
+    # The complete TP1+TP1 pin conflicts with the role-specific TP2 preset.
+    mixed_parallel_config.search_space.parallel_configs = [{"prefill": {"tp": 1}, "decode": {"tp": 1}}]
+
+    with pytest.raises(NoViableParallelConfig, match="pinned parallel_configs") as error:
+        enumerate_branches(mixed_parallel_config)
+
+    assert "used_gpus=" not in str(error.value)
+    assert "increase the GPU budget" not in str(error.value)
+
+
+def test_mixed_parallel_budget_diagnostic_preserves_heterogeneous_role_context(monkeypatch, mixed_parallel_config):
+    checked_roles = []
+
+    def feasible(shapes, *, hardware_sku, max_seq_len, **kwargs):
+        checked_roles.append((hardware_sku, max_seq_len))
+        capacity = {"h200_sxm": 8192, "gb200": 4096}[hardware_sku]
+        return dict.fromkeys(shapes, capacity) if max_seq_len < capacity else {}
+
+    monkeypatch.setattr("aisim.sweeper.model_hw.feasible_shape_tokens", feasible)
+    mixed_parallel_config.search_space = mixed_parallel_config.search_space.model_copy(
+        update={
+            "prefill_hardware_sku": "h200_sxm",
+            "decode_hardware_sku": "gb200",
+            "backend_version": "0.19.0",
+            "prefill_context_length": 1024,
+            "decode_context_length": 8192,
+        }
+    )
+
+    with pytest.raises(NoViableParallelConfig) as error:
+        enumerate_branches(mixed_parallel_config, max_seq_len=512)
+
+    assert set(checked_roles) == {("h200_sxm", 1024), ("gb200", 8192)}
+    assert "used_gpus=" not in str(error.value)
+    assert "increase the GPU budget" not in str(error.value)
 
 
 def test_illegal_pinned_parallel_config_is_rejected():
@@ -776,7 +892,7 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
             raise NoViableParallelConfig("disagg does not fit")
         return [_AGG_CFG]
 
-    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
+    monkeypatch.setattr("aisim.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["agg", "disagg"],
         backend=["trtllm"],
@@ -795,7 +911,7 @@ def test_all_modes_infeasible_raises(monkeypatch):
     def always_raise(*args, **kwargs):
         raise NoViableParallelConfig("nothing fits")
 
-    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", always_raise)
+    monkeypatch.setattr("aisim.sweeper.search_space.parallel_configs_for", always_raise)
     config = _config(
         deployment_mode=["agg", "disagg"],
         backend=["trtllm"],
@@ -825,7 +941,7 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
             raise NoPerfDatabase("no vLLM perf database")
         return [_AGG_CFG]
 
-    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
+    monkeypatch.setattr("aisim.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
     config = _config(
         deployment_mode=["agg"],
         backend=["vllm", "trtllm"],
@@ -840,7 +956,7 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
 
 def test_viable_backend_choices_preserve_user_order(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: [_AGG_CFG],
     )
     config = _config(
@@ -856,7 +972,7 @@ def test_viable_backend_choices_preserve_user_order(monkeypatch):
 
 def test_kv_load_range_becomes_continuous_branch_dimension(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: [_AGG_CFG],
     )
     config = SmartSearchConfig(
@@ -883,7 +999,7 @@ def test_kv_load_range_becomes_continuous_branch_dimension(monkeypatch):
 
 def test_scalar_kv_load_is_pinned_in_branch_selection(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: [_AGG_CFG],
     )
     config = SmartSearchConfig(
@@ -909,7 +1025,7 @@ def test_scalar_kv_load_is_pinned_in_branch_selection(monkeypatch):
 
 def test_partial_illegal_pinned_config_raises(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         lambda *args, **kwargs: [_AGG_CFG],
     )
     config = _config(
@@ -934,7 +1050,7 @@ def test_partial_illegal_pin_preserves_runner_details(monkeypatch):
         return [_AGG_CFG]
 
     monkeypatch.setattr(
-        "aisimulate.sweeper.search_space.parallel_configs_for",
+        "aisim.sweeper.search_space.parallel_configs_for",
         fake_parallel_configs,
     )
     config = _config(

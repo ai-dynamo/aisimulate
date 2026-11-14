@@ -30,7 +30,7 @@ YAML above always resolves the bytes.
 |---|---|---|---|
 | `engine.kv_transfer.bytes_per_token` | `auto` | fixed | Positive integer or `auto`. Bytes moved per prompt token. `auto` derives it from the model and the prefill role's TP/PP/MoE shape. It can differ from either worker's `kv_cache.bytes_per_token`. With `state_cache`, `auto` uses the prefill role's resolved `kv_cache.bytes_per_token`. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | fixed | Positive, in decimal GB/s. Bandwidth of each prefill rank's sending link and each decode rank's receiving link; concurrent transfers [share them](#link-sharing). `null` means no transfer delay, not a zero-bandwidth link. |
-| `engine.kv_transfer.timing_mode` | `destination_missing` | fixed | `destination_missing` charges only the prompt KV the chosen decode worker does not already hold in its cache. `full_prompt` charges the whole prompt. |
+| `engine.kv_transfer.timing_mode` | `destination_missing` | fixed | `destination_missing` charges prompt KV absent from the chosen decode worker's cache; SGLang bills whole uncached pages, including unused tail slots. `full_prompt` charges the logical prompt length without page rounding. |
 
 All fields accept only concrete values; `recommend` does not search them.
 `kv_transfer` is rejected in `aggregated` and `afd` modes.
@@ -41,8 +41,20 @@ A transfer alone on its links, with both roles at the same bandwidth, takes, in 
 (transferred_tokens × bytes_per_token + state_bytes) / (bandwidth_gb_per_second × 10^9)
 ```
 
-where `transferred_tokens` follows `timing_mode`. With
-`destination_missing`, a decode worker that already caches a shared prefix
+where `transferred_tokens` follows `timing_mode`. For SGLang,
+`destination_missing` uses the number of uncached physical prompt pages multiplied
+by the decode worker's `kv_cache.block_size`. This includes unused slots in the
+last page. `full_prompt` uses the original logical prompt length, so
+`destination_missing` can cost more than `full_prompt` even without a cache hit.
+
+For example, a 10-token prompt with SGLang page size 4 occupies three pages.
+With 16 bytes per token, bandwidth `0.000001` GB/s, no state bytes and no other
+transfers, `full_prompt` bills 10 token slots (160 ms), while a cold
+`destination_missing` transfer bills 12 slots (192 ms). If the decode cache
+already holds one reusable four-token page, two pages remain: 8 slots (128 ms).
+A shared six-token prefix still reuses only one complete page in this example.
+
+Within `destination_missing`, a decode worker that already caches a shared prefix
 receives the request sooner, so prefix reuse on the decode side can lower TTFT
 even when compute time does not change. `state_bytes` is the prefill role's
 `state_cache.bytes_per_request` for

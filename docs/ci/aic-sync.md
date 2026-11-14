@@ -5,18 +5,18 @@ SPDX-License-Identifier: Apache-2.0
 
 # Synchronizing AIConfigurator
 
-AISimulate records an immutable AIConfigurator synchronization boundary and
+AISim records an immutable AIConfigurator synchronization boundary and
 explicit mappings from the pinned upstream layout into the
 two canonical Python packages:
 
-| Upstream AIConfigurator path | Stable AISimulate mirror |
+| Upstream AIConfigurator path | Stable AISim mirror |
 | --- | --- |
-| `src/aiconfigurator/sdk/` | `python/aisimulate/src/aisimulate/sdk/` |
-| `src/aiconfigurator/generator/` | `python/aisimulate/src/aisimulate/generator/` |
-| `src/aiconfigurator/cli/` | `python/aisimulate/src/aisimulate/legacy_cli/` |
-| `aic-core/src/aiconfigurator_core/` | `python/aisimulate/src/aisimulate_core/` |
-| `tests/` | `python/aisimulate/tests/` |
-| `collector/`, `tools/` | matching folders under `python/aisimulate/` |
+| `src/aiconfigurator/sdk/` | `python/aisim/src/aisim/sdk/` |
+| `src/aiconfigurator/generator/` | `python/aisim/src/aisim/generator/` |
+| `src/aiconfigurator/cli/` | `python/aisim/src/aisim/legacy_cli/` |
+| `aic-core/src/aiconfigurator_core/` | `python/aisim/src/aisim_core/` |
+| `tests/` | `python/aisim/tests/` |
+| `collector/`, `tools/` | matching folders under `python/aisim/` |
 | `docs/` | manually adapted into the component documentation under `docs/` |
 | `aic-core/rust/aiconfigurator-core/src/` | `crates/core/src/perfmodel/` |
 | `aic-core/rust/aiconfigurator-core/tests/` | `crates/core/tests/perfmodel/` |
@@ -24,9 +24,9 @@ two canonical Python packages:
 
 The patch renderer maps directory paths, not Python imports. Review application
 changes in the manual report: root `main.py` and `deprecation.py` move to
-`aisimulate/legacy_cli/entrypoint.py` and `aisimulate/legacy_cli/deprecation.py`,
+`aisim/legacy_cli/entrypoint.py` and `aisim/legacy_cli/deprecation.py`,
 and removed resource aliases must not be restored. Update imported code to use
-`aisimulate` and `aisimulate_core` while preserving immutable upstream citations.
+`aisim` and `aisim_core` while preserving immutable upstream citations.
 Rust composition, Replay, and PyO3 integration remain outside the estimator
 source mirror.
 
@@ -38,7 +38,7 @@ The full application import originated at upstream commit
 `13b5cf2697876692b0a52098266c81162add11fc`; the recorded final synchronization
 boundary is `c8aee02f0887547a334c3d6cd192c42757e4b40e`. Earlier path-filtered
 history and authorship remain in Git. The Replay/engine source also retains
-the history imported from Dynamo's former `aisimulate/` tree.
+the history imported from Dynamo's former `aisim/` tree.
 
 Preserve immutable source revisions, license notices, collector/runtime
 identities, performance-data hashes and deliberate adaptations. The canonical
@@ -49,7 +49,7 @@ records when applying another upstream change; completed PR transfer logs are
 not a second synchronization procedure.
 
 Documentation is no longer a mirrored subtree: upstream prose must be adapted
-to the appropriate component rather than recreating `python/aisimulate/docs/`.
+to the appropriate component rather than recreating `python/aisim/docs/`.
 
 ## Apply an upstream change
 
@@ -77,6 +77,6 @@ not evidence that manifests, workflows, or ownership policy were synchronized.
 
 Packaging and repository policy are intentionally manual. Adapt upstream
 changes to `pyproject.toml`, Cargo manifests and lockfiles, release workflows,
-or CODEOWNERS into the combined AISimulate equivalents; never copy an upstream
+or CODEOWNERS into the combined AISim equivalents; never copy an upstream
 publishable manifest or active workflow into the repository. The ledger lists
 these manual paths and the reason for each exception.
