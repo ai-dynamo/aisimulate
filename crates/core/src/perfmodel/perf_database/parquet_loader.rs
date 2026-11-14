@@ -6,8 +6,6 @@
 //! Design notes:
 //! - Each loader resolves column names to integer positions ONCE per file
 //!   load via `PerfReader::col`, then iterates rows with positional accessors.
-//!   That avoids the per-row string-keyed lookup the `Row::get_*` API
-//!   forces when callers go through `(name, field)` pairs.
 //! - Parquet's Arrow reader decodes [`BATCH_ROWS`] rows at a time; a
 //!   `PerfRow` is a shared handle on its batch plus a row index.
 //! - Accessors borrow strings out of the decoded batch (no copy); loaders
@@ -79,14 +77,11 @@ impl PerfReader {
         // Column types come from the parquet schema alone: the Arrow schema
         // pyarrow embeds could make string columns dictionary or large-string
         // arrays, which the accessors do not read.
-        let parquet_error = |source| AicError::Parquet {
-            path: path.to_path_buf(),
-            source,
-        };
+        let parquet_error = |source| parquet_error(path, source);
         let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
         let mut metadata =
             ArrowReaderMetadata::load(&file, options.clone()).map_err(parquet_error)?;
-        let retyped = record_api_schema(metadata.parquet_schema()).map_err(parquet_error)?;
+        let retyped = retyped_schema(metadata.parquet_schema()).map_err(parquet_error)?;
         if let Some(schema) = retyped {
             // Decode the footer again against the retyped columns.
             let options = options.with_parquet_schema(Arc::new(schema));
@@ -151,13 +146,11 @@ impl PerfReader {
     }
 
     /// Iterate over every row, in file order. A decode error (corrupt page,
-    /// invalid UTF-8 in a string column) is yielded as an `Err` item and ends
-    /// the iteration.
+    /// invalid UTF-8 in a string column) is yielded as one `Err` item in
+    /// place of its whole batch, the rows before the bad cell included, and
+    /// ends the iteration.
     pub fn rows(&self) -> Result<impl Iterator<Item = Result<PerfRow, AicError>> + '_, AicError> {
-        let parquet_error = move |source: ParquetError| AicError::Parquet {
-            path: self.path.clone(),
-            source,
-        };
+        let parquet_error = |source| parquet_error(&self.path, source);
         let file = self.file.try_clone().map_err(|source| AicError::Io {
             path: self.path.clone(),
             source,
@@ -189,7 +182,8 @@ impl PerfReader {
                         row = 0;
                     }
                     Err(source) => {
-                        // The reader fails on every later call; stop here.
+                        // The reader's state after an error is unspecified;
+                        // stop here.
                         batches = None;
                         return Some(Err(parquet_error(source.into())));
                     }
@@ -199,43 +193,45 @@ impl PerfReader {
     }
 }
 
-/// `schema` with the top-level columns the Arrow reader would not hand the
-/// accessors as a checked string or an INT64 retyped so that it does, or
-/// `None` when there is none:
-/// - ENUM and JSON `BYTE_ARRAY` columns become `UTF8`. The decoder checks
-///   UTF-8 only in columns annotated `UTF8`, and types ENUM as binary.
+fn parquet_error(path: &Path, source: ParquetError) -> AicError {
+    AicError::Parquet {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+/// `schema` with two kinds of top-level column retyped, or `None` when the
+/// file has neither:
+/// - ENUM and JSON `BYTE_ARRAY` columns become `UTF8`, so their cells read
+///   as strings and are UTF-8 checked. The decoder checks only columns
+///   annotated `UTF8`, and types ENUM as binary.
 /// - `INT64` columns with a logical type but no converted type (nanosecond
-///   timestamp or time) become plain `INT64`.
-fn record_api_schema(schema: &SchemaDescriptor) -> Result<Option<SchemaDescriptor>, ParquetError> {
+///   timestamp or time) become plain `INT64`, so their cells read as
+///   integers.
+fn retyped_schema(schema: &SchemaDescriptor) -> Result<Option<SchemaDescriptor>, ParquetError> {
     let root = schema.root_schema();
     let mut retyped = false;
     let fields = root.get_fields().iter().map(|field| {
-        let converted = match field.as_ref() {
-            Type::PrimitiveType {
-                basic_info,
-                physical_type: PhysicalType::BYTE_ARRAY,
-                ..
-            } if matches!(
-                basic_info.converted_type(),
-                ConvertedType::ENUM | ConvertedType::JSON
-            ) =>
-            {
+        let Type::PrimitiveType {
+            basic_info: info,
+            physical_type,
+            ..
+        } = field.as_ref()
+        else {
+            return Ok(Arc::clone(field));
+        };
+        let converted = match (physical_type, info.converted_type()) {
+            (PhysicalType::BYTE_ARRAY, ConvertedType::ENUM | ConvertedType::JSON) => {
                 ConvertedType::UTF8
             }
-            Type::PrimitiveType {
-                basic_info,
-                physical_type: PhysicalType::INT64,
-                ..
-            } if basic_info.converted_type() == ConvertedType::NONE
-                && basic_info.logical_type_ref().is_some() =>
-            {
+            (PhysicalType::INT64, ConvertedType::NONE) if info.logical_type_ref().is_some() => {
                 ConvertedType::NONE
             }
             _ => return Ok(Arc::clone(field)),
         };
         retyped = true;
-        Type::primitive_type_builder(field.name(), field.get_physical_type())
-            .with_repetition(field.get_basic_info().repetition())
+        Type::primitive_type_builder(info.name(), *physical_type)
+            .with_repetition(info.repetition())
             .with_converted_type(converted)
             .build()
             .map(Arc::new)
@@ -308,10 +304,7 @@ impl PerfRow {
     }
 
     fn error(&self, source: ParquetError) -> AicError {
-        AicError::Parquet {
-            path: self.batch.path.clone(),
-            source,
-        }
+        parquet_error(&self.batch.path, source)
     }
 
     fn long(&self, col: usize) -> Result<i64, AicError> {
@@ -482,6 +475,18 @@ mod tests {
         col.close().unwrap();
     }
 
+    /// An OPTIONAL column of `ROWS` rows that is null on every `every`-th row.
+    fn optional<T: DataType>(
+        rg: &mut SerializedRowGroupWriter<'_, File>,
+        every: usize,
+        value: impl Fn(usize) -> T::T,
+    ) {
+        let present = |r: &usize| !r.is_multiple_of(every);
+        let defs: Vec<i16> = (0..ROWS).map(|r| i16::from(present(&r))).collect();
+        let values: Vec<T::T> = (0..ROWS).filter(present).map(value).collect();
+        column::<T>(rg, &values, Some(&defs), None);
+    }
+
     /// Two row groups of `ROWS` rows: OPTIONAL columns (nulls on different
     /// rows per column), a REQUIRED string, annotations the accessors read
     /// (INT_64, nanosecond timestamp, JSON, ENUM) and types they do not
@@ -494,42 +499,23 @@ mod tests {
              OPTIONAL BYTE_ARRAY raw; OPTIONAL BYTE_ARRAY j (JSON); \
              OPTIONAL BYTE_ARRAY e (ENUM); REPEATED INT64 rep; }";
         write_file(path, schema, 2, |rg| {
-            let rows: Vec<usize> = (0..ROWS).collect();
-            let defs = |every: usize| -> Vec<i16> {
-                rows.iter().map(|r| i16::from(r % every != 0)).collect()
-            };
-            let present = |every: usize| rows.iter().copied().filter(move |r| r % every != 0);
             let bytes = |s: String| ByteArray::from(s.into_bytes());
-            let strings: Vec<_> = present(7).map(|r| bytes(format!("µs-{}", r % 5))).collect();
-            let required: Vec<_> = rows.iter().map(|r| bytes(format!("k{r}"))).collect();
-            let raw: Vec<_> = present(23).map(|r| bytes(format!("b{r}"))).collect();
-            let json: Vec<_> = present(29)
-                .map(|r| bytes(format!("{{\"r\":{r}}}")))
-                .collect();
-            let enums: Vec<_> = present(31).map(|r| bytes(format!("E{}", r % 3))).collect();
-            let longs: Vec<i64> = present(5).map(|r| r as i64 - 1000).collect();
-            let doubles: Vec<f64> = present(3).map(|r| r as f64 * 0.1).collect();
-            let bools: Vec<bool> = present(11).map(|r| r % 2 == 0).collect();
-            let ints: Vec<i32> = present(13).map(|r| r as i32).collect();
-            let annotated: Vec<i64> = present(17).map(|r| r as i64).collect();
-            let micros: Vec<i64> = present(19).map(|r| r as i64 * 1000).collect();
-            let nanos: Vec<i64> = present(37).map(|r| r as i64 * 1_000_000).collect();
-            let repeated: Vec<i64> = rows.iter().map(|&r| r as i64).collect();
-            column::<ByteArrayType>(rg, &strings, Some(&defs(7)), None);
+            let required: Vec<_> = (0..ROWS).map(|r| bytes(format!("k{r}"))).collect();
+            let repeated: Vec<i64> = (0..ROWS).map(|r| r as i64).collect();
+            optional::<ByteArrayType>(rg, 7, |r| bytes(format!("µs-{}", r % 5)));
             column::<ByteArrayType>(rg, &required, None, None);
-            column::<Int64Type>(rg, &longs, Some(&defs(5)), None);
-            column::<DoubleType>(rg, &doubles, Some(&defs(3)), None);
-            column::<BoolType>(rg, &bools, Some(&defs(11)), None);
-            column::<Int32Type>(rg, &ints, Some(&defs(13)), None);
-            column::<Int64Type>(rg, &annotated, Some(&defs(17)), None);
-            column::<Int64Type>(rg, &micros, Some(&defs(19)), None);
-            column::<Int64Type>(rg, &nanos, Some(&defs(37)), None);
-            column::<ByteArrayType>(rg, &raw, Some(&defs(23)), None);
-            column::<ByteArrayType>(rg, &json, Some(&defs(29)), None);
-            column::<ByteArrayType>(rg, &enums, Some(&defs(31)), None);
+            optional::<Int64Type>(rg, 5, |r| r as i64 - 1000);
+            optional::<DoubleType>(rg, 3, |r| r as f64 * 0.1);
+            optional::<BoolType>(rg, 11, |r| r % 2 == 0);
+            optional::<Int32Type>(rg, 13, |r| r as i32);
+            optional::<Int64Type>(rg, 17, |r| r as i64);
+            optional::<Int64Type>(rg, 19, |r| r as i64 * 1000);
+            optional::<Int64Type>(rg, 37, |r| r as i64 * 1_000_000);
+            optional::<ByteArrayType>(rg, 23, |r| bytes(format!("b{r}")));
+            optional::<ByteArrayType>(rg, 29, |r| bytes(format!("{{\"r\":{r}}}")));
+            optional::<ByteArrayType>(rg, 31, |r| bytes(format!("E{}", r % 3)));
             // One element per row: present (def 1), each starting a record (rep 0).
-            let ones = vec![1; rows.len()];
-            column::<Int64Type>(rg, &repeated, Some(&ones), Some(&vec![0; rows.len()]));
+            column::<Int64Type>(rg, &repeated, Some(&[1; ROWS]), Some(&[0; ROWS]));
         });
     }
 
