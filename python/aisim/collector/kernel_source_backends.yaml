@@ -363,6 +363,7 @@ mappings:
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutedsl_flashinfercutedslexperts, backend: flashinfer_cutedsl, source: "collect_moe.py:795; vllm v0.30.0 fused_moe/experts/flashinfer_cutedsl_moe.py:31 FlashInferCuteDSLExperts"}
   - {framework: vllm, kernel_source: vllm_compressedtensorswna16moe_marlin_marlinexperts, backend: marlin, source: "collect_moe.py:795; vllm v0.30.0 fused_moe/experts/marlin_moe.py:648 MarlinExperts"}
   - {framework: vllm, kernel_source: vllm_modeloptnvfp4fusedmoe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic, backend: flashinfer_trtllm_gen, source: "vllm/collect_moe.py GLM-5.3-Flash ModelOptNvFp4Config lane (trtllm_nvfp4_moe.py:498-520 @v0.31.0; :486-508 @v0.30.0)"}
+  - {framework: vllm, kernel_source: vllm_modeloptnvfp4fusedmoe_flashinfer_cutlass_flashinferexperts, backend: flashinfer_cutlass, source: "vllm/collect_moe.py GLM-5.3-Flash ModelOptNvFp4Config lane on the FlashInfer CUTLASS experts (label records the experts class that ran)"}
   - {framework: vllm, kernel_source: vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts, backend: marlin, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_gptossmxfp4moe_marlin_marlinexperts, backend: marlin, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_gptossmxfp4moe_triton_oaitritonmxfp4expertsmonolithic, backend: triton_fused_moe, source: "PR#1344 collect_moe.py (OAI triton mxfp4 experts)"}
@@ -381,6 +382,8 @@ mappings:
   - {framework: vllm, kernel_source: "vllm.mhc_post_tilelang", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM)"}
   - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[fused_post_gemm,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; fused post+GEMM TileLang kernel, small token counts)"}
   - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[post+prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/vllm/collect_mhc_module.py (GLM; post + DeepGEMM prenorm GEMM, large token counts)"}
+  - {framework: vllm, kernel_source: "vllm.mhc_pre_tilelang[prenorm_gemm=tilelang,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; TileLang prenorm GEMM where is_deep_gemm_supported() is false, kernels/mhc/tilelang.py L22-71)"}
+  - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[post+prenorm_gemm=tilelang,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; post + TileLang prenorm GEMM where is_deep_gemm_supported() is false)"}
   - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_expand", backend: torch, source: "vllm/model_executor/layers/mhc.py:1013 @v0.32.0"}
   - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_contract", backend: torch, source: "vllm/model_executor/layers/mhc.py:1018 @v0.32.0"}
   - {framework: vllm, kernel_source: "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits", backend: deepgemm, source: "PR#1344 collect_dsv4_attn.py"}

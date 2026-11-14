@@ -161,6 +161,7 @@ families:
           - {backend: cutlass, framework_name: cutlass, constraints: "vllm-native cutlass experts", source: "oracle/fp8.py:75-88"}
           - {backend: triton_fused_moe, framework_name: triton, constraints: "universal fallback; SM90 default for bf16/fp8-block TP", source: "oracle/unquantized.py:62-74, oracle/fp8.py:106-115"}
           - {backend: marlin, framework_name: marlin, constraints: "wNa16 int4/nvfp4-w4a16 default; SM90 nvfp4 fallback", source: "oracle/int_wna16.py:88-92, oracle/nvfp4.py:165-173"}
+          - {backend: humming, framework_name: humming, constraints: "wNa16 int4 on SM90 from v0.32.0: prioritize_humming orders Humming ahead of Marlin there", source: "quantization/utils/humming/priority.py:11,26-45, oracle/int_wna16.py:72-83,126-143"}
       trtllm:
         selector: "moe_config.backend (llmapi yaml; default AUTO)"
         default: "AUTO: DSV4/GptOss Blackwell -> TRTLLM(trtllm-gen); GptOss Hopper -> TRITON; fp8_block SM100f -> TRTLLM; else CUTLASS (_torch/model_config.py:317-355)"
