@@ -24,7 +24,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use parquet::file::reader::{FileReader, SerializedFileReader};
-use parquet::record::{Row, RowAccessor};
+use parquet::record::{Field, Row, RowAccessor};
 
 use crate::common::error::AicError;
 
@@ -108,6 +108,16 @@ impl PerfReader {
     /// that are present in some perf-DB versions and absent in others.
     pub fn col_optional(&self, name: &str) -> Option<usize> {
         self.column_names.iter().position(|n| n == name)
+    }
+
+    /// Physical parquet type of the column at position `col`.
+    pub fn physical_type(&self, col: usize) -> parquet::basic::Type {
+        self.file_reader
+            .metadata()
+            .file_metadata()
+            .schema_descr()
+            .column(col)
+            .physical_type()
     }
 
     /// Iterate over every row. Errors are surfaced per-row so loaders can
@@ -280,6 +290,20 @@ impl PerfRow {
                 path: self.path.clone(),
                 source,
             }),
+        }
+    }
+
+    /// Nullable DOUBLE with no coercion: a null cell is `None`, a DOUBLE cell
+    /// is `Some`, and any other field type is an error. Unlike `f64_optional`,
+    /// a wrong-typed cell never reads as null.
+    pub fn f64_nullable_strict(&self, col: usize) -> Result<Option<f64>, AicError> {
+        match self.row.get_column_iter().nth(col).map(|(_, field)| field) {
+            Some(Field::Null) => Ok(None),
+            Some(Field::Double(v)) => Ok(Some(*v)),
+            other => Err(AicError::PerfDatabase(format!(
+                "parquet column[{col}] must be a nullable DOUBLE, got {other:?} at {}",
+                self.path.display()
+            ))),
         }
     }
 

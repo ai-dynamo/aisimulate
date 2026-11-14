@@ -99,16 +99,17 @@ def test_membership_cold_start_and_predict_before_tune(case):
         assert predict[0] == "predict" and tune == ("tune", predict[1])
 
 
+@pytest.mark.parametrize("fpm_schema_version", [7, 8])
 @pytest.mark.parametrize("execution_profile", ["full", "decoder_bounded"])
 def test_v7_keeps_measurements_and_regression_without_staging_incomplete_identity(
-    tmp_path, monkeypatch, execution_profile
+    tmp_path, monkeypatch, execution_profile, fpm_schema_version
 ):
     content = "\n".join(json.dumps(_fpm_payload(counter=index)) for index in range(12)).encode()
     dataset = _build_dataset(
         tmp_path,
         protocol_id="forward-pass-measurement-v1",
         files=[("truth", "traffic.jsonl", content)],
-        fpm_schema_version=7,
+        fpm_schema_version=fpm_schema_version,
     )
     parquet = tmp_path / CONFIGURATION_PATH / "fpm/fpm.parquet"
     table = pq.read_table(parquet)
@@ -130,7 +131,7 @@ def test_v7_keeps_measurements_and_regression_without_staging_incomplete_identit
     # Reaching native model construction would fail on this sentinel.
     monkeypatch.setattr(aic_predictors, "_import_aisim_forward_pass_perf_model", lambda: SimpleNamespace())
     case = dataset.measurement_case(CONFIGURATION_PATH)
-    with pytest.raises(DependencyError, match="schema v7"):
+    with pytest.raises(DependencyError, match=f"schema v{fpm_schema_version}"):
         prepare_aic_fpm_database({}, case.fpm_artifacts[0])
 
     def factory(method, context):
