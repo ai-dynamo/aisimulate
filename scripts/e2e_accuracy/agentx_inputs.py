@@ -343,11 +343,11 @@ def manual_geometry(workers):
 
 
 def measured_acceptance(point, depth):
-    """Read a point's retained acceptance, bound to its verification depth."""
+    """Read depth-matched acceptance, or None when speculation is disabled."""
     if type(depth) is not int or depth < 0:
         raise ValueError("Invalid recorded verification depth")
     if depth == 0:
-        return 0
+        return None
     receipt = point.get("metrics", {}).get("speculative_acceptance")
     if (
         not isinstance(receipt, dict)

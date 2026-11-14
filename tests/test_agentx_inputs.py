@@ -5,6 +5,10 @@
 import copy
 import hashlib
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from test_agentx_accuracy import result, silicon_inputs
@@ -208,12 +212,9 @@ def test_partial_measurement_snapshot_cannot_pass_public_gate():
         validate_snapshot(snapshot, preview=True)
 
 
-@pytest.mark.parametrize("accepted", [1.25, 2.75, None, True, -1, 4, float("inf"), float("nan"), "1.99"])
-@pytest.mark.parametrize("depth", [2, 3])
-def test_sglang_replay_uses_only_depth_matched_retained_acceptance(tmp_path, accepted, depth):
+def sglang_replay_inputs(tmp_path, *, depth=3, acceptance=None):
     run = result()
     run["artifacts"] = {}
-    receipt = {"verification_depth": depth, "accepted_draft_tokens": accepted}
     documents = {
         "recipe": {
             "base": {
@@ -223,7 +224,7 @@ def test_sglang_replay_uses_only_depth_matched_retained_acceptance(tmp_path, acc
                             "context-length": 8192,
                             "chunked-prefill-size": 512,
                             "max-running-requests": 32,
-                            "speculative-num-steps": 3,
+                            "speculative-num-steps": depth,
                         }
                     }
                 }
@@ -232,7 +233,7 @@ def test_sglang_replay_uses_only_depth_matched_retained_acceptance(tmp_path, acc
         "feature_point_receipt": {
             "metrics": {
                 "kv_cache_pool_tokens": 8192,
-                **({"speculative_acceptance": receipt} if accepted is not None else {}),
+                **({"speculative_acceptance": acceptance} if acceptance is not None else {}),
             }
         },
         "source_manifest": {
@@ -253,6 +254,14 @@ def test_sglang_replay_uses_only_depth_matched_retained_acceptance(tmp_path, acc
             "sha256": hashlib.sha256(content).hexdigest(),
             "bytes": len(content),
         }
+    return run
+
+
+@pytest.mark.parametrize("accepted", [1.25, 2.75, None, True, -1, 4, float("inf"), float("nan"), "1.99"])
+@pytest.mark.parametrize("depth", [2, 3])
+def test_sglang_replay_uses_only_depth_matched_retained_acceptance(tmp_path, accepted, depth):
+    receipt = {"verification_depth": depth, "accepted_draft_tokens": accepted}
+    run = sglang_replay_inputs(tmp_path, acceptance=receipt if accepted is not None else None)
     if depth == 3 and type(accepted) is float and accepted in (1.25, 2.75):
         engine = replay_config(tmp_path, run)["engine"]
         assert engine["nextn"] == 3
@@ -262,10 +271,30 @@ def test_sglang_replay_uses_only_depth_matched_retained_acceptance(tmp_path, acc
             replay_config(tmp_path, run)
 
 
-def test_non_speculative_replay_does_not_require_acceptance():
-    from scripts.e2e_accuracy.agentx_inputs import measured_acceptance
-
-    assert measured_acceptance({}, 0) == 0
+def test_non_speculative_replay_validates_without_acceptance(tmp_path):
+    run = sglang_replay_inputs(tmp_path, depth=0)
+    config = replay_config(tmp_path, run)
+    # The predictor consumes this selector before parsing the public config.
+    config["engine"]["backend_version"] = config.pop("prediction_database_version")
+    # Pages CI runs without an installed AISim wheel. Validate the real source
+    # models in a subprocess without importing the runtime into the test worker.
+    source = Path(__file__).resolve().parents[1] / "python/aisim/src"
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "from aisim.config import CorePredictionConfig\n"
+            "config = CorePredictionConfig.model_validate_json(sys.stdin.read())\n"
+            "assert config.engine.nextn == 0\n"
+            "assert config.engine.nextn_accepted is None\n"
+            "assert CorePredictionConfig.model_validate_json(config.model_dump_json()) == config\n",
+        ],
+        input=json.dumps(config),
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(source)},
+        check=True,
+    )
 
 
 @pytest.fixture
