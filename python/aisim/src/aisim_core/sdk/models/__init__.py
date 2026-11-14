@@ -230,9 +230,11 @@ def get_model(
             explicit = explicit and flag
         model_info[f"{kind}_quant_mode_is_explicit"] = explicit
     _apply_model_quant_defaults(model_config, raw_config, architecture, backend_name)
+    # Record the resolved provenance (flag and filled mode) so later builds cannot read a stale flag.
     for kind in ("gemm", "moe"):
         explicit = model_info[f"{kind}_quant_mode_is_explicit"]
         if hasattr(model_config, f"_{kind}_quant_mode_inferred"):
+            setattr(model_config, f"_{kind}_quant_mode_is_explicit", explicit)
             setattr(
                 model_config,
                 f"_{kind}_quant_mode_inferred",

@@ -555,7 +555,8 @@ def test_canonical_api_resolves_nvfp4_lanes_under_the_selected_systems_root(monk
     assert set(_experts(model)) == {MOE.nvfp4}
 
 
-def test_rebuilding_from_a_config_tracks_its_current_quant_modes():
+def test_rebuilding_from_a_config_tracks_its_current_quant_modes(monkeypatch):
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     import dataclasses
 
     def build(config):
@@ -565,15 +566,19 @@ def test_rebuilding_from_a_config_tracks_its_current_quant_modes():
     def assert_uniform(built):
         assert all(set(modes) == {BF16} for modes in built[0].values()) and set(built[1]) == {MOE.fp8}
 
-    config = ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1, system="gb200")
-    inferred = build(config)
-    # Rebuilding the same config keeps the checkpoint split (Mamba in_proj: FP8 and BF16 layers).
-    assert build(config) == inferred and len(inferred[0]["mamba_in_proj_gemm"]) == 2
-    # Overrides on a copy, or assigned to the config itself, are explicit: one mode everywhere.
-    assert_uniform(build(dataclasses.replace(config, gemm_quant_mode=BF16, moe_quant_mode=MOE.fp8)))
-    config.gemm_quant_mode, config.moe_quant_mode = BF16, MOE.fp8
-    assert_uniform(build(config))
-    assert_uniform(build(config))
-    # Clearing the overrides restores inference.
-    config.gemm_quant_mode = config.moe_quant_mode = None
-    assert build(config) == inferred
+    direct = ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1, system="gb200")
+    # A Task-built config carries explicit=False flags for its inferred modes.
+    task = _task(SUPER).build_model_config(role="agg", parallel=(1, 1, 1, 1, 1, 1))
+    for config in (direct, task):
+        inferred = build(config)
+        # Rebuilding the same config keeps the checkpoint split (Mamba in_proj: FP8 and BF16 layers).
+        assert build(config) == inferred and len(inferred[0]["mamba_in_proj_gemm"]) == 2
+        # Overrides on a copy, or assigned to the config itself, are explicit on every later build.
+        assert_uniform(build(dataclasses.replace(config, gemm_quant_mode=BF16, moe_quant_mode=MOE.fp8)))
+        config.gemm_quant_mode, config.moe_quant_mode = BF16, MOE.fp8
+        for _ in range(3):
+            assert_uniform(build(config))
+        # Clearing the overrides restores inference.
+        config.gemm_quant_mode = config.moe_quant_mode = None
+        assert build(config) == inferred
+        assert build(config) == inferred
