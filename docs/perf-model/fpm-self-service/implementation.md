@@ -39,20 +39,20 @@ CLI. Follow the [installation guide](../../getting-started/installation.md#use-c
 when creating a new checkout. From its repository root:
 
 ```bash
-uv sync --project python/aisimulate --extra dev
-source python/aisimulate/.venv/bin/activate
+uv sync --project python/aisim --extra dev
+source python/aisim/.venv/bin/activate
 export AIS_REPO="$PWD"
-export PYTHONPATH="$AIS_REPO/python/aisimulate${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$AIS_REPO/python/aisim${PYTHONPATH:+:$PYTHONPATH}"
 git rev-parse HEAD
-python -c 'import aisimulate; print(aisimulate.__version__)'
-aisimulate predict --help
+python -c 'import aisim; print(aisim.__version__)'
+aisim predict --help
 ```
 
 For self-benchmarking and agent session checkpoints, additionally verify:
 
 ```bash
-aisimulate onboard --help
-aisimulate onboard init --help
+aisim onboard --help
+aisim onboard init --help
 ```
 
 Source installation needs `uv`, Cargo/Rust, and a C/C++ compiler/linker. A missing
@@ -69,7 +69,7 @@ pinned checkpoint, allocated GPUs, and matching engine/benchmark code. Kubernete
 needs `kubectl`, an existing namespace, model-cache PVC and deployment permissions.
 Slurm needs a caller-owned `sbatch`/`salloc` allocation, Pyxis/Enroot, shared storage
 and matching CPU/GPU resources. Neither path needs a prestarted HTTP server:
-AISimulate launches benchmark workers and Dynamo self-benchmark generates their
+AISim launches benchmark workers and Dynamo self-benchmark generates their
 measurements. Record the immutable image/model revisions and actual full runtime
 version, including custom-build suffixes, separately from any user-selected backend
 version label. The optional Dynamo version is collection provenance; it does not
@@ -105,13 +105,13 @@ Start with only the missing **Hugging Face model ID** (`organization/model-name`
 
 > Stage 1/6 — Inspect the model and target. What is your Hugging Face model ID (`organization/model-name`) and target GPU platform? I'll retrieve and inspect the configuration first. If your model isn't on Hugging Face, share a local config or checkpoint path instead.
 
-Omit facts already supplied from this request. Accept a supplied local config, complete FPM profile or checkpoint path without requiring a Hub ID; do not ask for both an ID and a config upfront. With a Hugging Face ID, use available authorized Hub access to retrieve only `config.json` at this stage. Honor any supplied revision and record the repository ID and resolved commit. If no revision was supplied, report the resolved commit for the deployment choice in stage 2. If the config cannot be retrieved, explain the specific gap and ask for a local config. The agent retrieves the file; AISimulate's CLI consumes a local config/profile and does not download it or the checkpoint.
+Omit facts already supplied from this request. Accept a supplied local config, complete FPM profile or checkpoint path without requiring a Hub ID; do not ask for both an ID and a config upfront. With a Hugging Face ID, use available authorized Hub access to retrieve only `config.json` at this stage. Honor any supplied revision and record the repository ID and resolved commit. If no revision was supplied, report the resolved commit for the deployment choice in stage 2. If the config cannot be retrieved, explain the specific gap and ask for a local config. The agent retrieves the file; AISim's CLI consumes a local config/profile and does not download it or the checkpoint.
 
 Inspect the accessible config/profile before asking for model kind, architecture, expert count or context limit; derive supported metadata and record its source. Ask about these fields only when the configuration leaves them unresolved. For self-benchmark CLI setup, `--model` identifies the selected Hugging Face repository or actual checkpoint path, `--model-config` names the local JSON file, and `--model-revision` pins the checkpoint separately. A config file hash is not a checkpoint revision. Direct interpolation does not require an op-level model class or per-operation silicon data. If the hardware lacks a packaged system specification, report that integration gap.
 
 A natively multimodal checkpoint can be onboarded for its text decoder. Explain this scope during inspection and profile review: FPM timing models text-decoder execution and excludes encoder, projector and preprocessing latency. Config-derived estimates describe the decoder only. Observed cache capacity reflects every component actually loaded by the collection worker, including resident non-text components; do not subtract guessed encoder memory from that observation. This does not qualify full multimodal workloads.
 
-The agent handles checkout and environment checks: record the source revision, follow [development setup](../../../DEVELOPMENT.md#initial-setup), activate the environment, and inspect `aisimulate onboard --help`. For self-benchmarking, also inspect `onboard init --help`; for GBDT, inspect the chapter's [training commands](e2e-gbdt.md#before-you-start). Check each later command's help before use. A missing documented command may indicate a version mismatch; native JSONL collection/training is intentionally outside the `onboard` collection commands.
+The agent handles checkout and environment checks: record the source revision, follow [development setup](../../../DEVELOPMENT.md#initial-setup), activate the environment, and inspect `aisim onboard --help`. For self-benchmarking, also inspect `onboard init --help`; for GBDT, inspect the chapter's [training commands](e2e-gbdt.md#before-you-start). Check each later command's help before use. A missing documented command may indicate a version mismatch; native JSONL collection/training is intentionally outside the `onboard` collection commands.
 
 ### 2. Choose the worker and collection limits
 
@@ -202,7 +202,7 @@ For agent sessions, use the headless flow below and [checkpoint each configurati
 | Workflow | Review and save behavior |
 | --- | --- |
 | Checkpointed agent session, with or without a PTY | Supply identity/collection flags and overrides without `--interactive`; use `--parallel-configs` with `--output-dir` for several configurations of one selected precision combination. Missing required inputs exit 2 without saving; use the diagnostics to investigate first and ask only for still-unresolved facts or choices. A successful command writes immediately. Initially write to a separate path such as `draft-request.yaml` or a fresh `draft-onboarding/` directory and show every embedded profile, its sources and scope for user review. Save each configuration's draft, edits and explicit acceptance in the session checkpoint as review progresses. Apply edits in the inputs/overrides and repeat draft review; rerun unchanged accepted inputs to a fresh final path and verify that the profiles match the accepted drafts before planning. Draft names are only a convention; they have no special CLI status. Review a supplied `--fpm-profile` in the same way. |
-| Standalone interactive CLI in a terminal | Run `aisimulate onboard init --model-config /path/to/config.json --interactive --output-dir onboarding`, or retain `--output support-request.yaml` for one request. Directory output accepts comma-separated candidate numbers. Inspect missing-field prompts and review the final profile, using `edit` to revise its values before entering `accept`. All selected profiles must be accepted before directory output is saved. Cancellation creates no new artifacts and preserves prior output; partial prompts or acceptance are not persisted in the session checkpoint. This final review is specific to `--model-config --interactive`; supplying `--fpm-profile` does not add it. |
+| Standalone interactive CLI in a terminal | Run `aisim onboard init --model-config /path/to/config.json --interactive --output-dir onboarding`, or retain `--output support-request.yaml` for one request. Directory output accepts comma-separated candidate numbers. Inspect missing-field prompts and review the final profile, using `edit` to revise its values before entering `accept`. All selected profiles must be accepted before directory output is saved. Cancellation creates no new artifacts and preserves prior output; partial prompts or acceptance are not persisted in the session checkpoint. This final review is specific to `--model-config --interactive`; supplying `--fpm-profile` does not add it. |
 
 Do not pipe answers into `--interactive`: it requires a terminal. Scripted setup has no built-in acceptance prompt. Keep drafts separate from final requests and use a fresh draft directory for each revision. Preserve prior outputs when revising a deployment.
 
@@ -221,9 +221,9 @@ smoke and pilot runs before full traffic. Save the agreed scope and existing
 execution authorization; no `onboard plan` is required for this route. For P/D,
 include the [launch and smoke checks](native-pd-setup.md#check-role-and-transfer-behavior-before-the-workload) in the plan.
 
-**Self-benchmarking.** Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. For directory output, read `onboarding.json` and use each emitted `aisimulate onboard plan` command to create that configuration's `collection/` directory. Inspect each `support-plan.json`, embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
+**Self-benchmarking.** Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. For directory output, read `onboarding.json` and use each emitted `aisim onboard plan` command to create that configuration's `collection/` directory. Inspect each `support-plan.json`, embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
 
-Explain each configuration's minimum collection GPUs, rank-local scheduler/resource envelope and [shared collection policy](#how-the-collection-grid-is-determined). AISimulate configures collection inputs and Dynamo generates the exact points; the plan does not derive a second grid from trace requests. In runtime graph mode, report the capture list and exact point count as unresolved until engine initialization. Each plan selects one parallel tuple and generates single-worker validation configs. Continue stages 5 and 6 separately for each configuration, preserving its data and result paths. Actual collection resources and placement must be checked in the collector environment before execution. The synthetic request count does not bound timing samples or collection duration.
+Explain each configuration's minimum collection GPUs, rank-local scheduler/resource envelope and [shared collection policy](#how-the-collection-grid-is-determined). AISim configures collection inputs and Dynamo generates the exact points; the plan does not derive a second grid from trace requests. In runtime graph mode, report the capture list and exact point count as unresolved until engine initialization. Each plan selects one parallel tuple and generates single-worker validation configs. Continue stages 5 and 6 separately for each configuration, preserving its data and result paths. Actual collection resources and placement must be checked in the collector environment before execution. The synthetic request count does not bound timing samples or collection duration.
 
 Prepare the per-configuration execution table in [Orchestrate independent collection campaigns](#orchestrate-independent-collection-campaigns), including the reason for any job dependency. Sharing GPU capacity does not make one configuration's data a prerequisite for another.
 
@@ -247,7 +247,7 @@ Continue to GBDT training in stage 6.
 
 **Self-benchmarking.** First inspect any existing timing data for a matching deployment. Reuse a verified matching formal pair when available; do not collect again merely to complete a stage or because historical native campaign artifacts are unavailable. For new or continuing collection, [check timing readiness](#check-timing-readiness-before-full-collection) against saved native artifacts for each configuration. Where evidence is missing, prepare a bounded smoke for each phase required by the selected role before a full grid; explicit aggregated and role-less historical requests require both prefill and decode. A completed runtime memory probe does not replace this timing check.
 
-For new collection, prepare the compatible pinned Dynamo/vLLM image, accessible checkpoint and GPU resources. Choose the existing collection executor at this stage: Kubernetes needs its namespace and deployment permissions; Slurm needs a caller-owned `sbatch`/`salloc` allocation with Pyxis and shared storage. Follow the [deployment options](#choose-the-collection-executor) below and the [environment prerequisites](#prepare-the-environment). An already-running HTTP server is not required: the AISimulate collector generates the runtime and launches benchmark workers through the selected executor. The engine initializes the model and cache, resolves its graph configuration, and Dynamo self-benchmark generates and times the admitted points. Use the agreed scope and existing execution authorization, reporting concrete missing prerequisites when blocked. Preview and execute with the same deployment options. `--execute --smoke` collects diagnostic evidence without a formal FPM pair; full execution requires matching usable timing evidence for every selected cell. Inspect effective precision, graph mode/capture sizes, cache allocation/padding and supported benchmark seeding during bring-up; preserve checkpoints, initialization logs and raw evidence.
+For new collection, prepare the compatible pinned Dynamo/vLLM image, accessible checkpoint and GPU resources. Choose the existing collection executor at this stage: Kubernetes needs its namespace and deployment permissions; Slurm needs a caller-owned `sbatch`/`salloc` allocation with Pyxis and shared storage. Follow the [deployment options](#choose-the-collection-executor) below and the [environment prerequisites](#prepare-the-environment). An already-running HTTP server is not required: the AISim collector generates the runtime and launches benchmark workers through the selected executor. The engine initializes the model and cache, resolves its graph configuration, and Dynamo self-benchmark generates and times the admitted points. Use the agreed scope and existing execution authorization, reporting concrete missing prerequisites when blocked. Preview and execute with the same deployment options. `--execute --smoke` collects diagnostic evidence without a formal FPM pair; full execution requires matching usable timing evidence for every selected cell. Inspect effective precision, graph mode/capture sizes, cache allocation/padding and supported benchmark seeding during bring-up; preserve checkpoints, initialization logs and raw evidence.
 
 Follow the [orchestration and recovery procedure](#orchestrate-independent-collection-campaigns) for every selected configuration. Track worker completion separately from publication and validation, and continue unrelated campaigns when one fails.
 
@@ -262,7 +262,7 @@ Then, for a pending profile, [finalize runtime memory](#finalize-runtime-memory)
 ### 6. Validate and use the model
 
 **End-to-end offline profiling.** [Train and evaluate](e2e-gbdt.md#3-train-and-qualify-accuracy)
-one AISimulate-compatible GBDT per role. Retain inference artifacts and online
+one AISim-compatible GBDT per role. Retain inference artifacts and online
 seed checkpoints; report held-out error, successful prediction coverage and
 excluded rows together. Missing stores require more representative observations
 and another fit. Follow the [Replay setup and consumer checks](e2e-gbdt.md#4-use-the-model-in-replay)
@@ -300,13 +300,24 @@ Keep the file outside fresh `init --output-dir` roots and the GBDT chapter's
 fresh run directory, for example beside `drafts/` and separate final precision directories under `model-onboarding/`. Those directories must still satisfy the existing fresh-output rules. Create the checkpoint with:
 
 ```bash
-aisimulate onboard checkpoint \
+aisim onboard checkpoint \
   --file ./model-onboarding/onboarding-checkpoint.json
 ```
 
 Calling the same command again inspects existing state without replacing it. Each saved revision has a generated revision number. Updates require `--expect-revision` with the number just read; a stale revision rejects the update. Reload and reconcile concurrent changes instead of retrying with an invented revision. Saves use an OS lock and atomic file replacement. The adjacent lock file is an implementation detail, not another user checkpoint; leave it in place.
 
-The JSON document uses `schema_version: "aisimulate-onboarding-checkpoint/v1"`. Its [schema](../../../python/aisimulate/src/aisimulate/support/checkpoint.py) holds:
+The JSON document uses `schema_version: "aisimulate-onboarding-checkpoint/v1"`.
+This persisted format identifier and the `aisimulate-support-request/v1` and
+`/v2` request identifiers remain unchanged across the AISim rename, preserving
+accepted profiles and artifact bindings. Supported plan, validation-policy,
+validation-report and runtime-observation formats also retain their original
+`aisimulate-` identifiers and version rules. Existing v2 plans are checked
+against their complete original command presentation and generated-file hashes;
+verification and collection preview leave those files unchanged. New plans use
+`aisim` commands. Saved v1 validation policies retain bounded-repeat semantics;
+v2 retains full-grid defaults.
+
+The checkpoint [schema](../../../python/aisim/src/aisim/support/checkpoint.py) holds:
 
 | Field | Purpose |
 | --- | --- |
@@ -322,7 +333,7 @@ Both commands return a JSON report containing the full saved `state`, per-config
 `--update FILE.json` applies a recursive JSON merge patch; `--update -` reads the patch from stdin. Objects merge, arrays replace and `null` removes a field where the schema permits it. Do not edit CLI-owned schema, revision, acceptance or hash fields. Put effective selections in `inputs` or the configuration's `draft_request`, not only in research or decision notes: dependency checks use the former. For example, after initial creation, save supplied facts and unfinished investigation with the current revision:
 
 ```bash
-aisimulate onboard checkpoint \
+aisim onboard checkpoint \
   --file ./model-onboarding/onboarding-checkpoint.json \
   --expect-revision 1 --update - <<'JSON'
 {
@@ -366,7 +377,7 @@ for name in ("a", "b"):
     }
 (root / "draft-update.json").write_text(json.dumps(update, indent=2) + "\n")
 PY
-aisimulate onboard checkpoint \
+aisim onboard checkpoint \
   --file ./model-onboarding/onboarding-checkpoint.json \
   --expect-revision 2 --update ./model-onboarding/draft-update.json
 ```
@@ -374,7 +385,7 @@ aisimulate onboard checkpoint \
 The update file is disposable input; the checkpoint contains the drafts. Show each complete request/profile, source and assumption to the user. Save requested edits before presenting the revised values. Only after the user explicitly accepts `worker-a`'s exact values, record that acceptance:
 
 ```bash
-aisimulate onboard checkpoint \
+aisim onboard checkpoint \
   --file ./model-onboarding/onboarding-checkpoint.json \
   --expect-revision 3 --accept-profile worker-a --update - <<'JSON'
 {
@@ -410,7 +421,7 @@ Immutable files receive a SHA-256 snapshot when registered. `kind: request` and 
 For example, after accepting worker-a's revised draft and publishing its matching request and plan into `final-a-v2/`, archive the old request/plan/collector references while registering the replacements. If the checkpoint now reports revision 7, use the following patch; substitute the actual revision and reference names:
 
 ```bash
-aisimulate onboard checkpoint \
+aisim onboard checkpoint \
   --file ./model-onboarding/onboarding-checkpoint.json \
   --expect-revision 7 --update - <<'JSON'
 {
@@ -437,7 +448,7 @@ Record the existing collector checkpoint as `kind: collector_checkpoint` with `s
 Resume in the same or another agent session using the single entry point:
 
 ```bash
-aisimulate onboard resume \
+aisim onboard resume \
   --checkpoint ./model-onboarding/onboarding-checkpoint.json
 ```
 
@@ -458,7 +469,7 @@ below do not apply.
 At the collection stage, save the exact executor, pinned image, mounts, networking and other deployment options in the existing configuration's `inputs.collection_deployment`. Record them before registering collection artifacts so the checkpoint binds those artifacts to the selected deployment. For example, if the current checkpoint revision is 8:
 
 ```bash
-aisimulate onboard checkpoint \
+aisim onboard checkpoint \
   --file ./model-onboarding/onboarding-checkpoint.json \
   --expect-revision 8 --update - <<'JSON'
 {
@@ -502,7 +513,7 @@ For self-benchmarking, validate that artifacts still match the checkout's CLI, s
 Use an environment installed from this checkout; see [development setup](../../../DEVELOPMENT.md). Guided setup requires a terminal and starts only when explicitly requested:
 
 ```bash
-aisimulate onboard init --interactive --output support-request.yaml
+aisim onboard init --interactive --output support-request.yaml
 ```
 
 Enter the actual model identifier or checkpoint path, pinned model revision, dense/MoE kind, GPU system and interconnect. Supply a backend version label when desired, or leave it unset for target-runtime autodetection. Choose a worker and review its context, scheduler and capture limits. Setup derives and displays the GPUs required for that worker. Supplied options skip their prompts. Enter accepts displayed defaults; invalid values can be corrected; Ctrl-C or end-of-input cancels without saving. Existing files require `--overwrite`.
@@ -510,7 +521,7 @@ Enter the actual model identifier or checkpoint path, pinned model revision, den
 Both guided and scripted setup use onboarding. `--profile onboarding` is an optional spelling of the same behavior. For automation, supply the identity flags directly:
 
 ```bash
-aisimulate onboard init \
+aisim onboard init \
   --model /models/your-pinned-checkpoint \
   --model-revision YOUR_IMMUTABLE_REVISION \
   --model-kind dense \
@@ -520,7 +531,7 @@ aisimulate onboard init \
   --output support-request.yaml
 ```
 
-Replace the model, runtime and hardware inputs with your deployment's values. Framework support currently selects vLLM. Optional tokenizer, chat-template, and AISimulate revisions are recorded only when supplied.
+Replace the model, runtime and hardware inputs with your deployment's values. Framework support currently selects vLLM. Optional tokenizer, chat-template, and AISim revisions are recorded only when supplied.
 
 The backend identity and collection provenance have separate roles:
 
@@ -541,9 +552,9 @@ before the first execution. Supply an explicit `--image`; this preflight cannot
 derive an image from a Dynamo release. For example, after creating the plan:
 
 ```bash
-aisimulate onboard collect-fpm \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support \
+aisim onboard collect-fpm \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support \
   --image YOUR_PINNED_COLLECTION_IMAGE \
   --namespace YOUR_EXISTING_NAMESPACE \
   --model-cache YOUR_MODEL_PVC:/models \
@@ -552,7 +563,7 @@ aisimulate onboard collect-fpm \
 
 When `identity.runtime_framework_version` is absent, execution first probes
 package metadata inside that image without requesting GPUs. A successful probe
-freezes a new resolved plan in `./aisimulate-support/runtime-resolved/`, records
+freezes a new resolved plan in `./aisim-support/runtime-resolved/`, records
 the observed version, and continues collection from that plan. An explicit label
 stays unchanged; an omitted label takes the detected vLLM version. Runtime adapter
 selection uses the observed version in either case, so a custom label does not
@@ -566,7 +577,7 @@ child; other follow-up commands need the resolved paths. Do not look for the
 published pair under the original parent. A failed probe reports the failure
 and does not fall back to a host version, Dynamo mapping or database version.
 
-With `--model-config`, omitted parallelism flags trigger model/hardware-aware suggestions. Headless setup selects only a fully assessed default; otherwise it exits without saving. Identifier-only and supplied-profile setup retain TP1 when parallelism is omitted. Review the default limits below and change them through `aisimulate onboard init --help` options or config-based profile review.
+With `--model-config`, omitted parallelism flags trigger model/hardware-aware suggestions. Headless setup selects only a fully assessed default; otherwise it exits without saving. Identifier-only and supplied-profile setup retain TP1 when parallelism is omitted. Review the default limits below and change them through `aisim onboard init --help` options or config-based profile review.
 
 The optional `predict/pilot.yaml` and `recommend/pilot.yaml` examples use 1,024 input tokens, 128 output tokens, concurrency 1, four requests, TTFT target 1,000 ms and TPOT target 100 ms. Their workload/SLA flags do not size memory, choose the collector grid or change the collection identity. The example token lengths must still fit the selected runtime context. Guided intake does not prompt for these synthetic workload or SLA fields.
 
@@ -582,7 +593,7 @@ Onboarding takes no GPU-pool or node-allocation inputs. The selected topology es
 | DEP8 | `--tensor-parallel 1 --attention-data-parallel 8 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(1, 1, 8, 1, 8, 1)` |
 | TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
 
-The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention, supported short-convolution state and fixed per-request state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Config intake does not derive cache geometry for linear-attention or recurrent state. It leaves that [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe). The runtime probe on vLLM 0.33.0 with the Dynamo scheduler file of the `release/1.7.0` branch that the bundle pins ([source notes](../../../python/aisimulate/collector/fpm_forward/runtime/instrumentation/vllm-0.33.0.md)) maps their recurrent-state and one-block-per-request cache specs to `state` groups. A model with such a cache needs the probe route: `onboard init` stops with the probe guidance, and the memory observer that collection uses without a probe bundle leaves the memory of its cache groups unresolved. The measured Kimi K3 profile route in the table below is not affected.
+The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention, supported short-convolution state and fixed per-request state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Config intake does not derive cache geometry for linear-attention or recurrent state. It leaves that [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe). The runtime probe on vLLM 0.33.0 with the Dynamo scheduler file of the `release/1.7.0` branch that the bundle pins ([source notes](../../../python/aisim/collector/fpm_forward/runtime/instrumentation/vllm-0.33.0.md)) maps their recurrent-state and one-block-per-request cache specs to `state` groups. A model with such a cache needs the probe route: `onboard init` stops with the probe guidance, and the memory observer that collection uses without a probe bundle leaves the memory of its cache groups unresolved. The measured Kimi K3 profile route in the table below is not affected.
 
 ### Parallelism support and guided CLI coverage
 
@@ -593,8 +604,8 @@ is not a general limit on which intra-iteration parallelism FPM can represent.
 | Path | Current implementation |
 | --- | --- |
 | Measured DCP timing and engine Replay | Supported with exact recorded `dcp` identity. The [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile) queries the measured pair and supplies the corresponding logical KV block size and usable capacity to `--stack engine` prediction. Preserve the topology and resource evidence; DCP is not an additional multiplier on TP GPU count. |
-| Guided request and collection | [`onboard init`](../../../python/aisimulate/src/aisimulate/support/cli.py) exposes attention TP/DP and MoE TP/EP. Its [request schema](../../../python/aisimulate/src/aisimulate/support/schema.py) has no DCP field, and the current collector presets fix `PP=CP=1`. |
-| Guided `fpm_profile` resource schema | [`FpmDeploymentProfile`](../../../python/aisimulate/src/aisimulate_core/fpm_profile.py) fixes `pp` and `cp` to 1 and does not represent DCP. The [canonical constructor](../../../crates/core/src/perfmodel/fpm/config.rs) explicitly rejects combining this profile with recorded `dcp`, rather than interpreting it as a TP-only resource profile. |
+| Guided request and collection | [`onboard init`](../../../python/aisim/src/aisim/support/cli.py) exposes attention TP/DP and MoE TP/EP. Its [request schema](../../../python/aisim/src/aisim/support/schema.py) has no DCP field, and the current collector presets fix `PP=CP=1`. |
+| Guided `fpm_profile` resource schema | [`FpmDeploymentProfile`](../../../python/aisim/src/aisim_core/fpm_profile.py) fixes `pp` and `cp` to 1 and does not represent DCP. The [canonical constructor](../../../crates/core/src/perfmodel/fpm/config.rs) explicitly rejects combining this profile with recorded `dcp`, rather than interpreting it as a TP-only resource profile. |
 
 The collector/profile `cp` field and recorded `dcp` are distinct fields. Do not
 read `CP=1` as evidence that the measured-FPM DCP consumer is unsupported.
@@ -693,7 +704,7 @@ The 256,000-token context policy is motivated by the [AgentX reference subset](#
 Use a local Hugging Face-style JSON configuration to fill supported metadata and create the existing FPM profile:
 
 ```bash
-aisimulate onboard init \
+aisim onboard init \
   --model-config /models/your-pinned-checkpoint/config.json \
   --interactive --output support-request.yaml
 ```
@@ -702,7 +713,7 @@ Setup reads that file and an adjacent `hf_quant_config.json` ModelOpt sidecar, w
 
 With no parallelism flags, guided setup asks for missing shared precision/layout facts, shows a small topology shortlist with resource reasons, and lets you choose one worker with `--output`, or several with [`--output-dir`](#onboard-multiple-parallel-configurations). Enter selects only the displayed single default, and only when all required profile inputs are resolved and its estimated bytes fit the budget. Otherwise a candidate selection is required before setup resolves the remaining precision and cache geometry. Any explicit parallelism flag bypasses suggestions and retains the existing topology validation. Each chosen topology then follows the same profile review, edit, accept and cancellation flow below.
 
-When present, `text_config` must be one nonempty decoder configuration object. Only its geometry is used; wrapper and encoder dimensions are never merged into it. A nonempty `llm_config` object is read the same way. It takes precedence over `text_config` only for wrappers that AISimulate maps to `llm_config`, such as `NemotronH_Omni_Reasoning_V3`. The FPM collector and the profile architecture check choose the decoder key the same way. Without such a decoder object, setup reads the flat decoder fields even when vision or audio metadata is present. Nested decoder architecture/model-type declarations select supported decoder validation and resource estimates. The profile preserves the declared architecture used by collection: nested `architectures` when present, otherwise the wrapper architecture. Provenance records both identities when they differ. A wrapper architecture never establishes an unknown nested decoder's resource layout. Shared outer dtype and quantization metadata are inherited only when the text section does not declare that metadata. The checkpoint identity hint and SHA-256 remain those of the original document. `model_max_length` is accepted as a context-limit alias; conflicting context declarations fail explicitly.
+When present, `text_config` must be one nonempty decoder configuration object. Only its geometry is used; wrapper and encoder dimensions are never merged into it. A nonempty `llm_config` object is read the same way. It takes precedence over `text_config` only for wrappers that AISim maps to `llm_config`, such as `NemotronH_Omni_Reasoning_V3`. The FPM collector and the profile architecture check choose the decoder key the same way. Without such a decoder object, setup reads the flat decoder fields even when vision or audio metadata is present. Nested decoder architecture/model-type declarations select supported decoder validation and resource estimates. The profile preserves the declared architecture used by collection: nested `architectures` when present, otherwise the wrapper architecture. Provenance records both identities when they differ. A wrapper architecture never establishes an unknown nested decoder's resource layout. Shared outer dtype and quantization metadata are inherited only when the text section does not declare that metadata. The checkpoint identity hint and SHA-256 remain those of the original document. `model_max_length` is accepted as a context-limit alias; conflicting context declarations fail explicitly.
 
 Scripted intake and interactive final review state that FPM models the text decoder only. Config-derived estimates exclude multimodal encoders, projectors, preprocessing and other non-text components. Observed runtime cache capacity accounts for all components actually loaded by the worker, while timing describes the text decoder only. The saved profile preserves that notice in provenance through planning and generated prediction/recommendation configurations. Text-decoder cache layouts that `config.json` cannot establish, such as linear-attention, recurrent state or an architecture that intake does not recognize, are not rejected: their [cache geometry stays pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Other known incompatible layouts remain rejected. MLA/DSA layouts and configs that name no architecture require explicit resource accounting.
 
@@ -743,7 +754,7 @@ provenance: Illustrative file shape only; replace values and this explanation wi
 ```
 
 ```bash
-aisimulate onboard init \
+aisim onboard init \
   --model-config /models/your-pinned-checkpoint/config.json \
   --resource-overrides resource-overrides.yaml \
   --model /models/your-pinned-checkpoint \
@@ -1016,7 +1027,7 @@ The native allocator shares one rank-local byte budget across groups and admits 
 `--suggest-parallel` emits one JSON report to stdout without creating a request, plan, timing data or output directory. It requires `--model-config` and the actual target identity; config hints can supply the model label and kind, but checkpoint revision and backend identity are never invented. Use your intended runtime/collection limits and shared precision declarations for meaningful resource accounting:
 
 ```bash
-aisimulate onboard init \
+aisim onboard init \
   --model-config /models/your-pinned-checkpoint/config.json \
   --model /models/your-pinned-checkpoint \
   --model-revision YOUR_IMMUTABLE_REVISION \
@@ -1029,14 +1040,14 @@ The report includes hardware/config provenance, exact `cli_flags`, required GPUs
 
 Dense decoders consider TP; MoE decoders consider pure TP, DEP and TEP. The shortlist contains at most two choices per family and six distinct tuples overall, preferring the smallest estimated fit and the next one. Widths are powers of two within the packaged node domain. A declared NVLink/NVSwitch fabric can use a packaged fast rack domain when its inter-node bandwidth matches or exceeds its intra-node bandwidth; a declared `none` interconnect permits only one GPU automatically. This is hardware architecture, not an available GPU allocation. Explicit topology choices may exceed the shortlist.
 
-The memory precheck compares complete per-rank resource estimates against the selected `--gpu-memory-utilization` fraction of packaged GPU memory, initially 90%. Linear cache reserves one full runtime context plus one cached token per rank for planner headroom. Grouped cache uses the native conservative per-request peak at the selected context and scheduled-token bound, including block alignment and transient prefill pages. Grouped planning requires this checkout's compiled AISimulate extension. Neither path multiplies context by the maximum scheduler sequence count or assumes balanced attention-DP routing. Concurrent requests share the cache capacity left after non-cache resources. Missing precision, weights, cache, activations or reservations prevent a default; a known lower bound can reject an oversized candidate but cannot prove fit. Planning estimates for DEP/TEP communication storage, many quantized or custom decoder layouts, and large TP activation envelopes remain unresolved unless supplied. These optional byte estimates are not required to collect observed runtime memory. CUDA graph reservations and non-text components remain outside these estimates. Only known geometry constraints are checked; generated-plan admission and actual serving-runtime checks remain authoritative. The shortlist does not establish timing coverage, optimal performance or measured accuracy.
+The memory precheck compares complete per-rank resource estimates against the selected `--gpu-memory-utilization` fraction of packaged GPU memory, initially 90%. Linear cache reserves one full runtime context plus one cached token per rank for planner headroom. Grouped cache uses the native conservative per-request peak at the selected context and scheduled-token bound, including block alignment and transient prefill pages. Grouped planning requires this checkout's compiled AISim extension. Neither path multiplies context by the maximum scheduler sequence count or assumes balanced attention-DP routing. Concurrent requests share the cache capacity left after non-cache resources. Missing precision, weights, cache, activations or reservations prevent a default; a known lower bound can reject an oversized candidate but cannot prove fit. Planning estimates for DEP/TEP communication storage, many quantized or custom decoder layouts, and large TP activation envelopes remain unresolved unless supplied. These optional byte estimates are not required to collect observed runtime memory. CUDA graph reservations and non-text components remain outside these estimates. Only known geometry constraints are checked; generated-plan admission and actual serving-runtime checks remain authoritative. The shortlist does not establish timing coverage, optimal performance or measured accuracy.
 
 ### Onboard multiple parallel configurations
 
 Use `--model-config` with `--output-dir` to prepare separate requests and profiles in one session. Guided setup reads shared inputs once, then accepts one or more comma-separated candidate numbers:
 
 ```bash
-aisimulate onboard init \
+aisim onboard init \
   --model-config /models/your-pinned-checkpoint/config.json \
   --interactive --output-dir ./onboarding
 ```
@@ -1064,7 +1075,7 @@ cache_layout: linear
 ```
 
 ```bash
-aisimulate onboard init \
+aisim onboard init \
   --model-config /models/your-pinned-checkpoint/config.json \
   --model /models/your-pinned-checkpoint \
   --model-revision YOUR_IMMUTABLE_REVISION \
@@ -1091,11 +1102,11 @@ onboarding/
     fpm-profile.json
 ```
 
-Each deterministic directory names its resolved tuple; each request embeds one deployment and matches its exported profile. The `configurations` list in `onboarding.json` records each topology, minimum collection GPUs, request/profile paths, intended `collection/` directory and exact next `aisimulate onboard plan` command in `plan_command`. Run those commands to create the ordinary plans, then use each plan's existing `collect-fpm` preview, collection and `validate-fpm` commands with separate result directories. Setup does not launch collection. The selected configurations can be collected in separate runs on the same GPUs; their GPU requirements are not summed. Once saved, the requests and profiles can be planned without the original config or override files.
+Each deterministic directory names its resolved tuple; each request embeds one deployment and matches its exported profile. The `configurations` list in `onboarding.json` records each topology, minimum collection GPUs, request/profile paths, intended `collection/` directory and exact next `aisim onboard plan` command in `plan_command`. Run those commands to create the ordinary plans, then use each plan's existing `collect-fpm` preview, collection and `validate-fpm` commands with separate result directories. Setup does not launch collection. The selected configurations can be collected in separate runs on the same GPUs; their GPU requirements are not summed. Once saved, the requests and profiles can be planned without the original config or override files.
 
 ## Provide identity and resource metadata
 
-For a model without an analytical class, create a JSON or YAML FPM profile and pass `--fpm-profile /path/to/model-profile.yaml` to `onboard init`. The request embeds the complete profile; ordinary prediction and recommendation use the same object under `engine.fpm_profile`. The profile schema is [FpmModelProfile](../../../python/aisimulate/src/aisimulate_core/fpm_profile.py). It rejects missing fields, unknown fields, conflicting identities and mutable revision placeholders.
+For a model without an analytical class, create a JSON or YAML FPM profile and pass `--fpm-profile /path/to/model-profile.yaml` to `onboard init`. The request embeds the complete profile; ordinary prediction and recommendation use the same object under `engine.fpm_profile`. The profile schema is [FpmModelProfile](../../../python/aisim/src/aisim_core/fpm_profile.py). It rejects missing fields, unknown fields, conflicting identities and mutable revision placeholders.
 
 | Profile fields | Required meaning |
 | --- | --- |
@@ -1109,7 +1120,7 @@ For a model without an analytical class, create a JSON or YAML FPM profile and p
 | Deployment runtime hints | `moe_backend`, `attention_backend` (default `auto`), `enable_wideep`, `enable_eplb` (currently both `false`). |
 | Deployment `resources` | Conservative bounds described below, specific to this topology. |
 
-A legacy declared-memory `resources` record supplies all four integer fields: `weights_bytes`, `activations_bytes`, `runtime_overhead_bytes` and `comm_overhead_bytes`. They are optional for the pending runtime-memory workflow. Every profile requires positive `max_num_tokens` and `max_batch_size`, and a `provenance` explanation. Choose either `cache_layout: linear` with positive `kv_bytes_per_token`, or `cache_layout: grouped` with a nonempty `cache_groups` list and no scalar token rate, as described in [grouped cache review](#review-grouped-cache-resources). Existing linear profiles retain their serialized shape. Supply a complete legacy declaration only when those bounds are already known and intended; new onboarding observes runtime cache capacity instead. A profile is an input declaration; AISimulate does not certify that its values describe your runtime.
+A legacy declared-memory `resources` record supplies all four integer fields: `weights_bytes`, `activations_bytes`, `runtime_overhead_bytes` and `comm_overhead_bytes`. They are optional for the pending runtime-memory workflow. Every profile requires positive `max_num_tokens` and `max_batch_size`, and a `provenance` explanation. Choose either `cache_layout: linear` with positive `kv_bytes_per_token`, or `cache_layout: grouped` with a nonempty `cache_groups` list and no scalar token rate, as described in [grouped cache review](#review-grouped-cache-resources). Existing linear profiles retain their serialized shape. Supply a complete legacy declaration only when those bounds are already known and intended; new onboarding observes runtime cache capacity instead. A profile is an input declaration; AISim does not certify that its values describe your runtime.
 
 All resource bytes are **per rank**, and must bound every rank. Scheduler envelope limits are also per attention-DP rank; they are not the summed batch and token totals used by the worker's FPM timing query. Do not copy TP resource values into DEP/TEP merely because GPU counts match. Include all non-KV storage, including quantization overheads. Overhead fields exclude the separate `kv_cache.capacity.cuda_graph_reserved_bytes` reservation. Profiles carry explicit quantization identity; `text_only` and `unrecorded_quant_modes` overrides are rejected on this route. Requests above the declared scheduler envelope fail explicitly. Collection validates both prefill and explicit decode batch limits against that envelope before launching workers.
 
@@ -1122,19 +1133,19 @@ Ordinary FPM model construction reads `config.json` from the local checkpoint or
 ## Plan, preview, and explicitly execute
 
 ```bash
-aisimulate onboard plan \
-  --config support-request.yaml --output-dir ./aisimulate-support
+aisim onboard plan \
+  --config support-request.yaml --output-dir ./aisim-support
 
-aisimulate onboard collect-fpm \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support
+aisim onboard collect-fpm \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support
 ```
 
 For a resolved backend identity, the first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. A pending automatic-version plan omits runnable prediction/recommendation configs until the [collection-image probe](#create-the-request) produces its `runtime-resolved/` child plan. When supplied, the profile is also saved as `fpm-model-profile.json`, included in the collector command, and embedded in prediction/recommendation configs. The plan records pending memory or the explicitly declared resource estimate, plus effective collection limits and their sources. The second command prints the collector invocation without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each deployment or collection envelope.
 
 The v2 plan's `request_id` identifies collection inputs: deployment identity, exact profile and collection settings. Its separate `validation_id` also includes synthetic workload/SLA, recommendation objective and seed. To change only those validation inputs, copy the request to a new file, edit that copy, then run `onboard plan --config UPDATED_REQUEST --output-dir EXISTING_PLAN --overwrite`. The command first validates the original saved request and every existing generated file against the saved plan, then refreshes validation examples and their hashes. It can also repair missing generated files for the same collection. If writing was interrupted before `support-plan.json` was created, repair requires an intact identical `request.yaml` and checks every existing generated input before writing. It preserves collected data, checkpoints and prior result directories. Changed collection/profile inputs or modified existing generated files are rejected; do not edit files inside the plan to bypass those checks.
 
-If an AISimulate update changes generated guidance, recreate the plan in a new output directory: validation compares generated files byte for byte and does not migrate existing plans. A validation trace is supplied separately to `validate-fpm`, so selecting another trace does not require regenerating the collection plan.
+If an AISim update changes generated guidance, recreate the plan in a new output directory: validation compares generated files byte for byte and does not migrate existing plans. A validation trace is supplied separately to `validate-fpm`, so selecting another trace does not require regenerating the collection plan.
 
 The plan reports `fpm.collection_gpus_required`, derived as attention TP times attention DP. Collection uses only that worker width and the matching `tp`, `pure_tp`, `dep`, or `tep` preset. The generated prediction and recommendation configs both use one worker. Recommendation has one exact preset and one trial; its `optimization.constraints.max_candidate_gpus` equals the selected worker's requirement so even workers wider than the runtime default are representable. That derived cap describes this validation example and does not declare the user's total available GPUs. There is no replica expansion or deployment optimization during onboarding.
 
@@ -1142,23 +1153,23 @@ Saved `aisimulate-support-request/v1` requests are read as v2 while preserving t
 
 Some earlier v1 drafts also included `identity.gpu_count`, `identity.node_count`, `identity.gpus_per_node` and `search.max_candidates`; those obsolete fields remain rejected. Copy the request, remove them and review the retained topology/profile before regeneration. Plan summaries use `fpm.collection_gpus_required` and `search.candidates[].required_gpus`. The old `onboard init` allocation flags (`--gpu-count`, `--node-count`, `--gpus-per-node`, `--max-candidates`) are not accepted. Ordinary `predict` and `recommend` replica and GPU-budget APIs are unchanged.
 
-Before execution, prepare the real checkpoint and compatible pinned runtime image using the existing [environment prerequisites](#prepare-the-environment). The packaged collector generates the runtime, creates the benchmark workloads and launches Dynamo/vLLM workers. It needs GPU resources, deployment configuration, model/image access and the selected executor's prerequisites below; it does not require a prestarted serving process or HTTP endpoint. The command launches workers within that prepared environment rather than provisioning the cluster itself. `commands.json` publishes the guarded `aisimulate onboard collect-fpm --execute` command for collection, alongside a read-only collector planning command. Apply the selected deployment options to either command; the generated examples retain Kubernetes defaults.
+Before execution, prepare the real checkpoint and compatible pinned runtime image using the existing [environment prerequisites](#prepare-the-environment). The packaged collector generates the runtime, creates the benchmark workloads and launches Dynamo/vLLM workers. It needs GPU resources, deployment configuration, model/image access and the selected executor's prerequisites below; it does not require a prestarted serving process or HTTP endpoint. The command launches workers within that prepared environment rather than provisioning the cluster itself. `commands.json` publishes the guarded `aisim onboard collect-fpm --execute` command for collection, alongside a read-only collector planning command. Apply the selected deployment options to either command; the generated examples retain Kubernetes defaults.
 
 For a source checkout installed with `uv sync`, activate its environment and expose the collector source package before running generated collector commands. From the repository root:
 
 ```bash
-source python/aisimulate/.venv/bin/activate
-export PYTHONPATH="$PWD/python/aisimulate${PYTHONPATH:+:$PYTHONPATH}"
+source python/aisim/.venv/bin/activate
+export PYTHONPATH="$PWD/python/aisim${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-Alternatively, run the collector from the `python/aisimulate` source directory with that environment active. The installed release wheel includes the collector and needs no source-path adjustment. These steps make the command importable; they do not provide the target deployment or GPUs.
+Alternatively, run the collector from the `python/aisim` source directory with that environment active. The installed release wheel includes the collector and needs no source-path adjustment. These steps make the command importable; they do not provide the target deployment or GPUs.
 
 After those prerequisites are ready, complete the [readiness procedure](#check-timing-readiness-before-full-collection) before explicitly launching full collection from that environment:
 
 ```bash
-aisimulate onboard collect-fpm \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support --execute
+aisim onboard collect-fpm \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support --execute
 ```
 
 Execution requires a matching saved plan. Creating the initial plan records model revisions and backend identity without downloading a pinned checkpoint or inspecting the running runtime. Keep the actual checkpoint consistent with the declared model revision.
@@ -1205,9 +1216,9 @@ an embedded resource profile does not replace that runtime metadata.
 Apply this procedure independently to every selected precision/topology configuration before new full collection. The readiness gate governs collection; it does not require recollecting compatible historical formal data that can already be used by ordinary prediction/recommendation. Historical data reuse retains the separate identity, memory, query-coverage and accuracy checks, including recorded provenance gaps. First inspect any saved native campaign artifacts:
 
 ```bash
-aisimulate onboard collect-fpm \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support --check-readiness
+aisim onboard collect-fpm \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support --check-readiness
 ```
 
 This CPU-only command prints a JSON assessment without launching workers, writing a report file or updating the session checkpoint. It exits 0 when ready and 1 when incomplete or blocked; invalid CLI inputs or onboarding plans retain exit 2. Do not combine it with `--execute`, `--smoke`, `--limit` or `--resume`. It validates the saved plan, current attempts and native evidence rather than trusting saved success labels. Existing formal attempts take precedence over smoke evidence for the same cell, including failed formal attempts; an older successful smoke cannot hide a later failure. Missing evidence is incomplete, not successful. This check reports the archived deployment; full execution additionally compares it with the requested runtime/launch plan. A saved report does not transfer readiness to another image, runtime, precision, topology or collection envelope.
@@ -1215,9 +1226,9 @@ This CPU-only command prints a JSON assessment without launching workers, writin
 When there is no reusable complete evidence and collection is authorized, use the same reviewed deployment options for a bounded smoke:
 
 ```bash
-aisimulate onboard collect-fpm \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support --execute --smoke
+aisim onboard collect-fpm \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support --execute --smoke
 ```
 
 Guided smoke defaults to **all cells in this configuration's plan**: both phases for aggregated/legacy requests, or the selected prefill/decode phase for an independent role. Dynamo generates a bounded native sample grid; smoke does not reduce the reviewed context, scheduler, graph or memory settings. For GLM-5.3-Flash, the smoke measures two points of the planner's list for each collected phase instead. If the list holds a prefill of two hash blocks after one block of prefix, the prefill phase measures it too. An older smoke that omitted an explicit prefill capture configuration cannot qualify the formal launch: inspect its archived arguments, preserve the evidence and requalify with the matching settings in a new campaign. `--limit N` explicitly limits cells and may omit a required phase, leaving readiness incomplete. Smoke and formal collection use separate collector checkpoints and artifact directories, and smoke never publishes the formal data pair. Use the same executor/image/mount/transport options as the intended formal run; for an existing smoke, add `--resume` after inspecting its checkpoint.
@@ -1246,7 +1257,7 @@ If no usable decode exists, inspect the pinned runtime, exact warm-up flags, eli
 
 One coordinator saves the report path, command/exit status, blockers and next action in the existing session checkpoint, using per-configuration `artifacts` and `progress` plus `research` for the investigation. For a read-only assessment, retain its emitted JSON in the research record or a separately saved evidence file; do not register a nonexistent report. Reload the checkpoint revision first and follow the [writer coordination rule](#orchestrate-independent-collection-campaigns); this assessment does not save conversational progress automatically. When execution updates a report, refresh its registered artifact reference. Preserve superseded evidence and decisions rather than editing a report to declare readiness.
 
-Use the [recovery procedure](#orchestrate-independent-collection-campaigns) for compatible saved artifacts. Guided formal resume may proceed without ready timing only when its checkpoint proves that no worker launch is needed. That exception permits artifact recovery; it does not qualify unusable timings or authorize a full GPU retry. Changed collection/runtime inputs require a new reviewed campaign, and AISimulate updates that change generated plan guidance retain the existing new-directory requirement.
+Use the [recovery procedure](#orchestrate-independent-collection-campaigns) for compatible saved artifacts. Guided formal resume may proceed without ready timing only when its checkpoint proves that no worker launch is needed. That exception permits artifact recovery; it does not qualify unusable timings or authorize a full GPU retry. Changed collection/runtime inputs require a new reviewed campaign, and AISim updates that change generated plan guidance retain the existing new-directory requirement.
 
 ### Choose the collection executor
 
@@ -1273,7 +1284,7 @@ The collector checks allocated CPU counts rather than full-node CPU capacity. In
 Keep the campaign directory on storage shared at the same absolute path across the allocated nodes. Make the pinned image and checkpoint accessible, and mount the model/cache paths required inside the container. The collector adds its own staged runtime and result mounts, preserves initialization and native-result evidence, and cleans up its own named job steps without canceling the caller's allocation. Commas and control characters are not allowed in individual mount strings; use repeated flags for multiple mounts. For example, preview an existing plan in shared storage:
 
 ```bash
-aisimulate onboard collect-fpm \
+aisim onboard collect-fpm \
   --config /shared/onboarding/request.yaml \
   --output-dir /shared/onboarding/collection \
   --executor slurm \
@@ -1383,8 +1394,8 @@ the guided collector's defaults.
 
 #### Test cases and loop dimensions
 
-There are two levels of iteration. The AISimulate
-[collector plan](../../../python/aisimulate/collector/fpm_forward/planner.py)
+There are two levels of iteration. The AISim
+[collector plan](../../../python/aisim/collector/fpm_forward/planner.py)
 selects deployment cells: phase, parallel topology, admitted KV dtype and backend
 policy. A guided request fixes one reviewed deployment; an aggregated request
 requires both prefill and decode cells. Model/checkpoint, image and other
@@ -1469,14 +1480,14 @@ every cache or recurrent state consumed by a measurement. Include the intended
 batch/context range and graph boundaries in the plan. A rectangular min/max
 range does not prove that every interior query can be interpolated.
 
-AISimulate and Dynamo jointly determine what is collected. For formal collection, their responsibilities are:
+AISim and Dynamo jointly determine what is collected. For formal collection, their responsibilities are:
 
 | Part of collection policy | Responsibility |
 | --- | --- |
-| Worker deployment | The AISimulate collector generates the runtime and launches benchmark workers through Kubernetes or an existing Slurm/Pyxis allocation. |
-| Runtime bounds | AISimulate forwards the reviewed per-request context, scheduled-token and sequence bounds, and configured GPU memory fraction, to prefill and decode workers. |
-| Runtime capture policy | With `runtime`, AISimulate emits no prefill compilation override or capture-derived new-token sample cap. Capture sizes and the corresponding new-token axis/counts remain unresolved before engine initialization; the scheduler-derived KV-read sample cap remains bounded. |
-| Explicit capture policy | With `explicit`, AISimulate constructs the capture-size list and overrides the prefill engine's compilation configuration. It derives prefill new-token and KV-read sample caps from captures and runtime bounds. These caps are inputs to Dynamo, not an exact point list. |
+| Worker deployment | The AISim collector generates the runtime and launches benchmark workers through Kubernetes or an existing Slurm/Pyxis allocation. |
+| Runtime bounds | AISim forwards the reviewed per-request context, scheduled-token and sequence bounds, and configured GPU memory fraction, to prefill and decode workers. |
+| Runtime capture policy | With `runtime`, AISim emits no prefill compilation override or capture-derived new-token sample cap. Capture sizes and the corresponding new-token axis/counts remain unresolved before engine initialization; the scheduler-derived KV-read sample cap remains bounded. |
+| Explicit capture policy | With `explicit`, AISim constructs the capture-size list and overrides the prefill engine's compilation configuration. It derives prefill new-token and KV-read sample caps from captures and runtime bounds. These caps are inputs to Dynamo, not an exact point list. |
 | Remaining sampling defaults | The collector inherits formal prefill batch-sample and decode-sample caps from the deployed Dynamo image. Inspect that image's defaults; a scheduler sequence bound does not request every prefill batch up to the bound. |
 | Engine initialization | vLLM loads the model and allocates cache/workspaces, then resolves supported graph mode and capture sizes for the selected runtime configuration. Inspect effective values in initialization logs and raw runtime artifacts. |
 | Exact points and timings | Dynamo self-benchmark combines those inputs with the initialized engine's capture sizes, KV capacity and feasibility checks to generate, admit and time the actual points. For GLM-5.3-Flash, the planner generates the list at plan time, and the producer admits and times each point. |
@@ -1523,7 +1534,7 @@ Save source research and outstanding questions after each meaningful finding wit
 
 ### Choose or author the instrumentation bundle
 
-Omit `--instrumentation` for the audited bundled vLLM 0.27.0 and 0.33.0 adapters. The vLLM 0.33.0 bundle pins the Dynamo scheduler file of the `release/1.7.0` branch: the SHA-256 of the installed file `dynamo/vllm/instrumented_scheduler.py` must equal the hash of that file at commit `9abd2ef0d908c4bb323e1b8956ea76a5772a1d41`. The probe leaves the evidence of a runtime with another scheduler file unresolved. The [vLLM 0.33.0 source notes](../../../python/aisimulate/collector/fpm_forward/runtime/instrumentation/vllm-0.33.0.md) name the Dynamo build of the live probes. The bundle serves every model on the probe route, a plain attention model as well as a hybrid model with state groups. No bundle exists for vLLM 0.31.0, and a probe record of vLLM 0.31.0 that holds hybrid cache evidence does not import. Import refuses hybrid cache evidence from every vLLM version but 0.33.0, with the text `hybrid cache evidence requires vLLM 0.33.0; the record names vLLM 0.31.0`. For the inspected vLLM 0.28.0/Dynamo build, export the complete [campaign-local example](../../../python/aisimulate/collector/fpm_forward/runtime/vllm-0.28.0.example.json) into a fresh directory:
+Omit `--instrumentation` for the audited bundled vLLM 0.27.0 and 0.33.0 adapters. The vLLM 0.33.0 bundle pins the Dynamo scheduler file of the `release/1.7.0` branch: the SHA-256 of the installed file `dynamo/vllm/instrumented_scheduler.py` must equal the hash of that file at commit `9abd2ef0d908c4bb323e1b8956ea76a5772a1d41`. The probe leaves the evidence of a runtime with another scheduler file unresolved. The [vLLM 0.33.0 source notes](../../../python/aisim/collector/fpm_forward/runtime/instrumentation/vllm-0.33.0.md) name the Dynamo build of the live probes. The bundle serves every model on the probe route, a plain attention model as well as a hybrid model with state groups. No bundle exists for vLLM 0.31.0, and a probe record of vLLM 0.31.0 that holds hybrid cache evidence does not import. Import refuses hybrid cache evidence from every vLLM version but 0.33.0, with the text `hybrid cache evidence requires vLLM 0.33.0; the record names vLLM 0.31.0`. For the inspected vLLM 0.28.0/Dynamo build, export the complete [campaign-local example](../../../python/aisim/collector/fpm_forward/runtime/vllm-0.28.0.example.json) into a fresh directory:
 
 ```bash
 python - <<'PY'
@@ -1539,7 +1550,7 @@ print(frozen.sha256)
 PY
 ```
 
-Run the export with Python from the installed AISimulate environment. In a source checkout, set `PYTHONPATH=python/aisimulate` when running it from the repository root. The example contains runnable worker/scheduler adapters, source notes and exact installed-source hashes. Its [source audit](../../../python/aisimulate/collector/fpm_forward/runtime/instrumentation/vllm-0.28.0.md) identifies the inspected immutable image. Inspect your image's actual source before using it. A mismatch produces unresolved evidence with the observed hashes; investigate the patch and update its mapping/tests before creating a new bundle. Source inspection and CPU fakes establish implementation readiness. Only a successful live probe and independent import establish evidence for your selected campaign.
+Run the export with Python from the installed AISim environment. In a source checkout, set `PYTHONPATH=python/aisim` when running it from the repository root. The example contains runnable worker/scheduler adapters, source notes and exact installed-source hashes. Its [source audit](../../../python/aisim/collector/fpm_forward/runtime/instrumentation/vllm-0.28.0.md) identifies the inspected immutable image. Inspect your image's actual source before using it. A mismatch produces unresolved evidence with the observed hashes; investigate the patch and update its mapping/tests before creating a new bundle. Source inspection and CPU fakes establish implementation readiness. Only a successful live probe and independent import establish evidence for your selected campaign.
 
 The bundled vLLM 0.33.0 adapter reads the 0.33.0 allocation model. Each cache tensor lists its `layers` and has a `layer_stride`, and every layer view has the block axis first. Tensors of different groups can share bytes only for the same block ID, because a block ID belongs to one group at a time. The adapter maps `MambaSpec` and `CircularBufferSpec` to `state` groups with `blocks_per_request` from the spec. This is the steady count: the blocks that a running request holds between block boundaries. It is `1 + k` for a `MambaSpec` with `k` speculative blocks in both Mamba cache modes, and 1 for a `CircularBufferSpec`. In align mode, vLLM's startup sizing counts `2 + k + c` blocks per `MambaSpec` group, where `c` is the number of prefill checkpoint blocks. After a request crosses a block boundary in align mode, a `MambaSpec` group also holds the previous state block for one or two steps. The block stays for two steps with async scheduling, which vLLM 0.33.0 turns on by default, and for one step without it. The steady count leaves out the startup count and the previous block. The adapter records `c` and the prefill checkpoint alignment of every `MambaSpec` group, and import keeps them in the profile's [state group fields](../memory.md#fpm-profile-cache-groups-and-byte-budgets). For GLM-5.3-Flash, the default KDA prefill backend setting `auto` selects FlashKDA on CUDA SM 9.x, 10.x or 12.x with a bfloat16 model dtype, a head dimension of 128 and a bounded gate, and the Triton kernel otherwise ([`kda.py:137-160`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/models/glm5next/common/kda.py#L137-L160), [`kda.py:344-351`](https://github.com/vllm-project/vllm/blob/4ba787ec9959e566d3b587a796dff07673324da5/vllm/models/glm5next/common/kda.py#L344-L351)). The [state group fields](../memory.md#fpm-profile-cache-groups-and-byte-budgets) give the prefill checkpoint block that each backend gives a KDA state group. No record names the KDA prefill backend; it shows only in that block. In the live GLM-5.3-Flash probe at TP 4 on GB300, each of the 4 KDA groups holds 1 prefill checkpoint block with alignment 16, which only FlashKDA gives. The adapter reports a spec class that no cache kind models, such as `RSWASpec`, and HiSparse placement as unsupported. It records `enable_prefix_caching`, `mamba_cache_mode` and the hash block size per phase. Import stores these values for every phase in the provenance, because a decode phase can turn prefix caching off for its measurement. The runtime memory record holds the values of the first phase that the role collects: prefill for an aggregated or prefill role, decode for a decode role. Import refuses `mamba_cache_mode: all`, which no cache kind models, and the runner rejects a backend policy that passes `--mamba-cache-mode` while it observes memory. A probe of a `Glm5NextForConditionalGeneration` model adds `--language-model-only`, so it measures the cache capacity of the text decoder that collection loads.
 
@@ -1565,7 +1576,7 @@ observation_schema: aisimulate-runtime-observation/v1
 
 Paths are normalized relative paths within the bundle. The manifest and every declared file contribute to its identity. `source_notes` and nonempty installed `source_files` are required for complete import. The runner freezes the bundle for each attempt and injects the classes through the native worker/scheduler extension mechanism. Loading a manifest, previewing launches and importing saved observations never execute the supplied Python.
 
-Use the [runnable hooks](../../../python/aisimulate/collector/fpm_forward/runtime/instrumentation/hooks.py) and [field contract](../../../python/aisimulate/collector/fpm_forward/runtime/instrumentation/README.md) as the starting template. Preserve each native `super` call, its return value and exceptions. Record profiled cache allowance after native profiling, successful allocation after initialization, and physical views only after warm-up/capture returns. The scheduler records its native initial pool and free queue. Observe outside timed forwards; never change the runtime's graph, precision, scheduler or forward behavior to make the observation pass.
+Use the [runnable hooks](../../../python/aisim/collector/fpm_forward/runtime/instrumentation/hooks.py) and [field contract](../../../python/aisim/collector/fpm_forward/runtime/instrumentation/README.md) as the starting template. Preserve each native `super` call, its return value and exceptions. Record profiled cache allowance after native profiling, successful allocation after initialization, and physical views only after warm-up/capture returns. The scheduler records its native initial pool and free queue. Observe outside timed forwards; never change the runtime's graph, precision, scheduler or forward behavior to make the observation pass.
 
 New launches verify the frozen bundle's bytes and import its declared modules from their exact paths, including in spawned workers. For a campaign-local adapter, include `instrumentation_binding: observed_binding()` in every worker and scheduler observation after the native lifecycle hook, importing `observed_binding` from the collector's `fpm_runtime_instrumentation` entrypoint. The bundled observer demonstrates this call. Do not copy the launch's declared binding as evidence: missing receipts or contradictory imported sources leave memory import incomplete. Saved campaigns without this binding remain readable with `import_binding: unverified_legacy`; resuming them does not retroactively verify their imports or rewrite their bundles.
 
@@ -1594,7 +1605,7 @@ Use the same deployment options for preview, execution and resume. These command
 Without explicit instrumentation, a preview awaiting runtime-version detection records every selected configuration's status in checkpoint history and leaves the probe output directory untouched. Configurations with a known version are deferred until the remaining versions are resolved. Continue with `--execute` in the same `--output-dir`; no new directory is needed solely because the preview was pending.
 
 ```bash
-aisimulate onboard probe-runtime \
+aisim onboard probe-runtime \
   --checkpoint ./model-onboarding/onboarding-checkpoint.json \
   --configuration worker-a --configuration worker-b \
   --instrumentation ./model-onboarding/instrumentation/manifest.json \
@@ -1602,14 +1613,14 @@ aisimulate onboard probe-runtime \
   --output-dir ./model-onboarding/probe-001
 
 # After reviewing the preview, execute within the authorized campaign.
-aisimulate onboard probe-runtime \
+aisim onboard probe-runtime \
   --checkpoint ./model-onboarding/onboarding-checkpoint.json \
   --configuration worker-a --configuration worker-b \
   --instrumentation ./model-onboarding/instrumentation/manifest.json \
   --executor slurm --image '<immutable-image-or-audited-squashfs-path>' \
   --output-dir ./model-onboarding/probe-001 --execute
 
-aisimulate onboard import-observations \
+aisim onboard import-observations \
   --checkpoint ./model-onboarding/onboarding-checkpoint.json \
   --configuration worker-a --configuration worker-b \
   --observations ./model-onboarding/probe-001/observations.json \
@@ -1626,7 +1637,7 @@ After acceptance, continue ordinary planning and formal timing collection. Obser
 
 #### Bind independently collected phases to an accepted profile
 
-Campaign orchestration may record a different configuration label or collect prefill and decode in separate successful attempts. Use the shared Python API in `aisimulate.support.runtime` to bind those records explicitly. The default `verify_collection_runtime(request, observations, ...)` remains strict: it requires the original configuration and launch, unchanged runtime and instrumentation, and every required phase in one active attempt. Configuration labels are never interpreted as topology or repaired by stripping suffixes.
+Campaign orchestration may record a different configuration label or collect prefill and decode in separate successful attempts. Use the shared Python API in `aisim.support.runtime` to bind those records explicitly. The default `verify_collection_runtime(request, observations, ...)` remains strict: it requires the original configuration and launch, unchanged runtime and instrumentation, and every required phase in one active attempt. Configuration labels are never interpreted as topology or repaired by stripping suffixes.
 
 The campaign recorder supplies a list with exactly one binding per phase required by the accepted request. Each binding has these fields:
 
@@ -1634,7 +1645,7 @@ The campaign recorder supplies a list with exactly one binding per phase require
 | --- | --- |
 | `phase` | `prefill` or `decode`, present in the selected frozen plan. Aggregated requests require both, even when their attempts differ. |
 | `plan` | `{ "path": ".../collection-plan.json", "sha256": "..." }`. This digest is the producer's semantic plan SHA, independently recomputed from its immutable inputs. The plan supplies the recorded configuration, launch, bundle and unique phase cell. |
-| `review` | Required when runtime, instrumentation, AISimulate source revision, deployment or supported collection controls differ from the accepted probe. Exact review record described below; no wildcard or mismatch bypass exists. |
+| `review` | Required when runtime, instrumentation, AISim source revision, deployment or supported collection controls differ from the accepted probe. Exact review record described below; no wildcard or mismatch bypass exists. |
 | `checkpoint` | `{ "path": ".../fpm_forward.json", "sha256": "..." }`, with the byte SHA of the completed collector checkpoint. |
 | `observations` | `{ "path": ".../runtime-observations.json", "sha256": "..." }`, with the byte SHA of the immutable observation index inside that plan's campaign directory. |
 | `attempt_id` | The index's active runtime observation attempt, also recorded in the checkpoint. |
@@ -1646,7 +1657,7 @@ Use absolute paths in binding references. The collector writes an absolute `runt
 
 The `expected_plan` and `runtime_bindings` arguments are mutually exclusive; passing both raises `ValueError`.
 
-To inspect a changed runtime, `collection_runtime_review(request, binding)` returns its exact accepted/collection bundle hashes, collector revision, generator configuration hash, and complete sorted `changes` of `{field, accepted, collection}` for runtime source/build metadata, launch `identity.aisimulate_revision` and deployment settings. Absent values are represented as `{ "missing": true }`. `collector_revision` remains the frozen plan's `aic_revision`; each launch retains its own recorded AISimulate source revision. Inspect the actual source changes, including scheduler patches, mounts and CPU policy, and save this record with a nonempty `rationale` in `review`. Computing that record alone is not a compatibility verdict. Verification recomputes it and rejects missing, altered or stale expectations. Equal cache capacity cannot authorize an unreviewed source change, and reviewed source changes cannot override incompatible model, precision, scheduler, graph or cache properties.
+To inspect a changed runtime, `collection_runtime_review(request, binding)` returns its exact accepted/collection bundle hashes, collector revision, generator configuration hash, and complete sorted `changes` of `{field, accepted, collection}` for runtime source/build metadata, launch `identity.aisimulate_revision` and deployment settings. Absent values are represented as `{ "missing": true }`. `collector_revision` remains the frozen plan's `aic_revision`; each launch retains its own recorded AISim source revision. Inspect the actual source changes, including scheduler patches, mounts and CPU policy, and save this record with a nonempty `rationale` in `review`. Computing that record alone is not a compatibility verdict. Verification recomputes it and rejects missing, altered or stale expectations. Equal cache capacity cannot authorize an unreviewed source change, and reviewed source changes cannot override incompatible model, precision, scheduler, graph or cache properties.
 
 Explicit bindings also review these archived collection controls under `/collection_controls`, preserving their exact values and the original plan and generator hashes:
 
@@ -1689,7 +1700,7 @@ The runtime consumes a pair of files, not raw self-benchmark JSON:
     fpm_forward_perf.metadata.json
 ```
 
-Use the [whole-forward publication contract](../../../python/aisimulate/collector/README.md#whole-forward-fpm-campaign)
+Use the [whole-forward publication contract](../../../python/aisim/collector/README.md#whole-forward-fpm-campaign)
 for schema `aic_fpm_forward_perf`. New guided collection publishes version 7,
 including its execution identity. The published Kimi example retains its
 original version-6 pair and requires a consumer that supports that identity.
@@ -1725,7 +1736,7 @@ appropriate primary profile instead of merging every artifact into one table.
 [Example A1](examples.md#a1-import-the-measured-pair) downloads our published DCP8
 profile at a pinned HF revision and checks its hashes. [Example B4](examples.md#b4-inspect-the-published-pair)
 checks a newly collected pair and prepares its quality assessment. Publishing a pair does not automatically bundle
-it into an AISimulate release: use an external systems root or submit it through
+it into an AISim release: use an external systems root or submit it through
 the repository's data-publication process.
 
 **Result:** a validated local profile and its provenance. No separate registry
@@ -1735,18 +1746,18 @@ service or regression-training command is needed for measured FPM interpolation.
 
 Fresh config-based onboarding does not ask for activation, runtime, communication or aggregate non-KV memory bytes. Optional derived values appear as planning estimates in the preview and provenance. They do not complete the saved memory profile. Supplying all four non-KV byte overrides explicitly retains the complete declared-profile route; a partial override remains recorded but does not establish simulation readiness. Existing complete profiles remain supported.
 
-Collection observes initialized worker cache allocation and scheduler pool capacity without an extra GPU run. For pending profiles on audited vLLM 0.27.0, 0.32.0 or 0.33.0, or on an accepted patch release of 0.32 or 0.33, both phases use synchronous scheduling because the current prefill benchmark requires it. Review this fixed collection policy in stage 2; it is not an assertion about vLLM serving defaults. The observer supports the audited full/sliding-attention cache interfaces of vLLM 0.27.0, 0.32.0 and 0.33.0, including supported convolution storage represented by those interfaces. In vLLM 0.27.0, each `KVCacheTensor` record lists the layers that share it in `shared_by`. In 0.32.0 and 0.33.0, all cache layers share one buffer, and each record places its `layers` by `layer_stride`, `block_stride` and `offset`. The observer reads both record shapes. Historical memory artifacts retain this strict version guard. The observers also accept a final patch release of vLLM 0.32 or 0.33, for example 0.33.1. The condition is that every vLLM source file that they read is byte-identical to the audited release. The imported `vllm` package must also report the same version as the package metadata (`vllm.__version__`). Otherwise the record is unresolved, and the error names both versions. So for a patch release, the observers refuse a vLLM tree on the Python path that reports another version. For an exact audited release such as 0.33.0, they make neither the package check nor the file check. The observer compares SHA-256 hashes inside the container. A changed or missing file leaves the record unresolved, and the error names the file. The records, the collection plan and the onboarding plan of such a release name the audited release. The records and the finalize provenance keep the installed patch release, for example 0.33.1, in `backend_version`. `audited_backend_version` only names the audited release that the observers check the files against. It is not the backend version of the data. A pre-release, a development build or a local build such as `0.33.1+cu130` is refused. A new minor release (0.x), for example 0.34.0, still needs a source audit. The runtime probe needs exactly vLLM 0.33.0 for hybrid cache evidence: no bundle exists for a patch release, and import refuses hybrid cache evidence from any other version. So an accepted patch release serves only models without state groups, through this collection observer. Plans and checkpoints that an older AISimulate saved for a 0.32.x or 0.33.x patch release are refused. The plan check reports the onboarding plan as modified, and a resumed collection or a repeatability run stops. Keep the old artifacts and create the plan again in a new output directory. This observer leaves the memory of a state group unresolved, so a model with state groups needs the [runtime probe](#resolve-cache-geometry-with-a-runtime-probe) for its memory profile, unless it uses the [measured-profile path](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile), as Kimi K3 does. Finalization refuses vLLM 0.32.0 and 0.33.0 runs in which Model Runner V2 drops piecewise CUDA graphs because no `@support_torch_compile` module is active. The [runtime probe and observation import](#resolve-cache-geometry-with-a-runtime-probe) route also accepts source-audited campaign-local adapters for other exact runtime builds; its evidence is checked independently before producing a profile. Formal collection bound to an accepted vLLM 0.33.0 probe observes memory per phase through that probe's instrumentation bundle. Execution evidence is recorded on vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0, and on an accepted patch release of 0.32 or 0.33. Unknown layouts report unresolved memory; they do not automatically qualify for finalization. Do not substitute guessed bytes to hide that diagnostic.
+Collection observes initialized worker cache allocation and scheduler pool capacity without an extra GPU run. For pending profiles on audited vLLM 0.27.0, 0.32.0 or 0.33.0, or on an accepted patch release of 0.32 or 0.33, both phases use synchronous scheduling because the current prefill benchmark requires it. Review this fixed collection policy in stage 2; it is not an assertion about vLLM serving defaults. The observer supports the audited full/sliding-attention cache interfaces of vLLM 0.27.0, 0.32.0 and 0.33.0, including supported convolution storage represented by those interfaces. In vLLM 0.27.0, each `KVCacheTensor` record lists the layers that share it in `shared_by`. In 0.32.0 and 0.33.0, all cache layers share one buffer, and each record places its `layers` by `layer_stride`, `block_stride` and `offset`. The observer reads both record shapes. Historical memory artifacts retain this strict version guard. The observers also accept a final patch release of vLLM 0.32 or 0.33, for example 0.33.1. The condition is that every vLLM source file that they read is byte-identical to the audited release. The imported `vllm` package must also report the same version as the package metadata (`vllm.__version__`). Otherwise the record is unresolved, and the error names both versions. So for a patch release, the observers refuse a vLLM tree on the Python path that reports another version. For an exact audited release such as 0.33.0, they make neither the package check nor the file check. The observer compares SHA-256 hashes inside the container. A changed or missing file leaves the record unresolved, and the error names the file. The records, the collection plan and the onboarding plan of such a release name the audited release. The records and the finalize provenance keep the installed patch release, for example 0.33.1, in `backend_version`. `audited_backend_version` only names the audited release that the observers check the files against. It is not the backend version of the data. A pre-release, a development build or a local build such as `0.33.1+cu130` is refused. A new minor release (0.x), for example 0.34.0, still needs a source audit. The runtime probe needs exactly vLLM 0.33.0 for hybrid cache evidence: no bundle exists for a patch release, and import refuses hybrid cache evidence from any other version. So an accepted patch release serves only models without state groups, through this collection observer. Plans and checkpoints that an older AISim saved for a 0.32.x or 0.33.x patch release are refused. The plan check reports the onboarding plan as modified, and a resumed collection or a repeatability run stops. Keep the old artifacts and create the plan again in a new output directory. This observer leaves the memory of a state group unresolved, so a model with state groups needs the [runtime probe](#resolve-cache-geometry-with-a-runtime-probe) for its memory profile, unless it uses the [measured-profile path](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile), as Kimi K3 does. Finalization refuses vLLM 0.32.0 and 0.33.0 runs in which Model Runner V2 drops piecewise CUDA graphs because no `@support_torch_compile` module is active. The [runtime probe and observation import](#resolve-cache-geometry-with-a-runtime-probe) route also accepts source-audited campaign-local adapters for other exact runtime builds; its evidence is checked independently before producing a profile. Formal collection bound to an accepted vLLM 0.33.0 probe observes memory per phase through that probe's instrumentation bundle. Execution evidence is recorded on vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0, and on an accepted patch release of 0.32 or 0.33. Unknown layouts report unresolved memory; they do not automatically qualify for finalization. Do not substitute guessed bytes to hide that diagnostic.
 
 The supported memory evidence requires automatic HBM-only allocation without weight offload, synchronous scheduling, complete graph settings, and an audited unquantized, FP8 or ModelOpt NVFP4 precision mapping. Mixed precision such as NVFP4 routed experts with BF16 attention and shared experts is supported. Unknown precision mappings remain unresolved. Worker and scheduler settings must agree, with recorded worker graph downgrades allowed only for the audited runtime behavior.
 
 After successful formal collection:
 
 ```bash
-aisimulate onboard finalize \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support \
+aisim onboard finalize \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support \
   --collection-report ./collection-quality/collection-validation.json \
-  --resolved-output-dir ./aisimulate-support-resolved
+  --resolved-output-dir ./aisim-support-resolved
 ```
 
 `--collection-report` is optional. When supplied, finalization independently recomputes the existing report's mandatory collection gates under its frozen policy, verifies report/policy/source hashes, and binds it to the exact original request and collection directory. The finalization manifest and exported profile provenance carry a `collection_quality` record:
@@ -1769,18 +1780,18 @@ The fresh directory contains `request.yaml`, `fpm-model-profile.json`, ordinary 
 If formal observations show less usable cache capacity than the accepted runtime probe, preserve the original collection and import its complete formal runtime observation index through `onboard import-observations`. Review and explicitly accept the resulting capacity revision in the same configuration's checkpoint. Then finalize with both requests:
 
 ```bash
-aisimulate onboard finalize \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support \
+aisim onboard finalize \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support \
   --memory-config ./reviewed-capacity-revision/request.yaml \
-  --resolved-output-dir ./aisimulate-support-resolved
+  --resolved-output-dir ./aisim-support-resolved
 ```
 
 `--memory-config` permits only a lower cache-capacity value, equal to the verified formal minimum, and updated provenance. The complete model, precision, topology, cache geometry, runtime, graph and collection settings must remain unchanged. The revision must derive from the exact successful formal cell attempts and be explicitly accepted in its referenced checkpoint; guessed bounds, capacity overrides, unrelated probes and changed execution settings are rejected. The command retains the original collection identity and binds the revision request by path, SHA-256 and request identity in the new finalization provenance. Keep the revision request and its evidence immutable and available for subsequent verification. This correction reuses the measured timing pair and requires no formal GPU recollection. Continue `validate-collection` against the original request and collection directory.
 
 Add `--collection-report ./collection-quality/collection-validation.json` to that command to retain quality on a capacity revision too. The report remains bound to the original timing request and collection, while `--memory-config` identifies the separately accepted memory revision.
 
-Review the resolved profile and assumptions with the user. Finalization does not accept it in the session checkpoint. Save its request as a new draft, record the new artifact paths and source relationship, and obtain acceptance of the exact resolved profile with the existing checkpoint workflow. Preserve the original collection references. Only then continue simulation using `./aisimulate-support-resolved/request.yaml` and `--output-dir ./aisimulate-support-resolved`. A pending profile produces a clear error before prediction/recommendation cache sizing or replay validation.
+Review the resolved profile and assumptions with the user. Finalization does not accept it in the session checkpoint. Save its request as a new draft, record the new artifact paths and source relationship, and obtain acceptance of the exact resolved profile with the existing checkpoint workflow. Preserve the original collection references. Only then continue simulation using `./aisim-support-resolved/request.yaml` and `--output-dir ./aisim-support-resolved`. A pending profile produces a clear error before prediction/recommendation cache sizing or replay validation.
 
 Resuming `onboarding-checkpoint.json` restores the onboarding conversation and accepted inputs; it does not migrate collection artifacts. Current collection and finalization use a schema-11 collection plan and schema-7 formal FPM publication. The collector can still verify schema-10 plan hashes and read their matching native timing and memory evidence, preserving historical cell and attempt identities. Historical schema-6 formal publications cannot be finalized by this collector, and automatic migration is unsupported. Keep those artifacts unchanged and use fresh output directories for any new collection.
 
@@ -1890,9 +1901,9 @@ Ratios are dimensionless: `0.20` means 20%. Error is `abs(predicted - measured) 
 Freeze the policy and native grid, inspect source validity/execution and run the CPU holdout evaluator:
 
 ```bash
-aisimulate onboard validate-collection \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support \
+aisim onboard validate-collection \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support \
   --validation-output-dir ./collection-quality \
   --policy ./validation-policy.json
 ```
@@ -1900,9 +1911,9 @@ aisimulate onboard validate-collection \
 This writes `policy.json`, `campaign.json`, `repeatability-selection.json`, `holdout/` and `collection-validation.json`. It does not launch GPU work. Its initial overall status normally remains `incomplete` until repeats are collected. Failed numerical checks return nonzero even during preparation. To execute the frozen repeats with the archived collector deployment, use the same Kubernetes environment or caller-owned Slurm allocation as the source campaign:
 
 ```bash
-aisimulate onboard validate-collection \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support \
+aisim onboard validate-collection \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support \
   --validation-output-dir ./collection-quality \
   --resume --execute
 ```
@@ -1932,9 +1943,9 @@ This is an onboarding holdout-selection rule. It does not modify interpolation i
 To change thresholds, edit a copy of the policy and create a new assessment without launching measurements:
 
 ```bash
-aisimulate onboard validate-collection \
-  --config ./aisimulate-support/request.yaml \
-  --output-dir ./aisimulate-support \
+aisim onboard validate-collection \
+  --config ./aisim-support/request.yaml \
+  --output-dir ./aisim-support \
   --validation-output-dir ./collection-quality-reassessed \
   --policy ./revised-validation-policy.json \
   --repeatability-dir ./collection-quality/repeatability
@@ -1946,7 +1957,7 @@ Raw samples and source collection are revalidated before reuse. A changed repeat
 
 After memory finalization, run [ordinary replay coverage](#validate-fpm-query-coverage-with-agentx-replay) for the selected local play. Keep that replay report separate from collection quality.
 
-Before preparation, install [AIPerf at the accepted immutable revision](https://github.com/ai-dynamo/aiperf/tree/7db2ba37a62aa80c882bc90eaf61cc8073e2387b) in a separate environment from AISimulate:
+Before preparation, install [AIPerf at the accepted immutable revision](https://github.com/ai-dynamo/aiperf/tree/7db2ba37a62aa80c882bc90eaf61cc8073e2387b) in a separate environment from AISim:
 
 ```bash
 uv venv --python 3.13 ./aiperf-validation-env
@@ -1960,9 +1971,9 @@ This revision supports Python 3.11–3.13 and installs its tokenizer dependencie
 Prepare a matched serving recipe using that environment:
 
 ```bash
-aisimulate onboard validate-serving --action prepare \
+aisim onboard validate-serving --action prepare \
   --collection-report ./collection-quality/collection-validation.json \
-  --replay-report ./aisimulate-validation/agentx/validation.json \
+  --replay-report ./aisim-validation/agentx/validation.json \
   --validation-output-dir ./serving-prepared \
   --endpoint http://127.0.0.1:8000 \
   --tokenizer /path/to/pinned-tokenizer \
@@ -1982,7 +1993,7 @@ Trace token lengths alone do not include the target checkpoint's chat-template o
 Run traffic explicitly with the pinned AIPerf installation:
 
 ```bash
-aisimulate onboard validate-serving --action run \
+aisim onboard validate-serving --action run \
   --recipe ./serving-prepared/serving/recipe.json \
   --aiperf-python ./aiperf-validation-env/bin/python
 ```
@@ -1990,9 +2001,9 @@ aisimulate onboard validate-serving --action run \
 The producer verifies its pin, checks the server's `/tokenize` responses against the frozen target token IDs/template, sends the frozen payloads through the native Mooncake raw-payload loader, and preserves native per-request records and execution receipts. A different server tokenizer/template cannot pass by reporting the same total token count. The endpoint must expose the matching vLLM tokenization API. Fill the generated `observed-execution.template.json` from actual serving initialization and scope evidence, preserving source paths/hashes; expected values are not observations. Then assess in another fresh directory:
 
 ```bash
-aisimulate onboard validate-serving --action assess \
+aisim onboard validate-serving --action assess \
   --collection-report ./collection-quality/collection-validation.json \
-  --replay-report ./aisimulate-validation/agentx/validation.json \
+  --replay-report ./aisim-validation/agentx/validation.json \
   --recipe ./serving-prepared/serving/recipe.json \
   --execution-evidence ./serving-prepared/serving/observed-execution.json \
   --validation-output-dir ./onboarding-assessment
@@ -2031,23 +2042,23 @@ Use the existing single checkpoint and its revision checks. Add validation-only 
 }
 ```
 
-Apply it with `aisimulate onboard checkpoint --file PATH --expect-revision CURRENT --update PATCH.json`. Archive superseded validation references with a reason and register replacement paths, as in the [checkpoint workflow](#checkpoint-and-resume-an-onboarding-session). Policy/trace edits invalidate assessments, not accepted profiles or valid collected data. Save the frozen repeatability policy, source protocol/seed/preparation and selected coordinates before execution; the checkpoint records context and does not execute or apply these settings. After resuming a partial repeatability run, replace its changed report reference before recording completion. Saved stage labels never substitute for rechecking machine evidence.
+Apply it with `aisim onboard checkpoint --file PATH --expect-revision CURRENT --update PATCH.json`. Archive superseded validation references with a reason and register replacement paths, as in the [checkpoint workflow](#checkpoint-and-resume-an-onboarding-session). Policy/trace edits invalidate assessments, not accepted profiles or valid collected data. Save the frozen repeatability policy, source protocol/seed/preparation and selected coordinates before execution; the checkpoint records context and does not execute or apply these settings. After resuming a partial repeatability run, replace its changed report reference before recording completion. Saved stage labels never substitute for rechecking machine evidence.
 
 ## Validate FPM query coverage with AgentX replay
 
 After verifying a matching formal FPM pair and resolving memory, run the existing cold aggregated replay path against a local Weka JSON or JSONL file. For pending collection profiles, use the fresh directory from `onboard finalize`:
 
 ```bash
-aisimulate onboard validate-fpm \
-  --config ./aisimulate-support-resolved/request.yaml \
-  --output-dir ./aisimulate-support-resolved \
+aisim onboard validate-fpm \
+  --config ./aisim-support-resolved/request.yaml \
+  --output-dir ./aisim-support-resolved \
   --trace /path/to/traces.jsonl \
-  --validation-output-dir ./aisimulate-validation/agentx
+  --validation-output-dir ./aisim-validation/agentx
 ```
 
-The output directory must be separate from, and neither inside nor above, the collection directory. Use a fresh directory or `--overwrite` to replace prior validation outputs. The command verifies the saved collection plan, writes `predict.yaml`, and invokes ordinary `aisimulate predict` with per-request evidence. It does not download traces or run GPU collection. The reviewed target model, topology, runtime, profile, scheduler limits and systems paths remain fixed; source model labels in a trace do not replace the configured target model.
+The output directory must be separate from, and neither inside nor above, the collection directory. Use a fresh directory or `--overwrite` to replace prior validation outputs. The command verifies the saved collection plan, writes `predict.yaml`, and invokes ordinary `aisim predict` with per-request evidence. It does not download traces or run GPU collection. The reviewed target model, topology, runtime, profile, scheduler limits and systems paths remain fixed; source model labels in a trace do not replace the configured target model.
 
-The current validation scope is **cold aggregated replay, one client lane, HBM-only cache and no speculative decoding**. The cache starts cold. Linear profiles can accumulate normal prefix reuse; grouped profiles retain `prefix_caching: false` and require vLLM with PP1/CP1. Nested timestamps are interpreted relative to the root play (`nested_timestamp_basis: absolute`). The command replays the complete supplied file; selecting one complete play is useful for a first check, but does not establish coverage of a larger corpus. Preserve the full play and its dependencies when preparing a subset. Ordinary prediction's host-memory checks still apply; a larger corpus can require a larger host, and a preflight rejection remains incomplete validation. The current path builds on existing vLLM/SGLang replay support; onboarding collection remains vLLM. Integrating seeded cache snapshots, explicit warmup and expanded replay modes from the merged AgentX changes, including [#207](https://github.com/ai-dynamo/aisimulate/pull/207) and [#235](https://github.com/ai-dynamo/aisimulate/pull/235), remains follow-up work for onboarding; those modes are not prerequisites for this workflow.
+The current validation scope is **cold aggregated replay, one client lane, HBM-only cache and no speculative decoding**. The cache starts cold. Linear profiles can accumulate normal prefix reuse; grouped profiles retain `prefix_caching: false` and require vLLM with PP1/CP1. Nested timestamps are interpreted relative to the root play (`nested_timestamp_basis: absolute`). The command replays the complete supplied file; selecting one complete play is useful for a first check, but does not establish coverage of a larger corpus. Preserve the full play and its dependencies when preparing a subset. Ordinary prediction's host-memory checks still apply; a larger corpus can require a larger host, and a preflight rejection remains incomplete validation. The current path builds on existing vLLM/SGLang replay support; onboarding collection remains vLLM. Integrating seeded cache snapshots, explicit warmup and expanded replay modes from the merged AgentX changes, including [#207](https://github.com/ai-dynamo/aisim/pull/207) and [#235](https://github.com/ai-dynamo/aisim/pull/235), remains follow-up work for onboarding; those modes are not prerequisites for this workflow.
 
 The reference corpus is [semianalysisai/cc-traces-weka-062126-256k](https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740). To download that pinned revision separately, with Hugging Face access available:
 
@@ -2058,7 +2069,7 @@ hf download semianalysisai/cc-traces-weka-062126-256k traces.jsonl \
   --local-dir ./agentx-reference
 ```
 
-The expected `traces.jsonl` SHA-256 is `e39cd2ff3eba21d4a3664be51da743ac3d2149a1933898cafc7bfeac8147eeef`. Record the file hash and selection when using a derived subset. No trace corpus is bundled or fetched automatically by AISimulate.
+The expected `traces.jsonl` SHA-256 is `e39cd2ff3eba21d4a3664be51da743ac3d2149a1933898cafc7bfeac8147eeef`. Record the file hash and selection when using a derived subset. No trace corpus is bundled or fetched automatically by AISim.
 
 ### Read the coverage result
 
@@ -2077,7 +2088,7 @@ For a missing decode query, inspect its exact batch size and total past-KV coord
 
 ## Configure Replay
 
-Configure `aisimulate predict` with the same data root, estimator selection,
+Configure `aisim predict` with the same data root, estimator selection,
 identity, and engine build assumptions. Then supply the serving behavior that
 an FPM table does not define: worker layout, scheduler token/request limits,
 context limit, block geometry and capacity, prefix-cache policy, traffic, and
@@ -2118,22 +2129,22 @@ assess accuracy and unsupported regions through [matched serving validation](#st
 The generated synthetic configurations are optional small prediction/recommendation examples after the selected model route and formal data are available:
 
 ```bash
-aisimulate predict \
-  --config ./aisimulate-support/predict/pilot.yaml \
-  --output-dir ./aisimulate-support/predict-results/pilot
+aisim predict \
+  --config ./aisim-support/predict/pilot.yaml \
+  --output-dir ./aisim-support/predict-results/pilot
 
-aisimulate recommend \
-  --config ./aisimulate-support/recommend/pilot.yaml \
-  --output-dir ./aisimulate-support/recommend-results/pilot
+aisim recommend \
+  --config ./aisim-support/recommend/pilot.yaml \
+  --output-dir ./aisim-support/recommend-results/pilot
 ```
 
 Use fresh result directories and inspect each command's exit status and results. These examples validate one selected worker and workload. For an actual deployment run, copy the generated config and set `engine.workers.aggregated.parallelism.replicas` in prediction, or the replica values in recommendation's `parallelism.preset` and `optimization.constraints.max_candidate_gpus` to your intended deployment budget. Keep the exact worker topology and profile consistent with the measured data. Those runtime choices do not require changing the onboarding request or recollecting the same worker's timings.
 
 The generated configurations select `engine.workers.aggregated.timing.estimation_mode: fpm_interpolation` with `fallback_policy: deny`. With a profile, they also set `estimator_config.fpm_interpolation.method: direct`. `engine.systems_paths` contains the plan's absolute local systems directory, which supplies hardware and collected FPM data. Recommendation preserves the resolved root, interpolation method, and complete profile in exported prediction configs. Moving the plan to another machine requires updating absolute paths or regenerating it there. Existing configurations using the single-root `engine.systems_path` input are normalized to `engine.systems_paths` when saved. Both spellings resolve relative local paths against the working directory when the configuration is loaded, so saving and reloading from another directory preserves the selected roots. The canonical list's `default` entry continues to select packaged data. A worker’s `timing.systems_paths` overrides engine-level roots; performance metadata records those effective roots. Empty or whitespace-only roots are rejected by the shared root type in both prediction and recommendation configurations.
 
-These configurations target AISimulate's standalone `predict` and `recommend` commands. Dynamo's replay Planner AIC session adapter does not currently forward custom systems roots; using that downstream path requires a separate adapter update.
+These configurations target AISim's standalone `predict` and `recommend` commands. Dynamo's replay Planner AIC session adapter does not currently forward custom systems roots; using that downstream path requires a separate adapter update.
 
-Grouped configurations also set `engine.workers.aggregated.kv_cache.prefix_caching: false`; preserve it in prediction, recommendation and `validate-fpm` replay. The same reviewed groups and byte budget reach native allocation in each path. Configurations of a linear profile with runtime probe evidence set `engine.workers.aggregated.kv_cache.block_size` to the measured block size, and each path must keep it. Changing cache layout does not introduce a new collection grid or change the FPM timing-table coordinates: use the [shared AISimulate/Dynamo collection policy](#how-the-collection-grid-is-determined) and validate the resulting logical-context queries.
+Grouped configurations also set `engine.workers.aggregated.kv_cache.prefix_caching: false`; preserve it in prediction, recommendation and `validate-fpm` replay. The same reviewed groups and byte budget reach native allocation in each path. Configurations of a linear profile with runtime probe evidence set `engine.workers.aggregated.kv_cache.block_size` to the measured block size, and each path must keep it. Changing cache layout does not introduce a new collection grid or change the FPM timing-table coordinates: use the [shared AISim/Dynamo collection policy](#how-the-collection-grid-is-determined) and validate the resulting logical-context queries.
 
 Ordinary `predict` and `recommend` retain their existing defaults when no profile is supplied. Generated configs can be edited through the public schema. A recommendation with a profile enumerates only its declared deployment tuples that fit the GPU budget; it preserves the complete inline profile and interpolation choice in exported prediction configs. Default scheduler search ranges may exceed a profile's envelope, so pin or bound those domains explicitly. A successful simulation is not an accuracy result. Compare its output with an independent run of the same model, runtime, topology, and workload to assess accuracy.
 
@@ -2212,7 +2223,7 @@ establish prediction accuracy; use independent measurements under matched condit
 **Result:** a reproducible comparison with explicit conditions, coverage,
 errors, and pass/fail criteria. FPM forward error alone does not establish
 TTFT/TPOT or throughput accuracy. The
-[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) reports existing
+[E2E Accuracy Overview](https://ai-dynamo.org/aisim/e2e-accuracy/) reports existing
 accuracy results; it is not a substitute for validating a new cell. See the
 [snapshot and regeneration details](../../../pages/e2e-accuracy/README.md) for how that evidence
 is produced.
@@ -2222,11 +2233,11 @@ whether it fits their workload.
 
 ## Recovery and cleanup
 
-Resume the agent session with `aisimulate onboard resume --checkpoint PATH`
+Resume the agent session with `aisim onboard resume --checkpoint PATH`
 and inspect integrity issues before acting on saved progress. This checkpoint
 restores inputs/conversation state; it does not automatically restart collection.
 Retain the original request, plan and deployment options. Rerun the recorded
-`aisimulate onboard collect-fpm` command with `--resume --execute`, retaining
+`aisim onboard collect-fpm` command with `--resume --execute`, retaining
 all its configuration, output and deployment arguments. The
 [MiniMax example](examples.md#resume-the-minimax-campaign) shows this using its
 saved command array.

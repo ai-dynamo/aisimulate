@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate import sweeper
-from aisimulate.sweeper.provider import (
+from aisim import sweeper
+from aisim.sweeper.provider import (
     API_VERSION,
     AdapterReplaySpec,
     AdapterSearchPlan,
@@ -27,7 +27,7 @@ from aisimulate.sweeper.provider import (
     SweepConfigProvider,
     SweepContext,
 )
-from aisimulate.sweeper.replay import (
+from aisim.sweeper.replay import (
     REPLAY_SPEC_API_VERSION,
     BackendDeploymentSpec,
     HookCapability,

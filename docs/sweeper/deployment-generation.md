@@ -7,12 +7,12 @@ SPDX-License-Identifier: Apache-2.0
 
 Use this workflow to select a configuration, predict it, generate serving
 artifacts, and compare with a real benchmark. Run the simulation and generator
-steps from an AISimulate source checkout using the
+steps from an AISim source checkout using the
 [installation guide](../getting-started/installation.md#use-current-source).
 The GPU deployment steps run on a separate serving host.
 
 The unified `recommend` command writes concrete **prediction configurations**.
-Its numbered YAML files are not Kubernetes manifests. The current generator API is `aisimulate.generator`; the same wheel also
+Its numbered YAML files are not Kubernetes manifests. The current generator API is `aisim.generator`; the same wheel also
 provides the `aiconfigurator` compatibility command. No separate standalone
 AIConfigurator installation is required.
 
@@ -25,14 +25,14 @@ the workflow; it does not establish the best possible deployment.
 
 | Version/identity | Choice |
 |---|---|
-| AISimulate | Your source checkout; retain `git rev-parse HEAD` and `uv.lock`. |
+| AISim | Your source checkout; retain `git rev-parse HEAD` and `uv.lock`. |
 | Prediction backend/data version | vLLM `0.24.0`. |
 | Generated backend configuration | vLLM `0.24.0`, taken from the selected candidate. |
 | Dynamo deployment target | `dynamo-j2`, Dynamo `1.3.0`. |
 | Serving image | `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0`; record the pulled digest. |
 
 The Dynamo/backend pair is recorded in the generator's
-[version matrix](../../python/aisimulate/src/aisimulate/generator/facts/runtimes/dynamo.yaml).
+[version matrix](../../python/aisim/src/aisim/generator/facts/runtimes/dynamo.yaml).
 These pins make the intended environment explicit; local artifact generation
 is not a GPU deployment qualification. Before serving, verify the image's
 actual versions and the target machine's driver/GPU requirements using the
@@ -43,17 +43,17 @@ version override makes a different runtime compatible.
 
 ## 2. Recommend and predict
 
-From the AISimulate repository root with its virtual environment active:
+From the AISim repository root with its virtual environment active:
 
 ```bash
 mkdir -p deployment-study
-git rev-parse HEAD > deployment-study/aisimulate-source-sha.txt
-uv pip freeze --python python/aisimulate/.venv/bin/python > deployment-study/python-packages.txt
-aisimulate recommend --stack engine \
+git rev-parse HEAD > deployment-study/aisim-source-sha.txt
+uv pip freeze --python python/aisim/.venv/bin/python > deployment-study/python-packages.txt
+aisim recommend --stack engine \
   --config examples/cli/dynamo-deployment-recommend.yaml \
   --output-dir deployment-study/recommendation
 
-aisimulate predict --stack engine \
+aisim predict --stack engine \
   --config deployment-study/recommendation/recommendations/0001.yaml \
   --capture-per-request --output-dir deployment-study/prediction
 ```
@@ -84,8 +84,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from aisimulate.generator.api import generate_from_request
-from aisimulate.generator.request import from_sweeper_candidate
+from aisim.generator.api import generate_from_request
+from aisim.generator.request import from_sweeper_candidate
 
 parser = argparse.ArgumentParser(description="Render a selected recommendation")
 parser.add_argument("--candidate-id", help="Explicit candidate ID; required for Pareto results")
@@ -364,7 +364,7 @@ The complete resource, overlay, multinode and completion contracts belong to
 Run the repository validator inside the matching backend runtime:
 
 ```bash
-python python/aisimulate/tools/generator_validator/validator.py \
+python python/aisim/tools/generator_validator/validator.py \
   --backend vllm --path deployment-study/generated/k8s_deploy.yaml
 ```
 
@@ -452,6 +452,45 @@ model capacity or performance estimates. Validate the chosen container, model an
 topology on the target cluster with the generated smoke and benchmark job, and
 retain its logs, package versions and AIPerf reports.
 
+### Offline benchmark tokenizers
+
+The serving checkpoint (`ServiceConfig.model_path`) and the benchmark tokenizer
+(`BenchConfig.tokenizer`) may need different values. By default the tokenizer
+inherits the model path. Check the AIPerf version in the benchmark environment:
+local-path loading is client-dependent. For example, AIPerf 0.13.0 can treat a
+local snapshot path as a Hub repository ID and fail with `HFValidationError`,
+even when the tokenizer files exist. This is not a failure to start the server.
+
+For clients with that limitation, use the tokenizer's repository ID with a
+complete, pre-populated Hugging Face cache:
+
+1. While network access is available, populate the tokenizer cache for the
+   intended model revision. Retain its `refs`, `snapshots` and `blobs` directories
+   and ensure the cached `refs/main` resolves to that revision. Keep this cache
+   read-only during the benchmark so the model/tokenizer revision stays fixed.
+2. Mount the entire cache root into the benchmark container, including the
+   targets of snapshot symlinks. Set `SlurmConfig.env.HF_HUB_CACHE` to that
+   **container** path and `HF_HUB_OFFLINE` to `"1"`.
+3. Set `BenchConfig.tokenizer` to the repository ID belonging to the serving
+   checkpoint, as in the example below. Regenerate the bundle after changing
+   generator input. For generated jobs, the environment override is
+   `SlurmConfig.env.AICONFIGURATOR_BENCH_TOKENIZER`. When invoking `bench_run.sh`
+   directly, export `AICONFIGURATOR_BENCH_TOKENIZER` in its shell instead. Keep
+   any override consistent with the configured tokenizer.
+4. Before submitting, run this probe inside the same image and mounts, using
+   the Python environment that provides AIPerf:
+
+   ```bash
+   export HF_HUB_CACHE=/models/hub
+   export HF_HUB_OFFLINE=1
+   python -c 'from aiperf.common.tokenizer import Tokenizer; t = Tokenizer.from_pretrained("Qwen/Qwen3-8B"); print("TOKENIZER_OK", len(t.encode("hello world")))'
+   ```
+
+Replace the example repository ID and paths with your model's values. If the
+probe fails, check the selected client version, cached revision and mounted
+files before starting a GPU benchmark. A passing probe checks tokenizer loading
+only; the generated job must still pass inference and complete its benchmark.
+
 ### Clusters without GPU GRES
 
 Both `deploy.sbatch` and `benchmark.sbatch` request GPUs in two places:
@@ -524,6 +563,8 @@ Workers:
 SlaConfig:
   isl: 512
   osl: 128
+BenchConfig:
+  tokenizer: Qwen/Qwen3-8B
 SlurmConfig:
   account: YOUR_ACCOUNT
   partition: batch
@@ -534,8 +575,10 @@ SlurmConfig:
   container_image: /shared/images/dynamo-vllm.sqsh
   container_mounts:
     - /shared/models/Qwen3-8B:/models/Qwen3-8B:ro
+    - /shared/huggingface/hub:/models/hub:ro
   env:
     HF_HUB_OFFLINE: "1"
+    HF_HUB_CACHE: /models/hub
   startup_timeout: 1800
   benchmark_timeout: 1800
   benchmark_concurrency: [1, 2, 4, 8]
@@ -543,7 +586,7 @@ SlurmConfig:
 ```
 
 ```bash
-python -m aisimulate.generator.main render-artifacts \
+python -m aisim.generator.main render-artifacts \
   --backend vllm --version 0.20.1 --deployment-target slurm \
   --config slurm.yaml --output ./slurm-bundle
 # Copy the bundle to a fresh directory on the cluster, then run there:
@@ -557,7 +600,7 @@ The same `SlurmConfig` section is accepted through `--generator-config`, dotted
 Dynamo Kubernetes, llm-d, FPM and sflow outputs are unaffected by choosing those
 targets. Slurm does not emit Kubernetes resources or require nv-sflow.
 
-The AISimulate package also exposes generation through its compatibility CLI:
+The AISim package also exposes generation through its compatibility CLI:
 
 ```bash
 aiconfigurator cli generate \

@@ -5,18 +5,18 @@ SPDX-License-Identifier: Apache-2.0
 
 # Adapter contracts
 
-AISimulate exposes separate boundaries for execution, configuration, output
+AISim exposes separate boundaries for execution, configuration, output
 and native Replay composition. An adapter's support at one boundary does not
 establish support at the others. This directory is an ABI reference; usage of
 the existing Dynamo integration is documented [with Replay](../replay/dynamo.md).
 
 | Boundary | Owns | Discovery / version |
 | --- | --- | --- |
-| [Runner](runner-abi.md) | Execute one resolved ReplaySpec and report capabilities/metrics | `aisimulate.runner_factories`; Python replay-spec API 1 |
-| [Simulation configuration](configuration-abi.md) | Compile prediction, search plan and candidate hooks | `aisimulate.config_adapters`; config API 3 |
-| [SDK sweep provider](configuration-abi.md#sweepconfigprovider-v1) | SDK search-space preparation and materialization | `aisimulate.sweep_config_providers`; provider API 1 |
-| [Recommendation output](output-abi.md) | Optional live callbacks and additional final artifacts | `aisimulate.output_adapters`; output API 1 |
-| [Native composition](native-composition.md) | Placement and optional scaling in Rust Replayer | Rust traits in `aisimulate_core::replay`; crate-version compatibility |
+| [Runner](runner-abi.md) | Execute one resolved ReplaySpec and report capabilities/metrics | `aisim.runner_factories`; Python replay-spec API 1 |
+| [Simulation configuration](configuration-abi.md) | Compile prediction, search plan and candidate hooks | `aisim.config_adapters`; config API 3 |
+| [SDK sweep provider](configuration-abi.md#sweepconfigprovider-v1) | SDK search-space preparation and materialization | `aisim.sweep_config_providers`; provider API 1 |
+| [Recommendation output](output-abi.md) | Optional live callbacks and additional final artifacts | `aisim.output_adapters`; output API 1 |
+| [Native composition](native-composition.md) | Placement and optional scaling in Rust Replayer | Rust traits in `aisim_core::replay`; crate-version compatibility |
 
 Here ABI means the versioned cross-package data/interface contract. These
 Python protocols and Rust traits are not a stable C binary ABI. Check the
@@ -24,10 +24,10 @@ installed package/crate pair rather than inferring compatibility from a shared
 method name. Explicit version checks fail instead of silently translating an
 unsupported contract.
 
-AISimulate owns traffic, engine schemas, optimization, process supervision and
+AISim owns traffic, engine schemas, optimization, process supervision and
 canonical output. Config adapters return data and hooks; a runner combines them
-and starts execution once. The native composition depends on AISimulate's
-neutral types, while AISimulate core does not import Dynamo's Router/Planner.
+and starts execution once. The native composition depends on AISim's
+neutral types, while AISim core does not import Dynamo's Router/Planner.
 Output adapters do not influence simulation or ranking.
 
 Discovery imports selected plugins only. Configuration/output names must be

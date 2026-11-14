@@ -30,14 +30,14 @@ repository. They are published in `nvidia/aisimulate-fpm-dataset`
 ([GB300 discussion 15](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/15),
 [experimental B300 discussion 19](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/19),
 [GB200/B300/H200/H100 discussion 20](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/20)).
-[`hf_dataset.json`](../python/aisimulate/src/aisimulate_core/systems/profiles/glm53flash_fpm/hf_dataset.json)
+[`hf_dataset.json`](../python/aisim/src/aisim_core/systems/profiles/glm53flash_fpm/hf_dataset.json)
 pins the 29 profiles to immutable dataset revision
 `dbfcdd9eb62ea733efbc3f0cbd78277f2960061a` and records each file's SHA-256.
 Profile keys are `<system>-<backend>-<fp8|nvfp4>-tp<N>` with system `gb300`,
 `gb200`, `b300`, `h200` or `h100`, for example `gb300-vllm-nvfp4-tp1` or
 `h100-sglang-fp8-tp8`. Pass the profile identity's `kv_cache_dtype` and
 `fmha_quant_mode` (bfloat16 on H200/H100). Materialize one with
-`python -m aisimulate_core.sdk.fpm_dataset <manifest> <key>` (or
+`python -m aisim_core.sdk.fpm_dataset <manifest> <key>` (or
 `materialize_fpm_profile`) and pass the printed root as `systems_paths`, with
 `estimation_mode="fpm_interpolation"` and the profile identity's
 `backend_version`.
@@ -46,7 +46,7 @@ The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blo
 
 ## vLLM producer
 
-`python/aisimulate/collector/fpm_forward/runtime/glm53flash/` contains the
+`python/aisim/collector/fpm_forward/runtime/glm53flash/` contains the
 producer. It is staged next to `fpm_exec.sh` and `preflight.py` and runs with
 the pinned Dynamo `InstrumentedScheduler` overlay on `PYTHONPATH`. The first
 part of the overlay below is the `ai-dynamo 1.7.0.dev20261109` build, whose
@@ -365,7 +365,7 @@ prefill.
 
 ## SGLang client
 
-`python/aisimulate/collector/fpm_forward/sglang_native_fpm.py` launches stock
+`python/aisim/collector/fpm_forward/sglang_native_fpm.py` launches stock
 `sglang.launch_server --enable-forward-pass-metrics` and reads the native
 rank-0 `ForwardPassMetrics` ZMQ stream. `wall_time` is the native DeviceTimer
 forward interval.
@@ -379,7 +379,7 @@ forward interval.
   first. The run metadata (`input_provenance`) records the generator spec and
   the token-stream hash.
 
-Usage, with `python/aisimulate` on `PYTHONPATH`:
+Usage, with `python/aisim` on `PYTHONPATH`:
 `python3 -m collector.fpm_forward.sglang_native_fpm --model <dir>
 --model-revision <rev> --tp {1,2,4,8} --quant {fp8,nvfp4} --mem-fraction <f>
 --phase {prefill,decode} --points <manifest.json> --out <dir>

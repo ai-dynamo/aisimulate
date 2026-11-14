@@ -35,7 +35,7 @@
       "source-install"
     ],
     "timeout": 180,
-    "prediction": "aisimulate-prediction/prediction.json"
+    "prediction": "aisim-prediction/prediction.json"
   },
   "dynamo-predict": {
     "profiles": [
@@ -45,7 +45,7 @@
       "dynamo-install"
     ],
     "timeout": 180,
-    "prediction": "aisimulate-dynamo-prediction/prediction.json"
+    "prediction": "aisim-dynamo-prediction/prediction.json"
   },
   "engine-options": {
     "profiles": [
@@ -57,9 +57,9 @@
       "engine-predict"
     ],
     "timeout": 180,
-    "prediction": "aisimulate-prediction/prediction.json",
+    "prediction": "aisim-prediction/prediction.json",
     "completed_requests": 100,
-    "requests": "aisimulate-prediction/requests.jsonl",
+    "requests": "aisim-prediction/requests.jsonl",
     "json_summary": "prediction-summary.json",
     "metrics": {
       "decode_gpus_per_worker": 2
@@ -78,7 +78,7 @@
       "source-install"
     ],
     "timeout": 1800,
-    "recommendations": "aisimulate-recommendation/recommendations"
+    "recommendations": "aisim-recommendation/recommendations"
   },
   "dynamo-recommend": {
     "profiles": [
@@ -88,7 +88,7 @@
       "dynamo-install"
     ],
     "timeout": 1800,
-    "recommendations": "aisimulate-dynamo-recommendation/recommendations"
+    "recommendations": "aisim-dynamo-recommendation/recommendations"
   },
   "engine-roundtrip": {
     "profiles": [
@@ -101,7 +101,7 @@
       "engine-recommend"
     ],
     "timeout": 180,
-    "prediction": "aisimulate-best-prediction/prediction.json"
+    "prediction": "aisim-best-prediction/prediction.json"
   },
   "dynamo-roundtrip": {
     "profiles": [
@@ -112,7 +112,7 @@
       "dynamo-recommend"
     ],
     "timeout": 180,
-    "prediction": "aisimulate-dynamo-best-prediction/prediction.json"
+    "prediction": "aisim-dynamo-best-prediction/prediction.json"
   },
   "legacy-cli": {
     "profiles": [

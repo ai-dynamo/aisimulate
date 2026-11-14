@@ -3,27 +3,27 @@ SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Contributing to AISimulate
+# Contributing to AISim
 
-Thank you for your interest in contributing to AISimulate!
+Thank you for your interest in contributing to AISim!
 
 For the project overview, repository layout, setup, and development commands,
-see the [AISimulate README](README.md). For focused AIConfigurator development
-instructions, see the [application README](python/aisimulate/README.md).
+see the [AISim README](README.md). For focused AIConfigurator development
+instructions, see the [application README](python/aisim/README.md).
 
 ## Quick Links
 
 - [CI guide: workflows, code review, and required checks](docs/ci/README.md)
-- [Good first issues](https://github.com/ai-dynamo/aisimulate/labels/good-first-issue)
-- [Help wanted](https://github.com/ai-dynamo/aisimulate/labels/help-wanted)
-- [Open an issue](https://github.com/ai-dynamo/aisimulate/issues/new)
+- [Good first issues](https://github.com/ai-dynamo/aisim/labels/good-first-issue)
+- [Help wanted](https://github.com/ai-dynamo/aisim/labels/help-wanted)
+- [Open an issue](https://github.com/ai-dynamo/aisim/issues/new)
 - [Slack](https://ai-dynamo.org/slack)
 - [Office Hours](https://www.youtube.com/playlist?list=PL5B692fm6--tgryKu94h2Zb7jTFM3Go4X)
 - [Community Meetings](https://docs.google.com/document/d/1uR8xD_hlYGwV6QspvSc36k1H-wo1BUcVmFbHH9xlXd8/view) ([YouTube](https://www.youtube.com/@ai-dynamo-community)) -- Weekly (Wed 10:30 AM PT) development community meetings
 
 ## Developer Certificate of Origin
 
-AISimulate is an open source project released under the Apache 2.0 license
+AISim is an open source project released under the Apache 2.0 license
 (see either [the Apache site](https://www.apache.org/licenses/LICENSE-2.0) or
 the [LICENSE file](./LICENSE)). The Apache 2.0 license allows you to freely use,
 modify, distribute, and sell your own products that include Apache 2.0 licensed
@@ -75,7 +75,7 @@ By making a contribution to this project, I certify that:
     this project or the open source license(s) involved.
 ```
 
-We require that every contribution to AISimulate is signed with a Developer
+We require that every contribution to AISim is signed with a Developer
 Certificate of Origin. Additionally, please use your real name. We do not
 accept anonymous contributors or those using pseudonyms.
 

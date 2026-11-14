@@ -198,7 +198,7 @@ impl ExecutionProfileSelection {
             validate_replacement(generation, &spec, false)?;
         }
         let snapshot = tempfile::Builder::new()
-            .prefix("aisimulate-op-profile-")
+            .prefix("aisim-op-profile-")
             .tempdir()
             .map_err(invalid)?;
         let mut seen = BTreeSet::new();

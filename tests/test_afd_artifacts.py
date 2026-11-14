@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate.afd_artifacts import AFDQualificationError, build_afd_qualification, write_afd_qualification_artifacts
-from aisimulate.sweeper.afd_parallel import AFDTopology
-from aisimulate.sweeper.replay import (
+from aisim.afd_artifacts import AFDQualificationError, build_afd_qualification, write_afd_qualification_artifacts
+from aisim.sweeper.afd_parallel import AFDTopology
+from aisim.sweeper.replay import (
     BackendDeploymentSpec,
     EncoderPoolSpec,
     ReplaySpec,
@@ -65,7 +65,7 @@ def test_caliber_matrix_cleans_variant_configs_on_success_and_failure(tmp_path, 
 @pytest.fixture(autouse=True)
 def source_metadata(monkeypatch):
     monkeypatch.setattr(
-        "aisimulate.afd_artifacts.validate_afd_model",
+        "aisim.afd_artifacts.validate_afd_model",
         lambda model: {
             "num_experts": 128,
             "layers": 48,

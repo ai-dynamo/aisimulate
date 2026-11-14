@@ -3,13 +3,18 @@
 
 use std::collections::VecDeque;
 use std::marker::PhantomData;
+use std::num::NonZeroU32;
 
 use anyhow::Result;
+use rustc_hash::FxHashSet;
 use uuid::Uuid;
 
 use super::ReplayMode;
 use crate::replay::ReplayTerminalStatus;
-use crate::replay::core::{AdmissionSource as CoreAdmissionSource, ReadyArrival};
+use crate::replay::core::{
+    AdmissionSource as CoreAdmissionSource, ReadyArrival, ReplayWorkloadSource,
+};
+use crate::replay::error::{ReplayError, workload_source_boundary};
 use crate::replay::loadgen::{
     AgenticOutputFeedback, AgenticPhaseEvidence, AgenticPreparationTransition,
     AgenticRuntimeFeedback, AgenticTerminalFeedback, GeneratedRequests, ReplayRequestHashes,
@@ -84,6 +89,260 @@ enum AdmissionSource {
         driver: WorkloadDriver,
         pending_agentic_runtime_feedback: PendingAgenticRuntimeFeedback,
     },
+    External(ExternalSource),
+}
+
+/// Shared rank constraints for spec and external-source requests.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DpRankLimits {
+    pub(crate) disaggregated: bool,
+    pub(crate) aggregated: u32,
+    pub(crate) prefill: u32,
+    pub(crate) decode: u32,
+}
+
+impl DpRankLimits {
+    pub(crate) fn check(
+        &self,
+        preferred: Option<u32>,
+        preferred_prefill: Option<u32>,
+        hint_source: Option<u32>,
+    ) -> std::result::Result<(), String> {
+        const PREFERRED: &str = "preferred attention-DP";
+        const HINT_SOURCE: &str = "kv_hints source";
+        let fits = |stage: &str, dp_size: u32, label: &str, rank: Option<u32>| match rank {
+            Some(rank) if rank >= dp_size => Err(format!(
+                "{stage} placement: {label} rank {rank} is out of range for dp_size {dp_size}"
+            )),
+            _ => Ok(()),
+        };
+        if self.disaggregated {
+            fits(
+                "prefill",
+                self.prefill,
+                PREFERRED,
+                preferred_prefill.or(preferred),
+            )?;
+            fits("decode", self.decode, PREFERRED, preferred)?;
+            fits("prefill", self.prefill, HINT_SOURCE, hint_source)
+        } else {
+            fits("aggregated", self.aggregated, PREFERRED, preferred)?;
+            fits("aggregated", self.aggregated, HINT_SOURCE, hint_source)
+        }
+    }
+}
+
+/// Default bound on source steps at one instant; see
+/// `Replayer::with_max_source_steps_per_instant`.
+pub(crate) const DEFAULT_MAX_SOURCE_STEPS_PER_INSTANT: NonZeroU32 =
+    NonZeroU32::new(1_000_000).expect("the default step budget is positive");
+
+/// Enforces the lifecycle and validation contract in [`ReplayWorkloadSource`].
+struct ExternalSource {
+    source: Box<dyn ReplayWorkloadSource>,
+    ranks: DpRankLimits,
+    max_steps_per_instant: NonZeroU32,
+    step_instant_ms: f64,
+    steps_at_instant: u32,
+    /// The source's wakeup, read once before its first step and after every
+    /// step since; `None` while it only waits for feedback.
+    wakeup_ms: Option<f64>,
+    started: bool,
+    now_ms: f64,
+    /// UUID uniqueness includes completed requests, so entries cannot be retired.
+    /// This retains O(requests) state even when per-request capture is disabled.
+    issued: FxHashSet<Uuid>,
+    feedback_pending: bool,
+    /// Scheduled arrivals from the current instant's wakeup step, held until
+    /// the runtime releases arrivals.
+    scheduled: Vec<DirectRequest>,
+    /// The last release admitted a reaction, which placement has not yet
+    /// dispatched to a worker.
+    reaction_admitted: bool,
+}
+
+impl ExternalSource {
+    fn new(
+        source: Box<dyn ReplayWorkloadSource>,
+        ranks: DpRankLimits,
+        max_steps_per_instant: NonZeroU32,
+    ) -> Self {
+        Self {
+            source,
+            ranks,
+            max_steps_per_instant,
+            step_instant_ms: f64::NEG_INFINITY,
+            steps_at_instant: 0,
+            wakeup_ms: None,
+            started: false,
+            now_ms: f64::NEG_INFINITY,
+            issued: FxHashSet::default(),
+            feedback_pending: false,
+            scheduled: Vec::new(),
+            reaction_admitted: false,
+        }
+    }
+
+    fn observe(&mut self, now_ms: f64) {
+        self.now_ms = self.now_ms.max(now_ms);
+    }
+
+    /// The instant at which the source must next be stepped: now while
+    /// feedback or held arrivals await it, else its wakeup.
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        if self.feedback_pending || !self.scheduled.is_empty() {
+            return self.now_ms.is_finite().then_some(self.now_ms);
+        }
+        self.wakeup_ms
+    }
+
+    /// Holds submissions until native arrivals are released. Returns whether
+    /// a step ran and submitted nothing.
+    fn wakeup_step(&mut self, now_ms: f64, cluster_in_flight: usize) -> Result<bool> {
+        self.observe(now_ms);
+        if !self.started {
+            self.started = true;
+            self.wakeup_ms = self.source.next_wakeup_ms();
+            if let Some(wakeup) = self.wakeup_ms
+                && !(wakeup.is_finite() && wakeup >= now_ms)
+            {
+                return Err(source_failure(format!(
+                    "next_wakeup_ms returned {wakeup} ms before the first step; the first \
+                     wakeup must be finite and no earlier than the run's first instant \
+                     {now_ms} ms"
+                )));
+            }
+        }
+        let due = self.wakeup_ms.is_some_and(|wakeup| wakeup <= now_ms);
+        if !due && !self.feedback_pending {
+            return Ok(false);
+        }
+        let submitted = self.step(now_ms, cluster_in_flight)?;
+        let empty = submitted.is_empty();
+        if self.scheduled.is_empty() {
+            self.scheduled = submitted;
+        } else {
+            self.scheduled.extend(submitted);
+        }
+        Ok(empty)
+    }
+
+    /// Scheduled arrivals precede reactions from feedback at the same instant.
+    fn release(&mut self, now_ms: f64, cluster_in_flight: usize) -> Result<Vec<DirectRequest>> {
+        self.observe(now_ms);
+        let mut ready = std::mem::take(&mut self.scheduled);
+        if self.feedback_pending {
+            let reactions = self.step(now_ms, cluster_in_flight)?;
+            self.reaction_admitted = !reactions.is_empty();
+            if ready.is_empty() {
+                return Ok(reactions);
+            }
+            ready.extend(reactions);
+        }
+        Ok(ready)
+    }
+
+    fn step(&mut self, now_ms: f64, cluster_in_flight: usize) -> Result<Vec<DirectRequest>> {
+        if self.step_instant_ms != now_ms {
+            self.step_instant_ms = now_ms;
+            self.steps_at_instant = 0;
+        }
+        if self.steps_at_instant == self.max_steps_per_instant.get() {
+            return Err(ReplayError::ResourceLimited(format!(
+                "external workload source step budget exhausted: {} steps at instant {now_ms} ms \
+                 without the clock advancing (Replayer::with_max_source_steps_per_instant); \
+                 only a reaction loop, such as a rejected request resubmitted at once, can \
+                 exhaust it",
+                self.max_steps_per_instant
+            ))
+            .into());
+        }
+        self.steps_at_instant += 1;
+        self.feedback_pending = false;
+        let submitted = self
+            .source
+            .pop_ready(now_ms, cluster_in_flight)
+            .map_err(workload_source_boundary)?;
+        for request in &submitted {
+            let uuid = request
+                .uuid
+                .ok_or_else(|| source_failure("submitted a request without a uuid".into()))?;
+            if !self.issued.insert(uuid) {
+                return Err(source_failure(format!(
+                    "reused request uuid {uuid}; every request in a run needs a unique uuid"
+                )));
+            }
+            self.ranks
+                .check(
+                    request.preferred_dp_rank,
+                    request.preferred_prefill_dp_rank,
+                    request.kv_hints.map(|hints| hints.source_dp_rank),
+                )
+                .map_err(|message| source_failure(format!("request {uuid} {message}")))?;
+        }
+        self.wakeup_ms = self.source.next_wakeup_ms();
+        if let Some(wakeup) = self.wakeup_ms
+            && !(wakeup.is_finite() && wakeup > now_ms)
+        {
+            return Err(source_failure(format!(
+                "next_wakeup_ms returned {wakeup} ms after a step at {now_ms} ms; a wakeup \
+                 must be None or finite and strictly later than the step"
+            )));
+        }
+        Ok(submitted)
+    }
+
+    fn feedback(&mut self, now_ms: f64) {
+        self.observe(now_ms);
+        self.feedback_pending = true;
+    }
+
+    fn on_output_token(&mut self, uuid: Uuid, token_id: u32, now_ms: f64) -> Result<()> {
+        self.feedback(now_ms);
+        self.source
+            .on_output_token(uuid, token_id, now_ms)
+            .map_err(workload_source_boundary)
+    }
+
+    fn on_causal_terminal(
+        &mut self,
+        uuid: Uuid,
+        now_ms: f64,
+        status: ReplayTerminalStatus,
+    ) -> Result<()> {
+        self.feedback(now_ms);
+        self.source
+            .on_causal_terminal(uuid, now_ms, status)
+            .map_err(workload_source_boundary)
+    }
+
+    fn on_quiescent(&mut self, uuid: Uuid, now_ms: f64) -> Result<()> {
+        self.feedback(now_ms);
+        self.source
+            .on_quiescent(uuid, now_ms)
+            .map_err(workload_source_boundary)
+    }
+
+    /// Held arrivals and undelivered feedback keep the run going whatever the
+    /// source reports.
+    fn is_drained(&self) -> bool {
+        self.scheduled.is_empty() && !self.feedback_pending && self.source.is_drained()
+    }
+
+    /// Call only after cluster and engine quiescence rule out further feedback.
+    fn check_not_stalled(&self) -> Result<()> {
+        if self.is_drained() || self.next_wakeup_ms().is_some() {
+            return Ok(());
+        }
+        Err(source_failure(format!(
+            "stalled at {} ms: not drained, with nothing in flight and no wakeup",
+            self.now_ms
+        )))
+    }
+}
+
+fn source_failure(message: String) -> anyhow::Error {
+    ReplayError::WorkloadSource(message).into()
 }
 
 /// Runtime feedback collected beside the workload driver until the current
@@ -146,8 +405,59 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         }
     }
 
+    /// The external source owns its own concurrency, so the queue runs in
+    /// trace mode and never rewrites arrivals after admission.
+    pub(crate) fn new_external(
+        source: Box<dyn ReplayWorkloadSource>,
+        ranks: DpRankLimits,
+        max_steps_per_instant: NonZeroU32,
+    ) -> Self {
+        Self {
+            source: AdmissionSource::External(ExternalSource::new(
+                source,
+                ranks,
+                max_steps_per_instant,
+            )),
+            mode: ReplayMode::Trace,
+            metadata: PhantomData,
+        }
+    }
+
     pub(crate) fn mode(&self) -> ReplayMode {
         self.mode
+    }
+
+    pub(crate) fn is_external(&self) -> bool {
+        matches!(self.source, AdmissionSource::External(_))
+    }
+
+    /// Run before engine settlement. Returns whether an external source stepped
+    /// without submitting work; native inputs return `false`.
+    pub(crate) fn wakeup_step(&mut self, now_ms: f64, cluster_in_flight: usize) -> Result<bool> {
+        match &mut self.source {
+            AdmissionSource::External(external) => external.wakeup_step(now_ms, cluster_in_flight),
+            _ => Ok(false),
+        }
+    }
+
+    /// Requires cluster and engine quiescence; native inputs are ignored.
+    pub(crate) fn check_not_stalled(&self) -> Result<()> {
+        match &self.source {
+            AdmissionSource::External(external) => external.check_not_stalled(),
+            _ => Ok(()),
+        }
+    }
+
+    /// Yield to admission while feedback awaits a step, or once after a reaction
+    /// is admitted so placement can dispatch it before the next pass commits.
+    /// Scheduled arrivals and native inputs never hold passes.
+    pub(crate) fn holds_passes(&mut self) -> bool {
+        match &mut self.source {
+            AdmissionSource::External(external) => {
+                std::mem::take(&mut external.reaction_admitted) | external.feedback_pending
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn next_ready_time_ms(&mut self) -> Option<f64> {
@@ -168,6 +478,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             }
             (ReplayMode::Concurrency { .. }, AdmissionSource::Requests(_))
             | (_, AdmissionSource::GeneratedRequests(_)) => None,
+            (_, AdmissionSource::External(source)) => source.next_wakeup_ms(),
         }
     }
 
@@ -299,6 +610,11 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             (ReplayMode::Trace, AdmissionSource::GeneratedRequests(_)) => {
                 anyhow::bail!("generated requests require concurrency admission")
             }
+            (_, AdmissionSource::External(source)) => Ok(source
+                .release(now_ms, cluster_in_flight)?
+                .into_iter()
+                .map(|request| map(Self::arrival_now(request, now_ms)))
+                .collect()),
             (ReplayMode::Concurrency { .. }, AdmissionSource::Workload { driver, .. }) => {
                 // The driver owns the session cap and only ever holds active sessions'
                 // turns in its heap, so drain everything ready in heap (i.e. limit=usize MAX).
@@ -342,30 +658,34 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         let mut ready = Vec::new();
         let mut simulated_in_flight = cluster_in_flight;
         while simulated_in_flight < max_in_flight {
-            let Some(mut request) = next_request()? else {
+            let Some(request) = next_request()? else {
                 break;
             };
-            request.arrival_timestamp_ms = Some(now_ms);
-            let (session_id, turn_index) = request
-                .replay_context
-                .as_ref()
-                .map(|context| (context.session_id.clone(), context.turn_index))
-                .unwrap_or_default();
-            ready.push(map(ReplayReadyArrival {
-                request: ReplayRequestPayload::materialized(request),
-                arrival_time_ms: now_ms,
-                scheduled_ready_at_ms: now_ms,
-                authored_request_id: None,
-                play_id: None,
-                dispatched_at_ms: now_ms,
-                metadata: Metadata::from_hashes(None),
-                replay_hashes: None,
-                session_id,
-                turn_index,
-            }));
+            ready.push(map(Self::arrival_now(request, now_ms)));
             simulated_in_flight += 1;
         }
         Ok(ready)
+    }
+
+    fn arrival_now(mut request: DirectRequest, now_ms: f64) -> ReplayReadyArrival<Metadata> {
+        request.arrival_timestamp_ms = Some(now_ms);
+        let (session_id, turn_index) = request
+            .replay_context
+            .as_ref()
+            .map(|context| (context.session_id.clone(), context.turn_index))
+            .unwrap_or_default();
+        ReplayReadyArrival {
+            request: ReplayRequestPayload::materialized(request),
+            arrival_time_ms: now_ms,
+            scheduled_ready_at_ms: now_ms,
+            authored_request_id: None,
+            play_id: None,
+            dispatched_at_ms: now_ms,
+            metadata: Metadata::from_hashes(None),
+            replay_hashes: None,
+            session_id,
+            turn_index,
+        }
     }
 
     pub(crate) fn on_request_terminal(
@@ -374,6 +694,11 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         now_ms: f64,
         status: crate::replay::ReplayTerminalStatus,
     ) -> Result<()> {
+        if self.is_external() {
+            // Client-visible termination must precede engine quiescence.
+            self.on_request_causal_terminal(uuid, now_ms, status)?;
+            return self.on_request_quiescent(uuid, now_ms);
+        }
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
@@ -386,6 +711,9 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         now_ms: f64,
         status: crate::replay::ReplayTerminalStatus,
     ) -> Result<()> {
+        if let AdmissionSource::External(source) = &mut self.source {
+            return source.on_causal_terminal(uuid, now_ms, status);
+        }
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
@@ -393,26 +721,35 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
     }
 
     pub(crate) fn on_request_quiescent(&mut self, uuid: Uuid, now_ms: f64) -> Result<()> {
+        if let AdmissionSource::External(source) = &mut self.source {
+            return source.on_quiescent(uuid, now_ms);
+        }
         let AdmissionSource::Workload { driver, .. } = &mut self.source else {
             return Ok(());
         };
         driver.on_quiescent(uuid, now_ms)
     }
 
-    pub(crate) fn on_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
-        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
-            return Ok(());
-        };
-        driver.on_output_token(uuid, token_id)
+    pub(crate) fn on_output_token(&mut self, uuid: Uuid, token_id: u32, now_ms: f64) -> Result<()> {
+        match &mut self.source {
+            AdmissionSource::Workload { driver, .. } => driver.on_output_token(uuid, token_id),
+            AdmissionSource::External(source) => source.on_output_token(uuid, token_id, now_ms),
+            AdmissionSource::Requests(_) | AdmissionSource::GeneratedRequests(_) => Ok(()),
+        }
     }
 
     fn is_agentic(&self) -> bool {
         matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.is_agentic())
     }
 
-    pub(crate) fn defer_output_token(&mut self, uuid: Uuid, token_id: u32) -> Result<()> {
+    pub(crate) fn defer_output_token(
+        &mut self,
+        uuid: Uuid,
+        token_id: u32,
+        now_ms: f64,
+    ) -> Result<()> {
         if !self.is_agentic() {
-            return CoreAdmissionSource::on_output_token(self, uuid, token_id);
+            return CoreAdmissionSource::on_output_token(self, uuid, token_id, now_ms);
         }
         let AdmissionSource::Workload {
             driver,
@@ -622,6 +959,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             AdmissionSource::Requests(pending) => pending.is_empty(),
             AdmissionSource::GeneratedRequests(source) => source.remaining() == 0,
             AdmissionSource::Workload { driver, .. } => driver.is_drained(),
+            AdmissionSource::External(source) => source.is_drained(),
         }
     }
 
@@ -635,6 +973,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             AdmissionSource::Requests(pending) => pending.len(),
             AdmissionSource::GeneratedRequests(source) => source.remaining(),
             AdmissionSource::Workload { driver, .. } => driver.total_turns(),
+            AdmissionSource::External(external) => external.source.total_requests_hint(),
         }
     }
 
@@ -705,8 +1044,8 @@ impl<Metadata: ReplayAdmissionMetadata> CoreAdmissionSource for AdmissionQueue<M
         )
     }
 
-    fn on_output_token(&mut self, request_id: Uuid, token_id: u32) -> Result<()> {
-        AdmissionQueue::on_output_token(self, request_id, token_id)
+    fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()> {
+        AdmissionQueue::on_output_token(self, request_id, token_id, now_ms)
     }
 
     fn on_terminal(
@@ -1004,7 +1343,7 @@ mod agentic_feedback_tests {
         let uuid = driver.pop_ready(0.0, usize::MAX)[0].request_uuid;
         let mut admission = AdmissionQueue::<()>::new_workload(driver, ReplayMode::Trace);
 
-        admission.defer_output_token(uuid, 7).unwrap();
+        admission.defer_output_token(uuid, 7, 1.0).unwrap();
         assert!(
             !admission.flush_agentic_runtime_feedback(1.0).unwrap(),
             "full-prompt output progress has no consumer and must not be batched"
@@ -1015,5 +1354,135 @@ mod agentic_feedback_tests {
             .unwrap();
         assert!(admission.flush_agentic_runtime_feedback(1.0).unwrap());
         assert!(admission.is_drained());
+    }
+}
+
+#[cfg(test)]
+mod external_source_tests {
+    use super::*;
+
+    /// Submits one fresh request on every step, with a fixed next wakeup.
+    struct EveryStep {
+        next: u128,
+        wakeup: Option<f64>,
+    }
+
+    impl ReplayWorkloadSource for EveryStep {
+        fn next_wakeup_ms(&mut self) -> Option<f64> {
+            self.wakeup
+        }
+
+        fn pop_ready(&mut self, _now_ms: f64, _in_flight: usize) -> Result<Vec<DirectRequest>> {
+            self.next += 1;
+            Ok(vec![DirectRequest {
+                tokens: vec![1; 8],
+                uuid: Some(Uuid::from_u128(self.next)),
+                max_output_tokens: 1,
+                ..Default::default()
+            }])
+        }
+
+        fn on_output_token(&mut self, _: Uuid, _: u32, _: f64) -> Result<()> {
+            Ok(())
+        }
+
+        fn on_causal_terminal(&mut self, _: Uuid, _: f64, _: ReplayTerminalStatus) -> Result<()> {
+            Ok(())
+        }
+
+        fn is_drained(&self) -> bool {
+            false
+        }
+    }
+
+    fn external(wakeup: Option<f64>, budget: u32) -> ExternalSource {
+        let ranks = DpRankLimits {
+            disaggregated: false,
+            aggregated: 1,
+            prefill: 1,
+            decode: 1,
+        };
+        ExternalSource::new(
+            Box::new(EveryStep { next: 0, wakeup }),
+            ranks,
+            NonZeroU32::new(budget).unwrap(),
+        )
+    }
+
+    #[test]
+    fn wakeup_submissions_are_held_and_feedback_steps_are_reactions() {
+        // Woken at 0 ms; after each step the source has no wakeup.
+        let mut source = external(None, 8);
+        source.started = true;
+        source.wakeup_ms = Some(0.0);
+        assert!(!source.wakeup_step(0.0, 0).unwrap());
+        assert_eq!(source.scheduled.len(), 1);
+        assert_eq!(
+            source.next_wakeup_ms(),
+            Some(0.0),
+            "held arrivals are due now"
+        );
+        assert_eq!(source.release(0.0, 0).unwrap().len(), 1);
+        assert!(
+            !source.reaction_admitted,
+            "scheduled arrivals never hold passes"
+        );
+        assert_eq!(
+            source.release(0.0, 0).unwrap().len(),
+            0,
+            "no feedback, no step"
+        );
+        source.on_quiescent(Uuid::from_u128(1), 0.0).unwrap();
+        assert_eq!(source.release(0.0, 0).unwrap().len(), 1);
+        assert!(source.reaction_admitted);
+        assert_eq!(source.steps_at_instant, 2);
+    }
+
+    #[test]
+    fn the_step_budget_is_per_instant() {
+        let mut source = external(None, 2);
+        source.started = true;
+        for now_ms in [1.0, 2.0] {
+            for _ in 0..2 {
+                source.on_quiescent(Uuid::nil(), now_ms).unwrap();
+                source.release(now_ms, 0).unwrap();
+            }
+        }
+        source.on_quiescent(Uuid::nil(), 2.0).unwrap();
+        let error = source.release(2.0, 0).unwrap_err();
+        match error.downcast_ref::<ReplayError>() {
+            Some(ReplayError::ResourceLimited(message)) => {
+                assert!(message.contains("2 steps at instant 2 ms"), "{message}");
+                assert!(message.contains("step budget"), "{message}");
+            }
+            other => panic!("expected ResourceLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_wakeup_after_a_step_must_be_none_or_strictly_later() {
+        for (wakeup, accepted) in [
+            (None, true),
+            (Some(5.5), true),
+            (Some(5.0), false),
+            (Some(4.0), false),
+            (Some(f64::NAN), false),
+            (Some(f64::INFINITY), false),
+        ] {
+            let mut source = external(wakeup, 8);
+            source.started = true;
+            source.on_quiescent(Uuid::nil(), 5.0).unwrap();
+            let result = source.release(5.0, 0);
+            if accepted {
+                result.unwrap_or_else(|error| panic!("{wakeup:?}: {error:#}"));
+                continue;
+            }
+            let error = result.unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<ReplayError>(),
+                    Some(ReplayError::WorkloadSource(message)) if message.contains("strictly later")),
+                "{wakeup:?}: {error:#}"
+            );
+        }
     }
 }

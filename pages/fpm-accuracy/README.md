@@ -1,6 +1,6 @@
 # FPM Accuracy dashboard
 
-The public [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/?branch=main)
+The public [FPM Accuracy Overview](https://ai-dynamo.org/aisim/fpm-accuracy/?branch=main)
 compares forward-pass predictions with measurements from the public
 [nvidia/aisimulate-fpm-dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
 
@@ -113,7 +113,7 @@ Details, 3D Visualization, and Scenario Comparison are separate tabs with indepe
   a display default, not recorded evidence. Explicitly not-applicable layouts show
   `N/A`. Stored metadata remains unchanged; legacy summaries without layout fields
   also display `Agg*`.
-- The E2E accuracy page's compact AISimulate header, branch selector, summary
+- The E2E accuracy page's compact AISim header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;
   evaluation times use UTC minutes. Trend plots have a bounded size and center
@@ -157,7 +157,7 @@ show Regression as unsupported. Their measurements remain in its coverage
 denominator; FPM evaluation continues. An older regression policy is not
 substituted for the Gym contract.
 Learned (fpm5) is the offline gradient-boosted model of
-`aisimulate_core.sdk.fpm_learned` with the `fpm5` preset (the five FPM v1 counts
+`aisim_core.sdk.fpm_learned` with the `fpm5` preset (the five FPM v1 counts
 and sums, no variances or per-request lists), 150 trees of at most 15 leaves at
 learning rate 0.2. It is fitted once per case: within
 each workload kind, observations alternate in stream order between training
@@ -170,7 +170,7 @@ published before this method list only the first three methods and remain valid.
 
 ## Scenario Comparison
 
-[Scenario Comparison](https://ai-dynamo.org/aisimulate/fpm-accuracy/scenario-comparison.html)
+[Scenario Comparison](https://ai-dynamo.org/aisim/fpm-accuracy/scenario-comparison.html)
 sits next to 3D Visualization. It compares A-only, B-only, C-only, A+C, and B+C
 across interpolation with KV warmup on/off, linear regression, spline regression,
 GBDT, hybrid calibration, and the causal selector. Interpolation applies only to A;
@@ -291,18 +291,18 @@ node --test tests/test_fpm_accuracy_workflow.mjs
 ## Source attribution
 
 The overview structure and behavior were adapted from NVIDIA
-AISim FPM Gym; the [public migrated overview](https://github.com/ai-dynamo/aisimulate/tree/4acab657e054b0ac135599b3a5206899cf831c3e/pages/fpm-accuracy) derives from
+AISim FPM Gym; the [public migrated overview](https://github.com/ai-dynamo/aisim/tree/4acab657e054b0ac135599b3a5206899cf831c3e/pages/fpm-accuracy) derives from
 commit `e8221729db2802e822f6919fd68bc2941743385b`, originally
 `dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a best-MAPE
 overview, a three-column Predictors page (derived from the same overview),
 qualified branch snapshots, and public-only provenance. The
-visual presentation now uses AISimulate's E2E accuracy stylesheet.
+visual presentation now uses AISim's E2E accuracy stylesheet.
 Apache-2.0, with maintainer-confirmed migration permission. The new tabs adapt
 Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`
-([public migration](https://github.com/ai-dynamo/aisimulate/tree/379d33493610e9adf234374a84bee3be74ccecb8/pages/fpm-accuracy)); the 3D HTML,
+([public migration](https://github.com/ai-dynamo/aisim/tree/379d33493610e9adf234374a84bee3be74ccecb8/pages/fpm-accuracy)); the 3D HTML,
 JS and CSS derive from `dashboard/3d-visualization.html` and
 `dashboard/assets/visualization.{js,css}` at that revision. They are modified
-for AISimulate navigation, styling and GitHub artifact data. Plotly.js v3.4.0
+for AISim navigation, styling and GitHub artifact data. Plotly.js v3.4.0
 is bundled unmodified, loaded only by the 3D page, with its MIT license.
 The repository copyright check pins the vendor bundle and MIT license bytes;
 updates must refresh those hashes together with the attribution.

@@ -7,11 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Motivation and when to use self-service
 
-AISimulate needs engine forward-pass timings to predict serving performance.
+AISim needs engine forward-pass timings to predict serving performance.
 Existing performance data may not represent your checkpoint, hardware or engine
 configuration. Forward-pass metrics (FPM) describe scheduled batch work and its
 measured duration. FPM self-service lets you collect these whole-pass measurements
-and use them in AISimulate prediction and recommendation.
+and use them in AISim prediction and recommendation.
 
 Use this workflow when:
 
@@ -21,7 +21,7 @@ Use this workflow when:
   coverage.
 - You need the combined cost of operations, launch overhead and communication
   within the measured iteration, rather than composing separate operation tables.
-- You want to calibrate a supported deployment while retaining AISimulate's
+- You want to calibrate a supported deployment while retaining AISim's
   existing scheduler, routing and KV-cache simulation.
 
 ## Choose a profiling route
@@ -114,12 +114,12 @@ For online learning from per-iteration telemetry, continue with
 | Area | Current support and boundary |
 | --- | --- |
 | End-to-end offline profiling | [Manual collection and training](e2e-gbdt.md) using your deployment tools or completed native captures; see the [native collection examples](examples.md#example-c-collect-native-fpm-with-separate-prefill-and-decode-workers). Capture integrity, required-store coverage and measured accuracy are separate checks. |
-| Self-benchmark backend | vLLM configurations that pass model/runtime qualification. SGLang and TensorRT-LLM are not supported by this guided collection workflow yet; this does not describe their broader AISimulate modeling support. |
+| Self-benchmark backend | vLLM configurations that pass model/runtime qualification. SGLang and TensorRT-LLM are not supported by this guided collection workflow yet; this does not describe their broader AISim modeling support. |
 | Model metadata | A local pinned `config.json` or an existing FPM profile. Direct interpolation can use a verified architecture without a registered analytical class. New architectures may need benchmark state preparation, measurement hooks or an audited resource-observation adapter. |
 | Parallelism | Whole-pass timing can capture intra-iteration computation and communication. Exact topology/resource identity and query coverage remain required; see [current guided CLI coverage](implementation.md#parallelism-support-and-guided-cli-coverage) for collection automation limits. |
 | Self-benchmark serving roles | Aggregated workers collect both prefill and decode. Prefill and decode can also be collected independently with separate accepted configurations. Their role exports must be composed separately for serving; `onboard validate-fpm` currently validates aggregated replay. |
 | Self-benchmark GPU execution | Kubernetes by default, or Slurm/Pyxis inside a caller-owned allocation. Both have multi-node launch paths; placement and GPU requirements come from the generated plan. The workflow does not provision the cluster or acquire a Slurm allocation. |
-| KV cache | Supports standard per-token KV caches, as used by Llama, Qwen3 and MiniMax-M2. Models with linear-attention state, such as Kimi K3's KDA, use the [measured-profile path](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile), with the KV cache and state-management limits described in that example. Some configs leave the cache geometry to the [runtime probe](implementation.md#cache-geometry-pending-the-runtime-probe): linear-attention and recurrent-state configs, and architectures that intake does not recognize. For them, `onboard init --model-config` stops with guidance to run the probe, which measures the geometry. A cache geometry override for these configs is a claim that `onboard import-observations` checks against that measurement. On vLLM 0.33.0 with the Dynamo scheduler file of the `release/1.7.0` branch that the bundle pins ([source notes](../../../python/aisimulate/collector/fpm_forward/runtime/instrumentation/vllm-0.33.0.md)), the probe imports recurrent-state and tail caches as `state` groups. Other KV cache types may also work, but may need changes to the self-benchmarker to initialize their state and measure the forward pass correctly. GLM-5.3-Flash collects through onboarding with its repository producer as the runtime adapter. |
+| KV cache | Supports standard per-token KV caches, as used by Llama, Qwen3 and MiniMax-M2. Models with linear-attention state, such as Kimi K3's KDA, use the [measured-profile path](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile), with the KV cache and state-management limits described in that example. Some configs leave the cache geometry to the [runtime probe](implementation.md#cache-geometry-pending-the-runtime-probe): linear-attention and recurrent-state configs, and architectures that intake does not recognize. For them, `onboard init --model-config` stops with guidance to run the probe, which measures the geometry. A cache geometry override for these configs is a claim that `onboard import-observations` checks against that measurement. On vLLM 0.33.0 with the Dynamo scheduler file of the `release/1.7.0` branch that the bundle pins ([source notes](../../../python/aisim/collector/fpm_forward/runtime/instrumentation/vllm-0.33.0.md)), the probe imports recurrent-state and tail caches as `state` groups. Other KV cache types may also work, but may need changes to the self-benchmarker to initialize their state and measure the forward pass correctly. GLM-5.3-Flash collects through onboarding with its repository producer as the runtime adapter. |
 | Multimodality | For multimodal models, this workflow covers text generation only; image/audio processing time is excluded. |
 
 Use a source revision containing the required CLI and consumer features; a
@@ -131,14 +131,14 @@ and [execution-route constraints](implementation.md#choose-the-model-execution-r
 ## Reuse a published profile
 
 Published FPM tables use checked-in pin manifests under
-[`aisimulate_core/systems/profiles/`](../../../python/aisimulate/src/aisimulate_core/systems/profiles/).
+[`aisim_core/systems/profiles/`](../../../python/aisim/src/aisim_core/systems/profiles/).
 Each model family has an `hf_dataset.json`; additional manifests can preserve
 separate historical campaigns, such as `dsv41_fpm/four_gpu_hf_dataset.json`.
 Discover the bundled manifests and their profile keys without downloading data:
 
 ```bash
-python -m aisimulate_core.sdk.fpm_dataset --list
-python -m aisimulate_core.sdk.fpm_dataset --list kimi_k3_fpm
+python -m aisim_core.sdk.fpm_dataset --list
+python -m aisim_core.sdk.fpm_dataset --list kimi_k3_fpm
 ```
 
 Listing includes each profile's admission and, when recorded, `admission_reason`.
@@ -149,14 +149,14 @@ Materialize one key to obtain a verified systems root. This Kimi profile is
 development data, so reproducing it requires an explicit opt-in:
 
 ```bash
-python -m aisimulate_core.sdk.fpm_dataset \
+python -m aisim_core.sdk.fpm_dataset \
   kimi_k3_fpm gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0 \
   --allow-unqualified
 ```
 
 The CLI prints the resulting root. The equivalent SDK call is
 `materialize_fpm_profile("kimi_k3_fpm", key, allow_unqualified=True)` from
-`aisimulate_core.sdk.fpm_dataset`. Both interfaces also accept an explicit
+`aisim_core.sdk.fpm_dataset`. Both interfaces also accept an explicit
 manifest file path. Supply the returned root in `systems_paths` when constructing
 the canonical performance model or in `engine.systems_paths` for prediction.
 See [Example A](examples.md#a1-import-the-measured-pair) for the complete Kimi
@@ -191,7 +191,7 @@ prepared for the currently installed hardware bytes as well as the dataset pin.
 | `files[].path` | Relative POSIX source path within the pinned dataset. |
 | `files[].sha256` | Full lowercase SHA-256 of the exact source bytes, also verified after materialization. |
 | `files[].target` | Relative POSIX destination within this profile's systems root. |
-| `profiles.<key>.packaged_system` | Optional system name, such as `gb300`, that explicitly requests the installed `aisimulate_core/systems/<system>.yaml` as a hardware reference. Its actual hash participates in cache identity and verification. |
+| `profiles.<key>.packaged_system` | Optional system name, such as `gb300`, that explicitly requests the installed `aisim_core/systems/<system>.yaml` as a hardware reference. Its actual hash participates in cache identity and verification. |
 | `profiles.<key>.system_config_source` | Provenance annotation. `packaged_reference_not_collection` identifies a reference YAML when the dataset lacks the collection-time YAML. |
 | `profiles.<key>.admission_reason` | Reason for the declared admission, including missing qualification evidence or native-consumer incompatibility. Exposed in profile listings and opt-in warnings when recorded. |
 | `profiles.<key>.identity` | Legacy descriptive metadata only. The downloader does not compare it with table rows or a requested deployment. |
@@ -233,7 +233,7 @@ their metadata, make predictions possible, or promote their admission.
 
 ### Maintain the pins
 
-The collection or dataset-PR author owns the AISimulate follow-up PR after a
+The collection or dataset-PR author owns the AISim follow-up PR after a
 dataset change merges; the performance-model CODEOWNERS review it. Pin the merged
 dataset commit, verify every file hash and canonical target, retain provenance
 and applicable notices, and review each profile's admission against its evidence.
@@ -325,7 +325,7 @@ and [GBDT identity and resource requirements](e2e-gbdt.md#before-you-start).
 
 **Self-benchmarking.** `onboard plan` saves the request, profile, collector commands
 and simulation inputs. Preview `onboard collect-fpm` and inspect the generated
-collector plan, executor requirements and node placement. AISimulate supplies the
+collector plan, executor requirements and node placement. AISim supplies the
 reviewed limits; Dynamo self-benchmark derives the exact feasible grid from the
 initialized engine. A plan does not establish target readiness or measured
 coverage.
