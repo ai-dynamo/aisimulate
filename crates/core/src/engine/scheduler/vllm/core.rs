@@ -159,8 +159,13 @@ pub(crate) struct SchedulerState {
     running_members: FxHashSet<Uuid>,
     pub(crate) requests: FxHashMap<Uuid, VllmRequestState>,
     pub(crate) preemptions_total: u64,
+    /// All queued work, including destination requests awaiting reservation or
+    /// activation. Transfer between these states preserves exactly one entry.
     queued_stats: QueueStats,
     queued_lengths: FxHashMap<Uuid, QueuedLength>,
+    /// Conservative upper bound for every order admitted to any waiting queue.
+    /// Retaining removed orders keeps this valid across preemption and stale slots.
+    max_queued_waiting_order: u64,
     #[cfg(test)]
     connector_waiting_selections: usize,
 }
@@ -237,6 +242,7 @@ impl SchedulerState {
         let Some(request) = self.requests.get(&uuid) else {
             return;
         };
+        self.max_queued_waiting_order = self.max_queued_waiting_order.max(request.waiting_order);
         let length = if request.is_decode_handoff {
             Some(QueuedLength::Decode(
                 request.sequence.num_input_tokens() as u64
@@ -299,6 +305,11 @@ impl SchedulerState {
         waiting_order: u64,
         include_connector_waiting: bool,
     ) -> usize {
+        // No live queued request can have a larger order. This is also valid
+        // for unsorted queues, connector retries, and lazily removed entries.
+        if waiting_order >= self.max_queued_waiting_order {
+            return queue.len();
+        }
         queue
             .iter()
             .position(|queued| {
@@ -1217,6 +1228,9 @@ impl VllmCore {
                 ) {
                     anyhow::bail!(message);
                 }
+                let length = QueuedLength::Decode(request.sequence.num_input_tokens() as u64);
+                assert!(self.state.queued_lengths.insert(uuid, length).is_none());
+                self.state.queued_stats.add(length);
                 self.pending_destinations.insert(uuid, handoff_id, request);
                 let mut effects =
                     SchedulerCommandEffects::new(SchedulerCommandResult::DestinationAccepted {
@@ -1236,6 +1250,7 @@ impl VllmCore {
                 let active_before = self.kv_manager.num_active_blocks();
                 let request = reservation.activate(&mut self.kv_manager);
                 self.active_destination_handoffs.insert(handoff_id, uuid);
+                self.state.forget_queued_length(uuid);
                 self.state.restore_waiting_in_order(uuid, request);
                 if self.kv_manager.num_active_blocks() < active_before {
                     self.bump_capacity_generation();
@@ -1247,6 +1262,7 @@ impl VllmCore {
             }
             SchedulerCommand::CancelDestination { handoff_id } => {
                 if let Some((request_id, _)) = self.pending_destinations.remove(handoff_id) {
+                    self.state.forget_queued_length(request_id);
                     self.bump_capacity_generation();
                     return Ok(self
                         .effects_after_capacity_change(
@@ -1256,6 +1272,7 @@ impl VllmCore {
                         .retire(request_id));
                 }
                 if let Some((request_id, reservation)) = self.destination_holds.remove(handoff_id) {
+                    self.state.forget_queued_length(request_id);
                     reservation.cancel(&mut self.kv_manager);
                     self.bump_capacity_generation();
                     return Ok(self
@@ -2970,19 +2987,7 @@ impl VllmCore {
                 .then_some(work.sequence_len as u64)
         });
 
-        let mut queued = self.state.queued_stats.snapshot();
-        let preactivation_decodes = self
-            .pending_destinations
-            .payloads()
-            .map(|request| request.sequence.num_input_tokens() as u64)
-            .chain(
-                self.destination_holds
-                    .payloads()
-                    .map(|reservation| reservation.request.sequence.num_input_tokens() as u64),
-            );
-        for length in preactivation_decodes {
-            queued.add_decode(length);
-        }
+        let queued = self.state.queued_stats.snapshot();
 
         let mut snapshot = build_fpm_snapshot(
             scheduled_prefills,
@@ -4053,6 +4058,250 @@ mod waiting_queue_tests {
                 .build()
                 .unwrap(),
         )
+    }
+
+    fn reference_insertion(
+        state: &SchedulerState,
+        queue: &VecDeque<Uuid>,
+        order: u64,
+        connectors: bool,
+    ) -> usize {
+        queue
+            .iter()
+            .position(|id| {
+                (state.waiting_members.contains(id)
+                    || (connectors && state.connector_waiting_members.contains(id)))
+                    && state
+                        .requests
+                        .get(id)
+                        .is_some_and(|r| r.waiting_order > order)
+            })
+            .unwrap_or(queue.len())
+    }
+
+    #[test]
+    fn cached_destination_statistics_cover_pending_held_active_and_cancellation() {
+        let mut core = core(64);
+        let ids: Vec<_> = (0..3).map(|i| Uuid::from_u128(700_000 + i)).collect();
+        let handoffs: Vec<_> = ids.iter().copied().map(HandoffId::from).collect();
+        let check = |core: &VllmCore, count, sum| {
+            let snapshot = core.compute_fpm(&FxHashMap::default(), 0.0);
+            assert_eq!(snapshot.num_queued_decode, count);
+            assert_eq!(snapshot.sum_queued_decode_kv_tokens, sum);
+            crate::engine::scheduler::queue_metrics::assert_queue_metrics(
+                &snapshot,
+                &core.reference_queued_fpm(),
+            );
+        };
+        check(&core, 0, 0);
+        for i in 0..3 {
+            core.apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id: handoffs[i],
+                    request: DirectRequest {
+                        uuid: Some(ids[i]),
+                        tokens: vec![i as u32; 4 * (i + 1)],
+                        max_output_tokens: 2,
+                        ..DirectRequest::default()
+                    },
+                },
+                false,
+            )
+            .unwrap();
+        }
+        check(&core, 3, 24);
+        assert_eq!(core.pending_destinations.len(), 3);
+        assert!(core.destination_holds.is_empty());
+        // Rejected duplicate IDs must not enter the incremental accounting.
+        assert!(
+            core.apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id: HandoffId::from(Uuid::from_u128(700_100)),
+                    request: DirectRequest {
+                        uuid: Some(ids[0]),
+                        tokens: vec![0; 4],
+                        max_output_tokens: 2,
+                        ..DirectRequest::default()
+                    },
+                },
+                false,
+            )
+            .is_err()
+        );
+        check(&core, 3, 24);
+        core.apply_command_effects(
+            SchedulerCommand::CancelDestination {
+                handoff_id: handoffs[1],
+            },
+            false,
+        )
+        .unwrap();
+        check(&core, 2, 16);
+        // Cancelling the pending request also admits the queue's front request.
+        assert_eq!(core.pending_destinations.len(), 1);
+        assert_eq!(core.destination_holds.len(), 1);
+        core.apply_command(SchedulerCommand::CancelDestination {
+            handoff_id: handoffs[0],
+        })
+        .unwrap();
+        check(&core, 1, 12);
+        assert!(core.pending_destinations.is_empty());
+        assert_eq!(core.destination_holds.len(), 1);
+        core.retry_pending_destinations();
+        core.apply_command(SchedulerCommand::ActivateDestination {
+            handoff_id: handoffs[2],
+        })
+        .unwrap();
+        check(&core, 1, 12);
+        core.apply_command(SchedulerCommand::CancelDestination {
+            handoff_id: handoffs[2],
+        })
+        .unwrap();
+        check(&core, 0, 0);
+        // Cancellation is idempotent after the active request is removed.
+        core.apply_command(SchedulerCommand::CancelDestination {
+            handoff_id: handoffs[2],
+        })
+        .unwrap();
+        check(&core, 0, 0);
+    }
+
+    #[test]
+    #[ignore = "explicit release-mode destination statistics timing"]
+    fn pending_statistics_large_queue_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let mut core = core(64);
+        const N: usize = 50_000;
+        for i in 0..N {
+            let id = Uuid::from_u128(2_000_000 + i as u128);
+            core.apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id: HandoffId::from(id),
+                    request: DirectRequest {
+                        uuid: Some(id),
+                        tokens: vec![i as u32; 4 + (i % 60)],
+                        max_output_tokens: 2,
+                        ..DirectRequest::default()
+                    },
+                },
+                false,
+            )
+            .unwrap();
+        }
+        let start = Instant::now();
+        for _ in 0..200 {
+            black_box(core.reference_queued_fpm());
+        }
+        let reference = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..200 {
+            let mut snapshot = ForwardPassSnapshot::default();
+            black_box(&core.state.queued_stats)
+                .snapshot()
+                .apply(&mut snapshot);
+            black_box(snapshot);
+        }
+        eprintln!(
+            "queue_statistics_benchmark entries={N} calls=200 reference_s={} optimized_s={}",
+            reference.as_secs_f64(),
+            start.elapsed().as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn waiting_order_bound_preserves_stale_unsorted_and_connector_queues() {
+        let mut core = core(64);
+        let ids: Vec<_> = (0..64).map(|i| add(&mut core, 800_000 + i)).collect();
+        // Preemption can put a newer request ahead of older arrivals; a tail-only
+        // check would incorrectly append some out-of-order activations here.
+        core.state.remove_from_waiting(ids[50]);
+        core.state.prepend_waiting(ids[50]);
+        for &id in &ids[20..25] {
+            core.state.remove_from_waiting(id);
+            core.state.restore_connector_waiting_front(id, false);
+        }
+        // Keep stale physical slots and a high-water mark from a retired request.
+        core.state.take_completed(&ids[63]);
+        core.state.take_completed(&ids[12]);
+        for order in 0..80 {
+            for connectors in [false, true] {
+                for queue in [
+                    &core.state.waiting,
+                    &core.state.materialized_waiting,
+                    &core.state.connector_waiting,
+                ] {
+                    assert_eq!(
+                        core.state
+                            .insertion_index_for_waiting_order(queue, order, connectors),
+                        reference_insertion(&core.state, queue, order, connectors)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn waiting_order_bound_preserves_permuted_handoff_restoration() {
+        let mut core = core(64);
+        for order in (0..128).map(|i| (i * 37) % 128) {
+            let id = Uuid::from_u128(900_000 + order as u128);
+            let request = core.make_request_state(
+                DirectRequest {
+                    uuid: Some(id),
+                    tokens: Vec::new(),
+                    max_output_tokens: 1,
+                    ..DirectRequest::default()
+                },
+                RequestStatus::Waiting,
+                order,
+            );
+            let mut expected = core.state.waiting.clone();
+            expected.insert(
+                reference_insertion(&core.state, &expected, order, false),
+                id,
+            );
+            core.state.restore_waiting_in_order(id, request);
+            assert_eq!(core.state.waiting, expected);
+            assert_eq!(core.state.materialized_waiting, expected);
+            assert!(core.state.max_queued_waiting_order >= order);
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit release-mode queue insertion timing"]
+    fn waiting_order_bound_large_queue_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let mut core = core(64);
+        const N: usize = 140_000;
+        for i in 0..N {
+            add(&mut core, 1_000_000 + i as u128);
+        }
+        let start = Instant::now();
+        for _ in 0..200 {
+            assert_eq!(
+                reference_insertion(black_box(&core.state), &core.state.waiting, N as u64, false),
+                N
+            );
+        }
+        let reference = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..200 {
+            assert_eq!(
+                black_box(&core.state).insertion_index_for_waiting_order(
+                    &core.state.waiting,
+                    N as u64,
+                    false
+                ),
+                N
+            );
+        }
+        eprintln!(
+            "queue_insert_benchmark entries={N} calls=200 reference_s={} optimized_s={}",
+            reference.as_secs_f64(),
+            start.elapsed().as_secs_f64()
+        );
     }
 
     fn add(core: &mut VllmCore, value: u128) -> Uuid {
