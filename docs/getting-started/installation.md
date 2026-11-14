@@ -13,11 +13,19 @@ environment is required for collection and deployment benchmarks.
 
 Documentation on `main` describes the current source. A published wheel may
 predate a documented feature. Record your installed version before comparing
-results or reporting a problem:
+results or reporting a problem. For current `aisim` installs, use:
 
 ```bash
+aisim --version
 python -c 'import aisim; print(aisim.__version__)'
 python -c 'import aisim, aisim._runtime; print(aisim.__file__); print(aisim._runtime.__file__)'
+```
+
+For historical `aisimulate` installs, use the original Python namespace; those releases may not provide the `aisim` command or its new `--version` flag:
+
+```bash
+python -c 'import aisimulate; print(aisimulate.__version__)'
+python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); print(aisimulate._runtime.__file__)'
 ```
 
 ### Published packages
@@ -33,7 +41,7 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install 'aisimulate==0.12.1'
-aisim --help
+aisimulate --help
 ```
 
 An exact version pin makes the choice explicit. To discover newer published
@@ -75,6 +83,8 @@ python -m pip download --no-deps --only-binary=:all: \
 This checks only AISim's wheel, not all transitive dependencies. A missing
 wheel on an unlisted host does not establish source-build support there.
 
+Current `aisim` wheels provide both `aisim --version` and `aisimulate --version`; these report the installed distribution as `aisim VERSION`. The two launchers expose the same `predict`, `recommend`, and `onboard` commands and options. Help and parser errors retain the invoked command name, including `python -m aisim`, `python -m aisimulate`, and supervised workers.
+
 ## Migrate to the renamed distribution
 
 Current source builds `aisim` / `aisim-core`; historical published releases use
@@ -88,20 +98,26 @@ engine-only environment, remove the old distribution first, then install the
 selected new wheel (or `aisim==<published-version>`):
 
 ```bash
-python -m pip uninstall -y aisimulate
-python -m pip install /absolute/path/to/aisim-VERSION-PLATFORM.whl
-python -m pip check
-aisim --help
+python -m pip uninstall -y aisimulate && \
+python -m pip install /absolute/path/to/aisim-VERSION-PLATFORM.whl && \
+python -m pip check && \
+aisim --help && \
 aisimulate --help
 ```
 
 AISim checks distribution metadata during import and CLI startup. If both `aisim` and `aisimulate` are installed, it raises an `ImportError` with repair commands before loading the native runtime. This check does not prevent pip from installing or overwriting shared files. An old distribution installed last can overwrite the legacy entry points and bypass the check through those old paths.
 
-Use that same ordering for upgrades. If both distributions have already been
-installed, uninstall `aisimulate` and use `pip install --force-reinstall` for
-the selected `aisim` wheel, because uninstalling the old distribution can remove
-files listed in both RECORDs. Both CLI names remain available after migration;
-Canonical Python imports are `aisim` and `aisim_core`; `aisimulate` and `aisimulate_core` remain forwarding aliases.
+Use that same ordering for upgrades. To repair an environment where both distributions were installed, remove the old distribution and reinstall the exact selected wheel. Preserve the existing dependency set during this repair and validate it afterward:
+
+```bash
+python -m pip uninstall -y aisimulate && \
+python -m pip install --force-reinstall --no-deps /absolute/path/to/aisim-VERSION-PLATFORM.whl && \
+python -m pip check
+```
+
+If pip or uv cannot uninstall the legacy distribution because its file records are missing, create a fresh environment and install the selected `aisim` wheel there. The in-place repair requires successful removal of the old distribution.
+
+Uninstalling the old distribution can remove files listed in both RECORDs. Both CLI names remain available after migration. Canonical Python imports are `aisim` and `aisim_core`; `aisimulate` and `aisimulate_core` remain forwarding aliases.
 
 Dynamo and other consumers must change their **distribution dependency** to
 `aisim` before sharing the new environment. Do not migrate the historical Dynamo
@@ -122,6 +138,17 @@ uv sync --project python/aisim --extra dev
 source python/aisim/.venv/bin/activate
 aisim --help
 ```
+
+To repair an existing source-checkout environment after installing a legacy distribution, run these commands from that same checkout:
+
+```bash
+project_python="$(uv run --project python/aisim --no-sync python -c 'import sys; print(sys.executable)')" && \
+uv pip uninstall --python "$project_python" aisimulate && \
+uv sync --project python/aisim --extra dev --frozen --inexact --reinstall-package aisim && \
+uv pip check --python "$project_python"
+```
+
+The first command locates the checkout's existing project interpreter without syncing or importing AISim. It honors `UV_PROJECT_ENVIRONMENT`, including paths relative to `python/aisim`; otherwise, uv uses `python/aisim/.venv`. Keep that setting unchanged for the whole block so uninstall, sync, and check select the same environment. The sync command reinstalls this checkout and its CLI entry points using the existing lockfile, including shared files removed by the uninstall. `--inexact` retains unselected packages, including dependencies of other installed extras such as `service` or `learned`; the final check validates the resulting environment.
 
 Install `uv`, a Rust toolchain with Cargo, and a C/C++ compiler plus platform
 linker before syncing: Maturin compiles the native extension. On macOS, install
