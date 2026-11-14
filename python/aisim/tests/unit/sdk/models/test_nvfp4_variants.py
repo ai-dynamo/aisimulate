@@ -612,8 +612,18 @@ def test_qwen35_gdn_ba_shards_from_other_layers_do_not_complete_a_pair(other_sha
             if metadata_source == "split":
                 layers.update(first)
         monkeypatch.setattr(core_models, "_get_model_info", lambda _model_path: model_info)
-        with pytest.raises(ValueError, match="but not in_proj_b"):
+        with pytest.raises(ValueError) as error:
             get_model(model_name, _model_config(), backend_name="trtllm")
+        # HF metadata is visited first; either incomplete module must be rejected
+        # independently, even when the other metadata source lists its partner.
+        if metadata_source == "split" and other_shard == "in_proj_b":
+            listed, unlisted, module = "in_proj_b", "in_proj_a", modules[1]
+        else:
+            listed, unlisted, module = "in_proj_a", "in_proj_b", modules[0]
+        assert str(error.value) == (
+            f"quantized_layers list the GDN {listed} projection but not {unlisted} "
+            f"in {module.removesuffix('.')}; their fused in_proj_ba GEMM cannot mix precisions"
+        )
 
 
 def test_qwen35_gdn_ba_shards_in_one_module_can_span_metadata_sources():
