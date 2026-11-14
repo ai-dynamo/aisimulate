@@ -293,16 +293,52 @@ The page links to the CI run and shows both tested source and probe tooling.
 
 To reproduce a release result, check out the recorded tooling commit at the
 workspace root and the recorded release source under `release-source/`.
-Download the run's `fpe-release-wheel-<version>-manifest` Actions artifact,
-which contains only `wheel-manifest.json`. The manifest identifies the
-Artifactory objects for the `fpe-release-wheel/` directory,
-`fpe-release-shards.json`, and `fpe-release-probes.json`. Restore these paths
-into the workspace through `.github/actions/wheel-storage` from the recorded
-tooling commit, binding the recorded release source SHA, producer run ID, and
-`amd64` architecture. Use the producer attempt recorded in the manifest, and
-verify every object's size and SHA-256 before use. Install the release's locked
-environment and exact restored wheel as in the workflow. The matrix's
-per-cell command uses `release-source/python/aisim/.venv/bin/python`
+For a local restore, set `FPE_RELEASE` to the recorded release version,
+`FPE_SOURCE_SHA` to its full release source SHA, `FPE_TOOLING_SHA` to the full
+tooling SHA, and `FPE_RUN_ID` to the producing **Release branch nightly CI** run ID
+(not a local retry or a later consumer run). Obtain `WHEEL_STORAGE_URL` and
+`WHEEL_STORAGE_REPO` from that run's `automated-release` environment
+configuration, and supply an authorized read credential as `ARTIFACTORY_TOKEN`
+through your local secret manager or environment. Authenticate `gh` with access
+to the producing run; the GitHub token and Artifactory token are separate.
+
+Run the following from the tooling checkout root. It downloads the run's
+`fpe-release-wheel-<version>-manifest` Actions artifact, which contains only
+`wheel-manifest.json`, then invokes the transfer script directly:
+
+```bash
+set -euo pipefail
+
+gh run download "${FPE_RUN_ID:?}" --repo ai-dynamo/aisim \
+  --name "fpe-release-wheel-${FPE_RELEASE:?}-manifest" --dir release-wheel-manifest
+
+GITHUB_REPOSITORY=ai-dynamo/aisim \
+GITHUB_REPOSITORY_ID="$(gh api repos/ai-dynamo/aisim --jq .id)" \
+GITHUB_SHA="${FPE_TOOLING_SHA:?}" \
+GITHUB_RUN_ID="${FPE_RUN_ID:?}" \
+STORAGE_MODE=download \
+STORAGE_SCOPE=official \
+STORAGE_PR_NUMBER='' \
+STORAGE_NAME="fpe-release-wheel-${FPE_RELEASE:?}" \
+STORAGE_PATH=. \
+STORAGE_URL="${WHEEL_STORAGE_URL:?}" \
+STORAGE_REPO="${WHEEL_STORAGE_REPO:?}" \
+STORAGE_TOKEN="${ARTIFACTORY_TOKEN:?}" \
+STORAGE_RUN_ID="${FPE_RUN_ID:?}" \
+STORAGE_SOURCE_SHA="${FPE_SOURCE_SHA:?}" \
+STORAGE_ARCHITECTURE=amd64 \
+STORAGE_MANIFEST=release-wheel-manifest/wheel-manifest.json \
+python3 .github/actions/wheel-storage/transfer.py
+```
+
+The script from the recorded tooling commit restores `fpe-release-wheel/`
+(including the wheel and its provenance), `fpe-release-shards.json`, and
+`fpe-release-probes.json` into the workspace. It binds the release source,
+tooling commit, producer run, repository, and `amd64` architecture, reads the
+producer attempt from the manifest, and verifies each object's size and SHA-256
+before replacing local files. No `GITHUB_RUN_ATTEMPT` is needed for a download.
+Install the release's locked environment and exact restored wheel as in the
+workflow. The matrix's per-cell command uses `release-source/python/aisim/.venv/bin/python`
 directly to run the verified release wrapper with the recorded source, tooling,
 and branch. Each invocation requires a fresh `release-probe-harness/` directory;
 remove only that generated directory between reproductions. Raw shard reports

@@ -41,6 +41,27 @@ WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
 
 
+def test_documented_active_runner_labels_match_workflow_selectors():
+    labels = set()
+    for path in WORKFLOW_ROOT.glob("*.yml"):
+        for job in _workflow(path.name)["jobs"].values():
+            selector = job.get("runs-on", "")
+            matrix = job.get("strategy", {}).get("matrix", {})
+            if selector == "${{ matrix.runner }}":
+                selectors = [entry["runner"] for entry in matrix["include"]]
+            elif isinstance(selector, str) and "${{ matrix.arch }}" in selector:
+                arches = matrix["arch"] if "arch" in matrix else [entry["arch"] for entry in matrix["include"]]
+                selectors = [selector.replace("${{ matrix.arch }}", arch) for arch in arches]
+            else:
+                selectors = selector if isinstance(selector, list) else [selector]
+            labels.update(label for label in selectors if isinstance(label, str) and label.startswith("prod-aisim"))
+    assert labels
+    documentation = (REPOSITORY_ROOT / "docs/ci/README.md").read_text()
+    assert set(re.findall(r"`(prod-aisim[^`]+)`", documentation)) == labels
+    lint_labels = yaml.safe_load((REPOSITORY_ROOT / ".github/actionlint.yaml").read_text())
+    assert {label for label in lint_labels["self-hosted-runner"]["labels"] if label.startswith("prod-aisim")} == labels
+
+
 def test_stable_release_migrations_require_reviewed_clearance(tmp_path):
     from scripts.release.check_release_migrations import GATES, require_completed_migrations
 

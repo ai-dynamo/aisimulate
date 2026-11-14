@@ -5,7 +5,10 @@
 import importlib.util
 import json
 import os
+import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -537,6 +540,88 @@ def test_curl_http_failure_preserves_status(tmp_path, monkeypatch, status):
     with pytest.raises(transfer.HTTPError) as error:
         transfer.transfer("https://artifactory.invalid/wheel", "secret", tmp_path / "wheel")
     assert error.value.status == status
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_documented_local_release_restore_executes_transfer_and_verifies_bytes(handoff, corrupt):
+    files = {
+        "fpe-release-wheel/aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl": b"fixture wheel",
+        "fpe-release-wheel/provenance.json": b'{"source_sha":"' + b"a" * 40 + b'"}',
+        "fpe-release-shards.json": b"[]",
+        "fpe-release-probes.json": b"{}",
+    }
+    for name, data in files.items():
+        path = handoff.source / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+    handoff.monkeypatch.setenv("STORAGE_NAME", "fpe-release-wheel-0.14.0")
+    handoff.monkeypatch.setenv("GITHUB_REPOSITORY", "ai-dynamo/aisim")
+    transfer.main()
+    if corrupt:
+        url = next(url for url in handoff.objects if url.endswith(".whl"))
+        handoff.objects[url] = b"corrupt wheel"  # Same length: SHA-256 must catch this.
+    objects = handoff.source.parent / "objects.json"
+    objects.write_text(json.dumps({url: data.hex() for url, data in handoff.objects.items()}))
+    manifest = handoff.manifest
+    # A local shell has no Actions STORAGE_* or GITHUB_* environment. Run the
+    # documented command verbatim with only network endpoints replaced by stubs.
+    workspace = handoff.output
+    script = workspace / ".github/actions/wheel-storage/transfer.py"
+    script.parent.mkdir(parents=True)
+    shutil.copyfile(ACTION / "transfer.py", script)
+    bin_dir = workspace / "bin"
+    bin_dir.mkdir()
+    stubs = {
+        "gh": (
+            "import os, pathlib, shutil, sys\n"
+            "args = sys.argv[1:]\n"
+            "if args[:2] == ['run', 'download']:\n"
+            "    assert args == ['run', 'download', '101', '--repo', 'ai-dynamo/aisim',\n"
+            "                    '--name', 'fpe-release-wheel-0.14.0-manifest', '--dir', 'release-wheel-manifest']\n"
+            "    destination = pathlib.Path(args[-1])\n"
+            "    destination.mkdir()\n"
+            "    shutil.copyfile(os.environ['FIXTURE_MANIFEST'], destination / 'wheel-manifest.json')\n"
+            "else:\n"
+            "    assert args == ['api', 'repos/ai-dynamo/aisim', '--jq', '.id']\n"
+            "    print('1330347449')\n"
+        ),
+        "curl": (
+            "import json, os, pathlib, sys\n"
+            "args = sys.argv[1:]\n"
+            "assert '--upload-file' not in args\n"
+            "objects = json.loads(pathlib.Path(os.environ['FIXTURE_OBJECTS']).read_text())\n"
+            "pathlib.Path(args[args.index('--output') + 1]).write_bytes(bytes.fromhex(objects[args[-1]]))\n"
+            "print('200', end='')\n"
+        ),
+    }
+    for name, body in stubs.items():
+        executable = bin_dir / name
+        executable.write_text(f"#!{sys.executable}\n{body}")
+        executable.chmod(0o755)
+    (bin_dir / "python3").symlink_to(sys.executable)
+    documentation = (ROOT / "docs/ci/accuracy.md").read_text().split("To reproduce a release result,", 1)[1]
+    command = re.search(r"```bash\n(.*?)```", documentation, re.DOTALL).group(1)
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("GITHUB_", "STORAGE_"))}
+    env.update(
+        PATH=f"{bin_dir}{os.pathsep}{env['PATH']}",
+        FPE_RELEASE="0.14.0",
+        FPE_SOURCE_SHA="a" * 40,
+        FPE_TOOLING_SHA="b" * 40,
+        FPE_RUN_ID="101",
+        WHEEL_STORAGE_URL=handoff.env["STORAGE_URL"],
+        WHEEL_STORAGE_REPO=handoff.env["STORAGE_REPO"],
+        ARTIFACTORY_TOKEN="fixture-read-token",
+        FIXTURE_MANIFEST=str(manifest),
+        FIXTURE_OBJECTS=str(objects),
+    )
+    result = subprocess.run(["bash", "-euc", command], cwd=workspace, env=env, capture_output=True, text=True)
+    if corrupt:
+        assert result.returncode != 0
+        assert "downloaded Artifactory file checksum mismatch" in result.stderr
+        assert not list((workspace / "fpe-release-wheel").glob("*.whl"))
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert {name: (workspace / name).read_bytes() for name in files} == files
 
 
 @pytest.mark.parametrize("package", ["aisim", "aisimulate"])
