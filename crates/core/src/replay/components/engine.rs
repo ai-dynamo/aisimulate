@@ -1485,6 +1485,80 @@ mod tests {
     #[rstest::rstest]
     #[case(Backend::Vllm)]
     #[case(Backend::Sglang)]
+    #[case(Backend::Trtllm)]
+    fn passes_start_in_ascending_worker_then_rank_order(#[case] backend: Backend) {
+        const WORKERS: usize = 3;
+        const DP_SIZE: u32 = 2;
+        let config = ReplayEngineConfig {
+            dp_size: DP_SIZE,
+            rank: EngineConfig {
+                backend,
+                num_gpu_blocks: 32,
+                block_size: 4,
+                enable_prefix_caching: false,
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 10.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::for_backend(backend)
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            WORKERS,
+            None,
+        )
+        .unwrap();
+        // Reverse dispatch separates submission order from worker/rank start order.
+        let schedulers = WORKERS * DP_SIZE as usize;
+        for scheduler_id in (0..schedulers).rev() {
+            component
+                .dispatch(
+                    scheduler_id,
+                    DirectRequest {
+                        tokens: vec![scheduler_id as u32; 8],
+                        max_output_tokens: 2,
+                        uuid: Some(Uuid::from_u128(scheduler_id as u128 + 1)),
+                        ..Default::default()
+                    },
+                    None,
+                    0.0,
+                )
+                .unwrap();
+        }
+        let mut passes = Vec::new();
+        loop {
+            let effects = component.drive_ready(0.0, None).unwrap();
+            if effects.is_empty() {
+                break;
+            }
+            passes.push(
+                effects
+                    .admissions
+                    .iter()
+                    .map(|admission| admission.uuid.as_u128() as usize - 1)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let expected: Vec<Vec<usize>> = (0..WORKERS)
+            .map(|worker| {
+                (0..DP_SIZE as usize)
+                    .map(|rank| worker * DP_SIZE as usize + rank)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(passes, expected);
+    }
+
+    #[rstest::rstest]
+    #[case(Backend::Vllm)]
+    #[case(Backend::Sglang)]
     fn committed_request_membership_excludes_queued_work_during_chunked_prefill(
         #[case] backend: Backend,
         #[values(1, 2, 3)] dp_size: u32,

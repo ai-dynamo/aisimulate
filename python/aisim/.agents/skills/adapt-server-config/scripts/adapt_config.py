@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 import jsonschema
 
-from aisim.legacy_cli.api import cli_estimate
+from aisim.legacy_cli.api import EstimateResult, cli_estimate
 from aisim.sdk.config_adapter import (
     AdaptationOutcome,
     AdaptationReport,
@@ -54,6 +54,9 @@ def _validate_request(request: EstimateRequestV1, schema: dict[str, Any]) -> Non
 
 
 def _serialize_estimate(result: Any) -> Any:
+    if isinstance(result, EstimateResult):
+        # Metrics and metadata are already fields; the live summary is not JSON data.
+        return asdict(replace(result, summary=None))
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json")
     if is_dataclass(result):
