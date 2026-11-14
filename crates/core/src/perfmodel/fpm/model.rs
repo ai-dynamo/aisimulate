@@ -2663,7 +2663,13 @@ fn build_native_candidate(
             Ok(engine)
         }) {
             Ok(engine) => return Ok((engine, root, fingerprint)),
-            Err(err) if can_fallback_to_regression(&err) => last_error = Some(err),
+            Err(err) if can_fallback_to_regression(&err) => {
+                // Keep the miss that enables the auto HYBRID retry even when a later
+                // root is unavailable, but still prefer any successful SILICON root.
+                if !matches!(last_error, Some(AicError::LinearAttentionDataMissing(_))) {
+                    last_error = Some(err);
+                }
+            }
             Err(err) => return Err(err),
         }
     }

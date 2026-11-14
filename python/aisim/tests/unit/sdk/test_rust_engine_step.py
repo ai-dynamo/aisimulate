@@ -1514,14 +1514,22 @@ def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
 
 
 @pytest.mark.integration
-def test_nemotron_super_fp8_auto_degrades_to_hybrid_on_the_missing_mamba2_table() -> None:
+@pytest.mark.parametrize("systems_order", ["packaged_only", "unavailable_last", "unavailable_first"])
+def test_nemotron_super_fp8_auto_degrades_to_hybrid_on_the_missing_mamba2_table(tmp_path, systems_order) -> None:
     """AISIM-2194: the SILICON op_level candidate misses the Mamba2 table; auto rebuilds it in HYBRID."""
     pytest.importorskip("aisim_core")
     from dataclasses import replace
+    from importlib import resources
 
     from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
     from aisim_core.sdk.errors import PerfDataNotAvailableError
 
+    # An existing but empty root must not hide the packaged root's typed miss, in either order.
+    systems_paths = {
+        "packaged_only": ("default",),
+        "unavailable_last": ("default", str(tmp_path)),
+        "unavailable_first": (str(tmp_path), "default"),
+    }[systems_order]
     config = ForwardPassPerfModelConfig(
         model="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
         system="h100_sxm",
@@ -1532,14 +1540,19 @@ def test_nemotron_super_fp8_auto_degrades_to_hybrid_on_the_missing_mamba2_table(
         moe_tp_size=1,
         moe_ep_size=4,
         kv_block_size=16,
+        systems_paths=systems_paths,
     )
     model = RustForwardPassPerfModel.best_available(config)
     try:
         provenance = model.diagnostics()["provenance"]
+        assert model.diagnostics()["readiness"] == "ready"
         assert provenance["requested_estimation_mode"] == "auto"
         assert provenance["selected_estimation_mode"] == "op_level"
         assert provenance["requested_database_mode"] == "SILICON"
         assert provenance["selected_database_mode"] == "HYBRID"
+        packaged = str(resources.files("aisim_core") / "systems")
+        assert provenance["selected_systems_root"] == packaged
+        assert provenance["config"]["systems_paths"] == [packaged]
         assert provenance["config"]["database_mode"] == "HYBRID"
         assert provenance["config"]["estimation_mode"] == "op_level"
         assert provenance["config"]["fallback_policy"] == "deny"
