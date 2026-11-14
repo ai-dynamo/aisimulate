@@ -11,13 +11,11 @@ import yaml
 from dynamo.replay.simulation import DynamoReplayRunnerFactory
 from pydantic import ValidationError
 
-from aisimulate.sweeper import SmartSearchConfig, Sweeper
+from aisim.sweeper import SmartSearchConfig, Sweeper
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Run a Sweeper sweep with Dynamo Replay"
-    )
+    parser = argparse.ArgumentParser(description="Run a Sweeper sweep with Dynamo Replay")
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
 

@@ -3,7 +3,7 @@
 
 //! Shared infrastructure for the operator layer.
 //!
-//! Mirrors `aisimulate.sdk.performance_result.PerformanceResult` and the
+//! Mirrors `aisim.sdk.performance_result.PerformanceResult` and the
 //! `Operation` base class. Each per-family operator (`operators/gemm.rs`
 //! etc.) owns its own struct with config-time parameters and a `query`
 //! method that takes a `&PerfDatabase` plus its runtime args and returns

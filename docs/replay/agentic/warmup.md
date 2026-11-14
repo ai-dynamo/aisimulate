@@ -190,7 +190,7 @@ unchanged when the policy is omitted.
 The policy follows the accelerated request-count warmup contract in
 [AIPerf `754356e9`](https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py):
 
-AISimulate additionally scales source-clock primer leads using its trace-arrival
+AISim additionally scales source-clock primer leads using its trace-arrival
 `speedup`; the reference has no such scaling knob. `speedup: 1` preserves the
 reference's primer timing.
 
@@ -233,7 +233,7 @@ unbounded continuous-profile livelock guard remains enabled afterward.
 This is native functional qualification, not a claim of byte-exact HTTP prompt
 or hardware-performance parity. The reference's sampler must be aligned with
 [imported initial selections](../workloads.md#agentic-snapshot); identical
-seeds alone are insufficient. AISimulate still uses its normalized dependency
+seeds alone are insufficient. AISim still uses its normalized dependency
 graph and logical prefix identities, not the reference tokenizer/chat-template
 payloads. Request scheduling ties use stable native graph order, not wall-clock
 callback timing or random UUID ordering. CPU fixtures cover branching,
@@ -270,7 +270,7 @@ the explicit `supports_agentic_primers_only` capability.
 AIPerf 0.13.0 caps warmup leads only with a trace idle-gap cap, which the
 `inferencex-agentx-mvp` scenario forbids; later AIPerf caps them at its system
 idle-gap cap ([#1413](https://github.com/ai-dynamo/aiperf/pull/1413)). AIPerf
-aborts only when a root conversation's primer fails, while AISimulate stops at
+aborts only when a root conversation's primer fails, while AISim stops at
 any failed primer, as with its other policies. Compare against a real AIPerf run
 only with the matching AIPerf version.
 
@@ -289,7 +289,7 @@ These references identify behavior, not a claim that website prose, figures, or 
 The [retained source audit](../../../benchmarks/evidence/accuracy/replay-evidence.md)
 records the original comparison and review boundary.
 
-AISimulate uses its native dependency graph, a versioned BLAKE3-based snapshot
+AISim uses its native dependency graph, a versioned BLAKE3-based snapshot
 sample (or imported cuts), and disjoint per-play token identities. The default
 warmup repeats saved primer inputs; `live_trajectory_v1` advances the graph as
 described above, and `primers_only` stops after the primers. Matching

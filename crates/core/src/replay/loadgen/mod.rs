@@ -9,7 +9,6 @@ mod lineage;
 mod phase;
 mod profile;
 mod snapshot;
-mod steppable;
 mod trace;
 mod types;
 mod weka;
@@ -37,7 +36,6 @@ pub use snapshot::{
     AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,
     AgenticSnapshotSelection, PreparedAgenticSnapshots,
 };
-pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};
 #[doc(hidden)]
 pub use types::CompactReadyTurn;
@@ -55,9 +53,9 @@ pub use types::{
 #[cfg(feature = "python")]
 pub(crate) use weka::load_weka_agentic_graph_cached;
 pub use weka::{
-    WekaClient, WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
-    WekaResolvedTimestampBasis, load_weka_agentic_graph, load_weka_agentic_graph_with_options,
-    load_weka_agentic_rows, stream_weka_agentic_rows,
+    WekaChatTemplate, WekaClient, WekaImportOptions, WekaImportSummary, WekaImporter,
+    WekaNestedTimestampBasis, WekaResolvedTimestampBasis, load_weka_agentic_graph,
+    load_weka_agentic_graph_with_options, load_weka_agentic_rows, stream_weka_agentic_rows,
 };
 #[cfg(feature = "python")]
 pub(crate) use weka_lengths::scan_weka_requests;

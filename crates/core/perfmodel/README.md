@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Performance-model implementation
 
-AISimulate's performance model lives under
+AISim's performance model lives under
 [`src/perfmodel`](../src/perfmodel/). Python lowers registered model descriptions
 to a versioned operation plan; Rust evaluates that plan with measured or
 analytical operations. The canonical forward-pass estimator additionally owns
@@ -21,7 +21,7 @@ Start with the [performance-model documentation](../../../docs/perf-model/README
 
 For estimator consumers, use `ForwardPassPerfModel::best_available` with the
 canonical `ForwardPassPerfModelConfig`. `AicEngineBuilder` is a lower-level
-compiled-engine builder. Native construction requires the matching `aisimulate`
+compiled-engine builder. Native construction requires the matching `aisim`
 wheel and Python feature; explicit regression construction does not.
 
 The exported wire-schema constants define binary compatibility. Recompile

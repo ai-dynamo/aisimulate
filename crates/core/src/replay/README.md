@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# AISimulate Replay implementation
+# AISim Replay implementation
 
 This module owns Dynamo-neutral virtual time, worker lifecycle, placement/scaling
 composition and reports. The engine owns scheduling and cache allocation;

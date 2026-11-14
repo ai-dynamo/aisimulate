@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{EstimatorConfig, ForwardPassWorkerType};
 use crate::common::enums::{DatabaseMode, EncoderParallel, TransferPolicy};
-use crate::{AicError, BackendKind};
+use crate::{AfdPoolRole, AfdRoutingLocation, AicError, BackendKind};
 
 const fn one() -> u32 {
     1
@@ -342,6 +342,12 @@ define_config! {
 /// This is the one public construction schema shared by Rust, Python, Replay,
 /// Sweeper, and Planner. Estimator-specific tuning controls live in `estimator_config`.
 pub struct ForwardPassPerfModelConfig {
+    /// AFD routing identity, absent for ordinary forward-pass models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub afd_routing_location: Option<AfdRoutingLocation>,
+    /// Selective AFD pool compilation; absent for ordinary agg models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub afd_pool_role: Option<AfdPoolRole>,
     pub model: String,
     pub system: String,
     pub backend: BackendKind,
@@ -487,6 +493,8 @@ impl ForwardPassPerfModelConfig {
         worker_type: ForwardPassWorkerType,
     ) -> Self {
         Self {
+            afd_routing_location: None,
+            afd_pool_role: None,
             model: model.into(),
             system: system.into(),
             backend,
@@ -807,6 +815,29 @@ impl ForwardPassPerfModelConfig {
             return Err(invalid_config(
                 "learned sources require explicit estimation_mode='fpm_learned'",
             ));
+        }
+        if self.afd_pool_role.is_some()
+            && !matches!(
+                self.estimation_mode,
+                EstimationMode::Auto | EstimationMode::OpLevel
+            )
+        {
+            return Err(invalid_config(
+                "AFD pool compilation requires op_level estimation",
+            ));
+        }
+        if self.afd_pool_role.is_some()
+            && (self.backend != BackendKind::Sglang
+                || self.pp != 1
+                || self.cp_size.unwrap_or(1) != 1
+                || self.dcp.unwrap_or(1) != 1)
+        {
+            return Err(invalid_config(
+                "AFD pool compilation requires SGLang, PP1, CP1 and DCP1",
+            ));
+        }
+        if let Some(location) = self.afd_routing_location {
+            location.ensure_supported()?;
         }
         if self.estimator_config.fpm_interpolation.collect_coverage
             && (self.estimation_mode != EstimationMode::FpmInterpolation
@@ -1505,6 +1536,86 @@ mod tests {
                 .to_string()
                 .contains("fpm_learned does not support speculative decoding")
         );
+    }
+
+    #[test]
+    fn afd_routing_identity_round_trips_and_fails_before_fallback() {
+        for location in ["a", "f"] {
+            let cfg = config(serde_json::json!({"afd_routing_location": location}));
+            let saved = serde_json::to_value(&cfg).unwrap();
+            assert_eq!(saved["afd_routing_location"], location);
+            assert_eq!(
+                serde_json::from_value::<ForwardPassPerfModelConfig>(saved).unwrap(),
+                cfg
+            );
+        }
+        for policy in ["deny", "allow", "regression"] {
+            let cfg = config(serde_json::json!({
+                "afd_routing_location": "f", "fallback_policy": policy,
+                "model": "missing/model", "systems_paths": ["/does/not/exist"]
+            }));
+            assert!(matches!(
+                crate::ForwardPassPerfModel::best_available(cfg),
+                Err(AicError::NotImplemented(_))
+            ));
+        }
+        assert!(
+            !serde_json::to_value(config(serde_json::json!({})))
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("afd_routing_location")
+        );
+    }
+
+    #[test]
+    fn afd_pool_identity_requires_op_level_sglang_without_pipeline_or_context_parallelism() {
+        for role in ["a", "f"] {
+            for mode in ["auto", "op_level"] {
+                // Missing CP/DCP identities retain their existing effective width of one.
+                config(serde_json::json!({
+                    "afd_pool_role": role, "backend": "sglang", "estimation_mode": mode
+                }))
+                .validate()
+                .unwrap();
+            }
+            for mode in ["fpm_interpolation", "fpm_regression", "fpm_learned"] {
+                let mut value = serde_json::json!({
+                    "afd_pool_role": role, "backend": "sglang", "estimation_mode": mode
+                });
+                if mode == "fpm_learned" {
+                    value["estimator_config"] = serde_json::json!({
+                        "fpm_learned": {"artifact_path": "seed.json", "adaptation": "frozen"}
+                    });
+                }
+                assert!(
+                    config(value)
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("AFD pool compilation requires op_level")
+                );
+            }
+            for invalid in [
+                serde_json::json!({"backend": "vllm"}),
+                serde_json::json!({"pp": 2}),
+                serde_json::json!({"cp_size": 2}),
+                serde_json::json!({"dcp": 2}),
+            ] {
+                let mut value = serde_json::json!({"afd_pool_role": role, "backend": "sglang"});
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(invalid.as_object().unwrap().clone());
+                assert!(
+                    config(value)
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("AFD pool compilation requires SGLang, PP1, CP1 and DCP1")
+                );
+            }
+        }
     }
 
     #[test]

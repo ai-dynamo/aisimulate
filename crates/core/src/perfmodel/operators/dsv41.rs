@@ -579,7 +579,7 @@ mod tests {
 
     fn test_db(mode: DatabaseMode) -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems");
+            .join("../../python/aisim/src/aisim_core/systems");
         PerfDatabase::load(&root, "gb300", "sglang", "0.5.14")
             .unwrap()
             .with_mode(mode, TransferPolicy::ALL)

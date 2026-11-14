@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aisimulate_core::{AicError, ForwardPassSpeculationConfig};
+use aisim_core::{AicError, ForwardPassSpeculationConfig};
 use serde_json::{Value, json};
 
 fn config(value: Value) -> ForwardPassSpeculationConfig {

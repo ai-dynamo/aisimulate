@@ -39,7 +39,7 @@ from scripts.pages.prepare_e2e_accuracy_pages import (
 from scripts.pages.prepare_fpm_accuracy_pages import unpack as unpack_fpm
 from scripts.pages.prepare_fpm_accuracy_pages import validate_artifact as validate_fpm
 
-REPO = "ai-dynamo/aisimulate"
+REPO = "ai-dynamo/aisim"
 LA = ZoneInfo("America/Los_Angeles")
 WORKFLOWS = {"e2e": "e2e-accuracy.yml", "fpm": "fpm-accuracy.yml"}
 REPORT_WORKFLOW = ".github/workflows/accuracy-digest.yml"

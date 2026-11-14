@@ -6,7 +6,7 @@
 //! [`Replayer`] owns virtual time, the event queue, logical-worker lifecycle,
 //! placement/scaling policy composition, and report collection. Engine
 //! scheduling and timing are supplied by [`crate::engine`] through its
-//! generalized-engine contract. Dynamo integrations depend on `aisimulate-core` and
+//! generalized-engine contract. Dynamo integrations depend on `aisim-core` and
 //! provide placement/scaling policies; replay never depends back on Dynamo.
 
 mod agg;
@@ -120,6 +120,9 @@ pub use capture::{CANONICAL_SELECTOR_SEED, ReplayCaptureOptions, ReplayDetermini
 pub use components::TrafficStats;
 #[doc(hidden)]
 pub use components::{NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation};
+/// Cross-crate integration seam; see `docs/replay/api/rust.md`.
+#[doc(hidden)]
+pub use core::ReplayWorkloadSource;
 pub use core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 pub use core::{EngineEventBatch, NoEngineEvents};
 pub use core::{
