@@ -446,6 +446,9 @@ class KVCacheEstimator:
         # token, while rank-local per-request state (Kimi-K3 KDA) stays whole
         # (BaseModel.get_kvcache_rank_*). The per-token figure and the
         # byte-budget -> token-count inverse must see the same striping.
+        # Subtract the zero-token footprint so fixed request state (e.g. Mamba)
+        # is not exported as a per-token byte rate. The model's capacity inverse
+        # still reserves that state for the scheduler slots.
         # Duck-typed model doubles without the rank hooks keep the full KV.
         rank_bytes_per_sequence = getattr(
             model, "get_kvcache_rank_bytes_per_sequence", model.get_kvcache_bytes_per_sequence
@@ -470,7 +473,7 @@ class KVCacheEstimator:
                 "pre_model_load_overhead_bytes": (
                     runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
                 ),
-                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1)),
+                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1) - rank_bytes_per_sequence(0)),
                 "kvcache_quant_mode": (
                     model_config.kvcache_quant_mode.name if model_config.kvcache_quant_mode is not None else None
                 ),

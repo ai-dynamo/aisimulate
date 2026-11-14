@@ -46,7 +46,7 @@ def _qwen35_mixed_precision_gemm_modes(
 
     modes = {"projection": default, "dense_ffn": default, "shared_expert": default, "gdn_ba": default}
     explicit: set[str] = set()
-    gdn_ba_shards: set[str] = set()
+    gdn_ba_shards: dict[str, set[str]] = {}
     gdn_ba_modes: set[common.GEMMQuantMode] = set()
     algo_modes = {
         "fp8": common.GEMMQuantMode.fp8_static,
@@ -79,12 +79,11 @@ def _qwen35_mixed_precision_gemm_modes(
                 continue
             target_name = str(target).lower()
             category = None
-            shard = next(
-                (s for s in ("in_proj_ba", "in_proj_a", "in_proj_b") if f".linear_attn.{s}" in target_name), None
-            )
-            if shard is not None:
+            module, _, projection = target_name.partition(".linear_attn.")
+            shard = projection.split(".", 1)[0]
+            if shard in ("in_proj_ba", "in_proj_a", "in_proj_b"):
                 category = "gdn_ba"
-                gdn_ba_shards.add(shard)
+                gdn_ba_shards.setdefault(module, set()).add(shard)
                 gdn_ba_modes.add(mode)
             elif ".linear_attn." in target_name or ".self_attn." in target_name:
                 category = "projection"
@@ -103,13 +102,14 @@ def _qwen35_mixed_precision_gemm_modes(
         modes["shared_expert"] = common.GEMMQuantMode.bfloat16
     if "dense_ffn" not in explicit and any(".mlp" in p and "shared_expert" not in p for p in exclusions):
         modes["dense_ffn"] = common.GEMMQuantMode.bfloat16
-    if "in_proj_ba" not in gdn_ba_shards and len(gdn_ba_shards) == 1:
-        (listed,) = gdn_ba_shards
-        unlisted = "in_proj_b" if listed == "in_proj_a" else "in_proj_a"
-        raise ValueError(
-            f"quantized_layers list the GDN {listed} projection but not {unlisted}; "
-            "their fused in_proj_ba GEMM cannot mix precisions"
-        )
+    for module, shards in gdn_ba_shards.items():
+        if "in_proj_ba" not in shards and len(shards) == 1:
+            (listed,) = shards
+            unlisted = "in_proj_b" if listed == "in_proj_a" else "in_proj_a"
+            raise ValueError(
+                f"quantized_layers list the GDN {listed} projection but not {unlisted} "
+                f"in {module}.linear_attn; their fused in_proj_ba GEMM cannot mix precisions"
+            )
     if len(gdn_ba_modes) > 1:
         raise ValueError(
             "quantized_layers list the GDN in_proj_a and in_proj_b projections at more than one precision; "

@@ -221,6 +221,37 @@ def _tp_config(tp):
     return config.ModelConfig(tp_size=tp, pp_size=1, moe_tp_size=tp, moe_ep_size=1, attention_dp_size=1)
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("max_batch_size", [1, 8])
+def test_public_kv_estimate_separates_token_rate_from_mamba_slot_state(backend, max_batch_size):
+    from aisim_core.sdk import estimate_kv_cache
+
+    estimate = estimate_kv_cache(
+        "nvidia/Nemotron-H-56B-Base-8K",
+        "h200_sxm",
+        backend,
+        tp_size=4,
+        kvcache_quant_mode="bfloat16",
+        max_num_tokens=8192,
+        max_batch_size=max_batch_size,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.9,
+        tolerance_fraction=0.05,
+    )
+    # Bundled 56B geometry at TP4: 10 attention layers x 2 KV x 2 heads
+    # x 128 head dim x 2 B = 10,240 B/token. Each of 54 Mamba layers holds
+    # 64 x 64 x 256 x 4 B SSM + (64 x 64 + 2 x 2 x 256) x 3 x 2 B conv.
+    state_bytes, per_token_bytes = 228_151_296, 10_240
+    assert estimate["source"] == "native"
+    assert estimate["kv_size_per_token_bytes"] == per_token_bytes
+    for result in (estimate, estimate["tolerance_adjusted"]):
+        assert result["total_kv_size_tokens"] > 0
+        assert (
+            result["total_kv_size_tokens"]
+            == (result["total_kv_size_bytes"] - max_batch_size * state_bytes) // per_token_bytes
+        )
+
+
 @pytest.mark.parametrize(
     ("tp", "state_bytes", "kv_bytes_per_token"),
     [

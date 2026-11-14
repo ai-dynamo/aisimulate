@@ -591,6 +591,44 @@ def test_qwen35_gdn_ba_pair_with_mixed_shards_fails_loudly(shards, message):
         )
 
 
+@pytest.mark.parametrize("other_shard", ["in_proj_b", "in_proj_ba"])
+@pytest.mark.parametrize("metadata_source", ["quantization_config", "hf_quant_config", "split"])
+def test_qwen35_gdn_ba_shards_from_other_layers_do_not_complete_a_pair(other_shard, metadata_source, monkeypatch):
+    import aisim_core.sdk.models as core_models
+
+    model_name = "nvidia/Qwen3.6-27B-NVFP4"
+    with _offline_bundle(monkeypatch):
+        model_info = copy.deepcopy(core_models._get_model_info(model_name))
+        raw_config = model_info["raw_config"]
+        layers = raw_config["quantization_config"]["quantized_layers"]
+        modules = [key.removesuffix("in_proj_qkv") for key in layers if key.endswith(".linear_attn.in_proj_qkv")]
+        first = {f"{modules[0]}in_proj_a": {"quant_algo": "NVFP4"}}
+        second = {f"{modules[1]}{other_shard}": {"quant_algo": "NVFP4"}}
+        if metadata_source == "quantization_config":
+            layers.update(first | second)
+        else:
+            hf_layers = first | second if metadata_source == "hf_quant_config" else second
+            raw_config["hf_quant_config"] = {"quantization": {"quantized_layers": hf_layers}}
+            if metadata_source == "split":
+                layers.update(first)
+        monkeypatch.setattr(core_models, "_get_model_info", lambda _model_path: model_info)
+        with pytest.raises(ValueError, match="but not in_proj_b"):
+            get_model(model_name, _model_config(), backend_name="trtllm")
+
+
+def test_qwen35_gdn_ba_shards_in_one_module_can_span_metadata_sources():
+    from aisim_core.sdk.models.qwen35 import _qwen35_mixed_precision_gemm_modes
+
+    raw_config = _qwen35_gdn_ba_raw_config({"in_proj_a": "NVFP4"})
+    raw_config["hf_quant_config"] = {
+        "quantization": {
+            "quantized_layers": {"model.language_model.layers.0.linear_attn.in_proj_b": {"quant_algo": "NVFP4"}}
+        }
+    }
+    modes = _qwen35_mixed_precision_gemm_modes(raw_config, common.GEMMQuantMode.fp8_static, allow_checkpoint_split=True)
+    assert modes[3] == common.GEMMQuantMode.nvfp4
+
+
 @pytest.mark.parametrize(
     ("shards", "expected"),
     [
