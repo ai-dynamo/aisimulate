@@ -579,11 +579,16 @@ mod tests {
     fn enum_kernel_source_passes_the_source_filter() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("enum.parquet");
-        let schema =
-            "message t { REQUIRED BYTE_ARRAY kernel_source (ENUM); REQUIRED DOUBLE latency; }";
+        let schema = "message t { REQUIRED BYTE_ARRAY kernel_source (ENUM); \
+             REQUIRED DOUBLE latency; REQUIRED BYTE_ARRAY gemm_dtype (UTF8); \
+             REQUIRED INT64 m; REQUIRED INT64 n; REQUIRED INT64 k; }";
         write_file(&path, schema, 1, |rg| {
             column::<ByteArrayType>(rg, &[ByteArray::from("measured_kernel")], None, None);
             column::<DoubleType>(rg, &[1.5], None, None);
+            column::<ByteArrayType>(rg, &[ByteArray::from("float16")], None, None);
+            column::<Int64Type>(rg, &[8], None, None);
+            column::<Int64Type>(rg, &[16], None, None);
+            column::<Int64Type>(rg, &[32], None, None);
         });
         let reader = PerfReader::open(&path).unwrap();
         let ks_col = reader.col_optional("kernel_source");
@@ -591,6 +596,25 @@ mod tests {
         assert_eq!(row.str_optional(ks_col).unwrap(), Some("measured_kernel"));
         let allow = ["measured_kernel".to_string()];
         assert!(crate::perf_database::kernel_source_ok(Some(&allow), ks_col, &row).unwrap());
+
+        // Exercise the public table-view consumer through fold_sources_grouped,
+        // so an optional string conversion cannot silently discard a matching row.
+        let view = |filter| {
+            let sources = [crate::perf_database::PerfSource(path.clone(), filter)];
+            let view = crate::perf_database::table_view::view_gemm(&sources)
+                .unwrap()
+                .unwrap();
+            serde_json::from_str::<serde_json::Value>(&view.to_json()).unwrap()
+        };
+        let expected = serde_json::json!({
+            "float16": {"8": {"16": {"32": {"latency": 1.5, "power": 0.0, "energy": 0.0}}}}
+        });
+        assert_eq!(view(Some(allow.to_vec())), expected);
+        assert_eq!(view(None), expected);
+        assert_eq!(
+            view(Some(vec!["another_kernel".to_string()])),
+            serde_json::json!({})
+        );
     }
 
     /// Every annotation read as a string: the decoder itself checks only
