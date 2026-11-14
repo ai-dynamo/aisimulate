@@ -553,3 +553,14 @@ def test_canonical_api_resolves_nvfp4_lanes_under_the_selected_systems_root(monk
     (model,) = built
     assert _buckets(model.context_ops)["shared_down_gemm"] == _PUBLISHED[SUPER](NVFP4)["shared_down_gemm"]
     assert set(_experts(model)) == {MOE.nvfp4}
+
+
+@pytest.mark.parametrize("explicit", [{}, {"gemm_quant_mode": BF16, "moe_quant_mode": MOE.fp8}])
+def test_rebuilding_from_the_same_config_keeps_per_layer_precision(explicit):
+    config = ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1, system="gb200", **explicit)
+    models = [get_model(SUPER, config, backend_name="vllm") for _ in range(2)]
+    buckets = [(_buckets(m.context_ops), _experts(m)) for m in models]
+    weights = [sum(op.get_weights() for op in m.context_ops) for m in models]
+    assert buckets[0] == buckets[1] and weights[0] == weights[1]
+    # Without overrides, Super keeps its FP8 and BF16 Mamba input projections.
+    assert len(buckets[1][0]["mamba_in_proj_gemm"]) == (1 if explicit else 2)

@@ -217,14 +217,13 @@ def get_model(
     # Preserve caller intent before checkpoint defaults fill unset modes.
     # Model-specific mixed-precision splitters use this provenance rather than
     # trying to infer explicitness by comparing enum values after mutation.
-    gemm_explicit = getattr(model_config, "_gemm_quant_mode_is_explicit", None)
-    model_info["gemm_quant_mode_is_explicit"] = (
-        model_config.gemm_quant_mode is not None if gemm_explicit is None else gemm_explicit
-    )
-    moe_explicit = getattr(model_config, "_moe_quant_mode_is_explicit", None)
-    model_info["moe_quant_mode_is_explicit"] = (
-        model_config.moe_quant_mode is not None if moe_explicit is None else moe_explicit
-    )
+    # It is recorded on the config, so building again from the same config
+    # still treats the filled-in modes as inferred.
+    for kind in ("gemm", "moe"):
+        flag = f"_{kind}_quant_mode_is_explicit"
+        if getattr(model_config, flag, None) is None:
+            setattr(model_config, flag, getattr(model_config, f"{kind}_quant_mode") is not None)
+        model_info[f"{kind}_quant_mode_is_explicit"] = getattr(model_config, flag)
     _apply_model_quant_defaults(model_config, raw_config, architecture, backend_name)
     if check_is_moe(model_path, model_info=model_info):
         try:
