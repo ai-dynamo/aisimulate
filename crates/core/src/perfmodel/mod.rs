@@ -35,6 +35,7 @@ pub mod engine;
 pub mod execution_profile;
 pub(crate) mod fpm;
 pub(crate) mod kd_tree;
+pub(crate) mod memo;
 pub mod memory;
 pub(crate) mod operators;
 pub(crate) mod perf_database;
