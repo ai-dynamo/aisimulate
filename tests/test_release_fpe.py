@@ -196,20 +196,26 @@ def test_identity_rejects_wrong_source_and_modified_checkouts(tmp_path):
 def test_wheel_requires_exactly_one_package(tmp_path):
     with pytest.raises(ValueError, match="exactly one"):
         RELEASE.wheel_identity(tmp_path)
-    (tmp_path / "aisimulate-one.whl").write_bytes(b"one")
-    (tmp_path / "aisimulate-two.whl").write_bytes(b"two")
+    (tmp_path / "aisim-one.whl").write_bytes(b"one")
+    (tmp_path / "aisim-two.whl").write_bytes(b"two")
     with pytest.raises(ValueError, match="exactly one"):
         RELEASE.wheel_identity(tmp_path)
 
 
-def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_path):
+@pytest.mark.parametrize(
+    ("package", "application"), [("aisimulate", "aisimulate"), ("aisim", "aisimulate"), ("aisim", "aisim")]
+)
+@pytest.mark.parametrize("import_fault", [None, "external", "no-origin", "missing", "unowned"])
+def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_path, package, application, import_fault):
     names = [
-        "aisimulate/__init__.py",
-        "aisimulate/_runtime.so",
-        "aisimulate_core/__init__.py",
-        "aisimulate_core/_native.py",
+        f"{application}/__init__.py",
+        f"{application}/_runtime.so",
+        f"{application}_core/__init__.py",
+        f"{application}_core/_native.py",
     ]
-    wheel = tmp_path / "aisimulate-test.whl"
+    if application == "aisim":
+        names += ["aisimulate/__init__.py", "aisimulate_core/__init__.py"]
+    wheel = tmp_path / f"{package}-test.whl"
     site = tmp_path / "site"
     with zipfile.ZipFile(wheel, "w") as archive:
         for name in names:
@@ -217,23 +223,41 @@ def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_pat
             path = site / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("release bytes")
-    dist = SimpleNamespace(files=names, locate_file=lambda p: site / p)
+    runtime = f"{application}._runtime"
+    owned = [name for name in names if import_fault != "unowned" or name != f"{application}/_runtime.so"]
+    dist = SimpleNamespace(files=owned, locate_file=lambda p: site / p)
 
     def find_spec(name):
-        path = "aisimulate/_runtime.so" if name == "aisimulate._runtime" else name + "/__init__.py"
+        # Modern compatibility imports can have an alias loader with no origin;
+        # the native implementation must be verified under its canonical name.
+        if application == "aisim" and name == "aisimulate._runtime":
+            return SimpleNamespace(origin=None)
+        if name == runtime:
+            if import_fault == "missing":
+                return None
+            if import_fault == "no-origin":
+                return SimpleNamespace(origin=None)
+            if import_fault == "external":
+                return SimpleNamespace(origin="/other/_runtime.so")
+        path = f"{application}/_runtime.so" if name == runtime else name + "/__init__.py"
         return SimpleNamespace(origin=str(site / path))
 
-    with patch.object(RELEASE.importlib.util, "find_spec", side_effect=find_spec):
+    with patch.object(RELEASE.importlib.util, "find_spec", side_effect=find_spec) as lookup:
+        if import_fault:
+            with pytest.raises(ValueError, match="not imported"):
+                RELEASE.verify_installed_wheel(wheel, distribution=dist)
+            return
         RELEASE.verify_installed_wheel(wheel, distribution=dist)
-        (site / names[0]).write_text("different source")
-        with pytest.raises(ValueError, match="differs"):
-            RELEASE.verify_installed_wheel(wheel, distribution=dist)
-        (site / names[0]).write_text("release bytes")
-    with (
-        patch.object(RELEASE.importlib.util, "find_spec", return_value=SimpleNamespace(origin="/other/__init__.py")),
-        pytest.raises(ValueError, match="not imported"),
-    ):
-        RELEASE.verify_installed_wheel(wheel, distribution=dist)
+        assert call(runtime) in lookup.call_args_list
+        if application == "aisim":
+            assert call("aisimulate._runtime") not in lookup.call_args_list
+        # Canonical implementation files and compatibility aliases must all match.
+        for name in names:
+            path = site / name
+            path.write_text("different source")
+            with pytest.raises(ValueError, match="differs"):
+                RELEASE.verify_installed_wheel(wheel, distribution=dist)
+            path.write_text("release bytes")
 
 
 def reports(root, required):
@@ -308,7 +332,7 @@ def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path, prob
     assert len(rows) == 4
     assert all(
         shlex.split(row["Command"])[3:6]
-        == ["release-source/python/aisimulate/.venv/bin/python", "scripts/fpe/run_release_fpe.py", "probe"]
+        == ["release-source/python/aisim/.venv/bin/python", "scripts/fpe/run_release_fpe.py", "probe"]
         for row in rows
     )
     assert all(SHA in row["Command"] and TOOLING in row["Command"] for row in rows)
@@ -451,7 +475,7 @@ def test_distribution_identity_requires_exactly_one_installed_product(monkeypatc
 
 @pytest.mark.parametrize("installed", [(), ("aisim",), ("aisimulate",), ("aisim", "aisimulate")])
 def test_installed_package_verifier_rejects_old_application_overlap(monkeypatch, installed):
-    path = ROOT / "python/aisimulate/tools/verify_installed_package_layers.py"
+    path = ROOT / "python/aisim/tools/verify_installed_package_layers.py"
     spec = importlib.util.spec_from_file_location("verify_installed_layers", path)
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)

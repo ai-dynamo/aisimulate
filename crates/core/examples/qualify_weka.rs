@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use aisimulate_core::replay::loadgen::{AgenticGraphBuilder, WekaImporter};
+use aisim_core::replay::loadgen::{AgenticGraphBuilder, WekaImporter};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
@@ -94,7 +94,7 @@ fn qualify(path: &Path, materialized: Option<&Path>) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aisimulate_core::replay::loadgen::{load_agentic_mooncake, load_weka_agentic_graph};
+    use aisim_core::replay::loadgen::{load_agentic_mooncake, load_weka_agentic_graph};
 
     #[test]
     fn materialized_output_reloads_without_changing_the_qualification_summary() {

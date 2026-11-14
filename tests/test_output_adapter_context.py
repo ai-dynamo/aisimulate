@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from aisimulate.output_adapter import (
+from aisim.output_adapter import (
     OUTPUT_ADAPTER_API_VERSION,
     OutputAdapterExecutionError,
     RecommendationOutputCallbacks,
@@ -97,7 +97,7 @@ def test_no_context_means_subscribe_is_called_as_before() -> None:
     assert seen == [None]
 
 
-# -- signature compatibility (review of aisimulate#384) ------------------------
+# -- signature compatibility (review of aisim#384) ------------------------
 
 
 def _legacy_positional_only(self: Any, config: Any, context: Any = None, /) -> None:
@@ -170,7 +170,7 @@ def test_a_type_error_from_the_adapter_body_is_not_retried_as_legacy() -> None:
     assert len(calls) == 1
 
 
-# -- isolation (review of aisimulate#384) ---------------------------------------
+# -- isolation (review of aisim#384) ---------------------------------------
 
 
 def test_subscribers_cannot_change_the_workload_the_search_uses_or_each_other() -> None:

@@ -13,11 +13,11 @@ from test_host_offload_cli import (
     _RecordingRuntime,
 )
 
-from aisimulate import main as cli
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.engine import G3OffloadConfig
-from aisimulate.runner import EngineReplayRunnerFactory
+from aisim import main as cli
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.engine import G3OffloadConfig
+from aisim.runner import EngineReplayRunnerFactory
 
 
 def _g3_offload() -> dict:
@@ -124,7 +124,7 @@ def test_predict_cli_passes_g3_to_runtime(tmp_path, monkeypatch, capsys, scope) 
 @pytest.mark.parametrize("scope", ["worker_local", "cluster_shared"])
 @pytest.mark.parametrize("capacity", [1, 2, 4096])
 def test_predict_cli_runs_g3_through_real_rust_runtime(tmp_path, capsys, scope, capacity) -> None:
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     assert callable(_runtime.run_replay_json)
     engine = _prediction_engine()
@@ -239,7 +239,7 @@ def test_documented_g3_extension_validates_and_lowers_with_host_example(monkeypa
     cache.update(extension)
     prediction = CorePredictionConfig.model_validate(config)
     # Validate lowering without downloading the example's gated model metadata.
-    monkeypatch.setattr("aisimulate.compiler.estimate_kv_bytes_per_token", lambda *_args, **_kwargs: 256)
+    monkeypatch.setattr("aisim.compiler.estimate_kv_bytes_per_token", lambda *_args, **_kwargs: 256)
     deployment = prediction_to_replay_spec(prediction).backend_deployment
     assert deployment.agg_engine_args["kv_cache_bytes_per_token"] == 256
     assert (

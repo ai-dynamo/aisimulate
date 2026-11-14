@@ -486,9 +486,7 @@ def test_cli_qualifies_only_complete_pinned_snapshots(
         cli.importlib,
         "import_module",
         lambda name: (
-            SimpleNamespace(RustForwardPassPerfModel=object())
-            if name == "aisimulate_core.sdk"
-            else original_import(name)
+            SimpleNamespace(RustForwardPassPerfModel=object()) if name == "aisim_core.sdk" else original_import(name)
         ),
     )
     monkeypatch.setattr(

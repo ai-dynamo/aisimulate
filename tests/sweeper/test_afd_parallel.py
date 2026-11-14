@@ -5,7 +5,7 @@
 
 import pytest
 
-from aisimulate.sweeper import AFDInfeasible, AFDReasonCategory, AFDSearchConfig, AFDTopology, enumerate_afd_topologies
+from aisim.sweeper import AFDInfeasible, AFDReasonCategory, AFDSearchConfig, AFDTopology, enumerate_afd_topologies
 
 
 def _topology(**overrides):

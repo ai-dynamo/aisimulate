@@ -1,0 +1,2484 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Public onboarding from synthetic, independently validated runtime evidence."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import math
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from collector.fpm_forward.runtime_probe import normalize_probe_launch
+
+import aisim.main as cli
+from aisim.support.checkpoint import _load, report, save_checkpoint
+from aisim.support.schema import SupportRequest
+
+from .collector.test_runtime_observations import observation_fixture
+
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
+
+
+def _write(path, value):
+    path.write_text(json.dumps(value))
+
+
+def _campaign(
+    tmp_path,
+    *,
+    capacity_multiplier=1,
+    context_length=None,
+    tp=2,
+    cpu_policy=True,
+    worker_type=None,
+    model=None,
+    resource_overrides=None,
+    page_bytes=128,
+    block_tokens=(16, 16),
+    layout="attention",
+    decode_prefix_caching=True,
+    checkpoint=None,
+):
+    # The GLM-5.3-Flash records hold the 1,048,576-token context of the live probe record.
+    if context_length is None:
+        context_length = 1_048_576 if layout == "glm_tp4" else 4096
+    index, launches = observation_fixture(
+        tmp_path / "probe",
+        dense=True,
+        tp=tp,
+        layout=layout,
+        decode_prefix_caching=decode_prefix_caching,
+        checkpoint=checkpoint,
+    )
+    launch = launches["tp2"]
+    if cpu_policy:
+        cpus, binding = cpu_policy if isinstance(cpu_policy, tuple) else (16, "cores")
+        launch["deployment"].update(cpus_per_task=cpus, cpu_bind=binding)
+    model_path = Path(launch["model_config"]["path"])
+    config = {
+        "architectures": ["LlamaForCausalLM"],
+        "model_type": "llama",
+        "max_position_embeddings": 4096,
+        "torch_dtype": "bfloat16",
+        "hidden_size": 128,
+        "vocab_size": 1024,
+        "num_hidden_layers": 2,
+        "num_attention_heads": max(4, tp),
+        "num_key_value_heads": max(4, tp),
+        "intermediate_size": 256,
+        "quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "none"},
+    }
+    if layout == "glm_tp4":
+        # The runtime-resolved GLM-5.3-Flash shape: a sparse attention layer after every three linear-attention
+        # layers, and no ordinary head size. The dense probe fixture has no experts.
+        del config["model_type"]
+        config.update(
+            architectures=["Glm5NextForConditionalGeneration"],
+            # The text_config value of the live model config.
+            max_position_embeddings=1_048_576,
+            num_hidden_layers=45,
+            head_dim=0,
+            layer_types=["deepseek_sparse_attention" if index % 4 == 3 else "linear_attention" for index in range(45)],
+            linear_attn_config={"head_dim": 128},
+            num_experts=0,
+        )
+    _write(model_path, config)
+    checkpoint_model = tmp_path / "model-checkpoint"
+    checkpoint_model.mkdir()
+    (checkpoint_model / "config.json").write_bytes(model_path.read_bytes())
+    launch["identity"]["model"] = model or str(checkpoint_model)
+    if model is not None:
+        launch["identity"]["model_revision"] = "4" * 40
+    launch["model_config"]["sha256"] = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    launch["collection"]["max_model_len"] = context_length
+    if worker_type is not None:
+        launch["worker_type"] = worker_type
+        launch["collection"]["cudagraph_mode"] = {
+            "prefill": "PIECEWISE",
+            "decode": "FULL_DECODE_ONLY",
+            "aggregated": "FULL_AND_PIECEWISE",
+        }[worker_type]
+    launch = normalize_probe_launch(launch)
+    document = json.loads(index.read_text())
+    document["configurations"]["tp2"]["launch"] = launch
+    if worker_type in {"prefill", "decode"}:
+        document["configurations"]["tp2"]["attempts"][0]["phases"].pop(
+            "decode" if worker_type == "prefill" else "prefill"
+        )
+    for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
+        for ref in [phase["launch_manifest"], *phase["artifacts"]]:
+            path = index.parent / ref["path"]
+            value = json.loads(path.read_text())
+            value["launch"] = launch
+            if ref.get("kind") == "observation":
+                value["identity"] = launch["identity"]
+                value["resolved_config"]["model_config"].update(
+                    model=launch["identity"]["model"], revision=launch["identity"]["model_revision"]
+                )
+                value["model_config_sha256"] = launch["model_config"]["sha256"]
+                value["resolved_config"]["model_config"]["max_model_len"] = context_length
+                if worker_type is not None:
+                    value["resolved_config"]["compilation_config"]["cudagraph_mode"] = launch["collection"][
+                        "cudagraph_mode"
+                    ]
+                cache = value["cache"]
+                cache["num_blocks"] *= capacity_multiplier
+                if value["kind"] == "worker":
+                    for field in ("available_cache_bytes", "allocated_cache_bytes"):
+                        cache[field] *= capacity_multiplier
+                    for storage in cache["storages"]:
+                        storage["size_bytes"] *= capacity_multiplier
+                    for allocation in cache["tensor_allocations"]:
+                        allocation["size"] *= capacity_multiplier
+                        if "layer_stride" in allocation:
+                            # A vLLM 0.33.0 layer-outer tensor keeps every block of one layer in one region, so its
+                            # regions, and the views in them, move with the pool size.
+                            for position, name in enumerate(allocation["layers"]):
+                                region = allocation["offset"] + position * allocation["layer_stride"]
+                                for view in cache["layer_tensors"][name]:
+                                    view["storage_offset_bytes"] += region * (capacity_multiplier - 1)
+                            allocation["offset"] *= capacity_multiplier
+                            allocation["layer_stride"] *= capacity_multiplier
+                    for views in cache["layer_tensors"].values():
+                        # A vLLM 0.33.0 layer has a list of views; older records have one view per layer.
+                        for view in views if isinstance(views, list) else [views]:
+                            view["shape"][view["block_axis"]] *= capacity_multiplier
+                    if page_bytes != 128:
+                        # The fixture gives each pool block one 128-byte page, which both cache groups share.
+                        pool = cache["num_blocks"] * page_bytes
+                        cache.update(available_cache_bytes=pool + 256, allocated_cache_bytes=pool)
+                        cache["storages"][0]["size_bytes"] = cache["tensor_allocations"][0]["size"] = pool
+                        for view in cache["layer_tensors"].values():
+                            view["stride_bytes"][view["block_axis"]] = page_bytes
+                else:
+                    cache["initial_free_blocks"] = cache["num_blocks"] - cache["reserved_blocks"]
+                    if "kv_cache_max_concurrency" in cache:
+                        # A vLLM 0.33.0 scheduler divides its pool blocks by the blocks of one request
+                        # (kv_cache_utils.py:1076-1087), so its concurrency grows with the pool.
+                        cache["kv_cache_max_concurrency"] *= capacity_multiplier
+                if block_tokens != (16, 16):
+                    # The fixture gives both cache groups 16-token blocks, one kernel block per pool block.
+                    for group, tokens in zip(cache["groups"], block_tokens, strict=True):
+                        group["block_size_tokens"] = tokens
+                        if value["kind"] == "worker":
+                            for name in group["layer_names"]:
+                                cache["layer_tensors"][name]["kernel_block_size_tokens"] = tokens
+            _write(path, value)
+            ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+    precision = dict(launch["precision"])
+    precision["kv_cache_dtype"] = precision.pop("kvcache_quant_mode")
+    draft = {
+        **({"worker_type": worker_type} if worker_type is not None else {}),
+        "identity": launch["identity"],
+        "workload": {"input_tokens": 64, "output_tokens": 16, "concurrency": 1, "request_count": 1},
+        "search": {
+            "tensor_parallel": tp,
+            "attention_data_parallel": 1,
+            "moe_tensor_parallel": 1,
+            "moe_expert_parallel": 1,
+            "context_length": context_length,
+        },
+        "collection": {
+            "max_num_tokens": 1024,
+            "max_batch_size": 64,
+            "gpu_memory_utilization": 0.9,
+            "prefill_cudagraph_policy": "runtime",
+            **({"cudagraph_mode": launch["collection"]["cudagraph_mode"]} if worker_type is not None else {}),
+        },
+    }
+    checkpoint = tmp_path / "checkpoint.json"
+    save_checkpoint(
+        checkpoint,
+        patch={
+            "inputs": {"model_config": str(model_path)},
+            "configurations": {
+                name: {
+                    "draft_request": copy.deepcopy(draft),
+                    "inputs": {
+                        "precision": precision,
+                        "collection_deployment": launch["deployment"],
+                        **({"resource_overrides": resource_overrides} if resource_overrides else {}),
+                    },
+                }
+                for name in ("tp2", "incomplete")
+            },
+        },
+        expected_revision=None,
+        accept=[],
+    )
+    return checkpoint, index, launch
+
+
+def _import(checkpoint, index, output, *, configurations=()):
+    args = [
+        "onboard",
+        "import-observations",
+        "--checkpoint",
+        str(checkpoint),
+        "--observations",
+        str(index),
+        "--output-dir",
+        str(output),
+    ]
+    for name in configurations:
+        args.extend(("--configuration", name))
+    return cli.main(args)
+
+
+def test_import_keeps_partial_results_and_memory_is_independent_of_timing(tmp_path, capsys):
+    checkpoint, index, _ = _campaign(tmp_path)
+    assert _import(checkpoint, index, tmp_path / "drafts") == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["configurations"]["tp2"]["status"] == "complete"
+    assert result["configurations"]["incomplete"]["status"] == "incomplete"
+    # Without a cache layout claim, the result names no layout outcome.
+    assert "cache_layout_reason" not in result["configurations"]["tp2"]
+    state = _load(checkpoint)
+    request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
+    assert request.profile_deployment().resources.runtime_memory.kv_cache_bytes == 93 * 128
+    assert state.configurations["tp2"].acceptance is None
+    assert not state.configurations["incomplete"].draft_request.get("fpm_profile")
+    assert state.configurations["incomplete"].progress.status == "blocked"
+    assert state.configurations["incomplete"].progress.blockers == result["configurations"]["incomplete"]["diagnostics"]
+    assert not list((tmp_path / "drafts").rglob("*.parquet"))
+    assert not report(state, checkpoint)["integrity_issues"]
+    previous = next(item for item in state.configurations["tp2"].history if item["event"] == "draft_replaced")
+    assert previous["draft_request"]["search"]["tensor_parallel"] == 2
+
+
+def test_legacy_memory_import_keeps_missing_cpu_policy_and_source_bytes(tmp_path, capsys):
+    checkpoint, index, launch = _campaign(tmp_path, cpu_policy=False)
+    preserved = {path: path.read_bytes() for path in index.parent.rglob("*") if path.is_file()}
+    assert "cpus_per_task" not in launch["deployment"]
+    assert _import(checkpoint, index, tmp_path / "legacy-drafts", configurations=["tp2"]) == 0
+    assert all(path.read_bytes() == contents for path, contents in preserved.items())
+    state = _load(checkpoint)
+    assert "cpus_per_task" not in state.configurations["tp2"].inputs["collection_deployment"]
+    request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
+    assert request.profile_deployment().resources.runtime_memory.kv_cache_bytes == 93 * 128
+    assert not report(state, checkpoint)["integrity_issues"]
+
+
+def test_snapshot_acceptance_survives_unrelated_probe_progress_but_detects_raw_tamper(tmp_path, capsys):
+    checkpoint, index, _ = _campaign(tmp_path)
+    assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
+    capsys.readouterr()
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    document = json.loads(index.read_text())
+    document["configurations"]["unrelated"] = {"attempts": []}
+    _write(index, document)
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+    snapshot = next((tmp_path / "drafts").rglob("worker-0-0.json"))
+    snapshot.write_text("{}")
+    status = report(state, checkpoint)
+    assert not status["configurations"]["tp2"]["profile_accepted"]
+    assert status["integrity_issues"]
+
+
+def test_probe_public_preview_does_not_need_geometry_or_execute_bundle(tmp_path, capsys, monkeypatch):
+    checkpoint, index, _ = _campaign(tmp_path)
+    from collector.fpm_forward import runtime_probe
+
+    calls = []
+
+    def probe(configurations, **kwargs):
+        calls.append((configurations, kwargs))
+        return {"status": "preview", "configurations": {key: {"status": "preview"} for key in configurations}}
+
+    monkeypatch.setattr(runtime_probe, "probe_runtime", probe)
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(tmp_path / "preview"),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    facts, options = calls[0]
+    assert set(facts) == {"tp2", "incomplete"}
+    assert all(value["topology"]["tp"] == 2 for value in facts.values())
+    assert all("cache_groups" not in str(value) for value in facts.values())
+    assert options["execute"] is False
+    assert facts["tp2"]["collection"]["prefill_cudagraph_policy"] == "runtime"
+
+
+@pytest.mark.parametrize("flag,value", [("--cpus-per-task", "32"), ("--cpu-bind", "none")])
+@pytest.mark.parametrize("checkpoint_policy", [True, False])
+def test_public_probe_partial_resume_recovers_saved_policy_before_validation(
+    tmp_path, capsys, monkeypatch, flag, value, checkpoint_policy
+):
+    from collector.fpm_forward import runtime_probe
+
+    checkpoint, index, launch = _campaign(tmp_path, cpu_policy=(32, "none"))
+    from aisim.support import versioning
+
+    monkeypatch.setattr(
+        versioning,
+        "detect_runtime_versions",
+        lambda deployment: {"backend_version": launch["identity"]["framework_version"]},
+    )
+    if checkpoint_policy:
+        assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
+        capsys.readouterr()
+        state = _load(checkpoint)
+        state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+        acceptance = state.configurations["tp2"].acceptance
+    else:
+        state = _load(checkpoint)
+        save_checkpoint(
+            checkpoint,
+            patch={
+                "configurations": {
+                    "tp2": {"inputs": {"collection_deployment": {"cpus_per_task": None, "cpu_bind": None}}}
+                }
+            },
+            expected_revision=state.revision,
+            accept=[],
+        )
+    calls = []
+
+    def reused(configurations, **kwargs):
+        calls.append((configurations, kwargs))
+        return {"status": "completed", "configurations": {"tp2": {"status": "completed", "resumed": True}}}
+
+    monkeypatch.setattr(runtime_probe, "probe_runtime", reused)
+    original = _load(checkpoint).configurations["tp2"].draft_request
+    before = {path: path.read_bytes() for path in index.parent.rglob("*") if path.is_file()}
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(index.parent),
+                "--execute",
+                "--resume",
+                flag,
+                value,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert len(calls) == 1
+    assert calls[0][0]["tp2"]["deployment"] == launch["deployment"]
+    state = _load(checkpoint)
+    assert state.configurations["tp2"].draft_request == original
+    assert state.configurations["tp2"].inputs["collection_deployment"] == launch["deployment"]
+    if checkpoint_policy:
+        assert state.configurations["tp2"].acceptance == acceptance
+        assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+    assert all(path.read_bytes() == contents for path, contents in before.items())
+
+
+def test_real_public_preview_parses_bundle_without_executing_python(tmp_path, capsys):
+    checkpoint, index, _ = _campaign(tmp_path)
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(tmp_path / "preview"),
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "preview"
+    assert set(result["configurations"]["tp2"]["phases"]) == {"prefill", "decode"}
+
+
+@pytest.mark.parametrize("workload", [None, {"input_tokens": 1024, "output_tokens": 128}])
+def test_launch_only_preview_preserves_workload_without_validating_it(tmp_path, capsys, workload):
+    checkpoint, index, _ = _campaign(tmp_path, context_length=512)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": {"workload": workload, "search": {"context_length": 512}}}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    draft = copy.deepcopy(state.configurations["tp2"].draft_request)
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(tmp_path / "preview"),
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert set(result["configurations"]["tp2"]["phases"]) == {"prefill", "decode"}
+    assert _load(checkpoint).configurations["tp2"].draft_request == draft
+    with pytest.raises(ValueError, match="input and output tokens"):
+        SupportRequest.model_validate(draft)
+    # Import reaches real simulation validation, retaining the user's pending
+    # workload rather than inventing a smaller synthetic request.
+    assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert "input and output tokens" in str(result["configurations"]["tp2"]["diagnostics"])
+    assert _load(checkpoint).configurations["tp2"].draft_request == draft
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "diagnostic"),
+    [
+        ("search", "context_length", 0, "context_length"),
+        ("search", "attention_data_parallel", 2, "topology"),
+        ("collection", "max_num_tokens", 1, "max_num_tokens"),
+        ("identity", "model_revision", "main", "pinned revision"),
+    ],
+)
+def test_launch_only_preview_still_rejects_invalid_launch_choices(tmp_path, capsys, section, field, value, diagnostic):
+    checkpoint, index, _ = _campaign(tmp_path)
+    state = _load(checkpoint)
+    save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": {"workload": None, section: {field: value}}}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(tmp_path / "preview"),
+            ]
+        )
+        == 1
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert diagnostic in str(result["configurations"]["tp2"])
+
+
+def test_probe_preserves_symlinked_config_directory_for_adjacent_sources(tmp_path, capsys):
+    from aisim.support.runtime import checkpoint_launch
+
+    checkpoint, index, launch = _campaign(tmp_path)
+    snapshot = tmp_path / "hf-snapshot"
+    snapshot.mkdir()
+    model = snapshot / "config.json"
+    model.symlink_to(launch["model_config"]["path"])
+    blob = tmp_path / "sidecar-blob"
+    _write(blob, {"quantization": {"quant_algo": "NVFP4", "kv_cache_quant_algo": "none"}})
+    (snapshot / "hf_quant_config.json").symlink_to(blob)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(
+        checkpoint, patch={"inputs": {"model_config": str(model)}}, expected_revision=state.revision, accept=[]
+    )
+    _, facts, _ = checkpoint_launch(state, "tp2", checkpoint)
+    assert facts["model_config"]["path"] == str(model)
+    assert facts["model_config"]["sha256"] == launch["model_config"]["sha256"]
+    assert facts["model_config"]["source_files"] == {
+        "hf_quant_config.json": hashlib.sha256(blob.read_bytes()).hexdigest()
+    }
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(tmp_path / "preview"),
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert set(result["configurations"]["tp2"]["phases"]) == {"prefill", "decode"}
+
+
+def test_incomplete_legacy_profile_can_be_saved_incrementally(tmp_path):
+    checkpoint = tmp_path / "checkpoint.json"
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"worker": {"draft_request": {"fpm_profile": {"model": "example/model"}}}}},
+        expected_revision=None,
+        accept=[],
+    )
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"worker": {"draft_request": {"fpm_profile": {"model_revision": "abc123"}}}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    assert state.revision == 2
+    assert state.configurations["worker"].draft_request == {
+        "fpm_profile": {"model": "example/model", "model_revision": "abc123"}
+    }
+    assert state.configurations["worker"].acceptance is None
+
+
+@pytest.mark.parametrize("remove_profile", [False, True])
+def test_changed_scheduler_can_be_saved_and_probed_before_fresh_import(tmp_path, capsys, remove_profile):
+    checkpoint, index, request, _ = _imported(tmp_path, capsys)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    accepted = state.configurations["tp2"].acceptance.model_dump(mode="json")
+    draft = {"collection": {"max_num_tokens": 2048}}
+    if remove_profile:
+        draft["fpm_profile"] = None
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": draft}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    saved = state.configurations["tp2"]
+    assert saved.draft_request["collection"]["max_num_tokens"] == 2048
+    assert saved.acceptance is None
+    assert saved.history[-1]["acceptance"] == accepted
+    if not remove_profile:
+        assert saved.draft_request["fpm_profile"] == request.fpm_profile.model_dump(mode="json", exclude_none=True)
+        # A second edit to an already incomplete request cannot rewrite the
+        # observations or discard source hashes in the imported provenance.
+        edited = copy.deepcopy(saved.draft_request)
+        runtime = edited["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+        provenance = json.loads(runtime["provenance"])
+        provenance["observed_resources"]["runtime_memory"]["kv_cache_bytes"] = 1
+        provenance["source_artifacts"] = []
+        runtime["provenance"] = json.dumps(provenance)
+        state, _ = save_checkpoint(
+            checkpoint,
+            patch={"configurations": {"tp2": {"draft_request": edited}}},
+            expected_revision=state.revision,
+            accept=[],
+        )
+        assert state.configurations["tp2"].draft_request["fpm_profile"] == saved.draft_request["fpm_profile"]
+    with pytest.raises(ValueError):
+        save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(tmp_path / "preview"),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    # A separate synthetic probe captures the selected scheduler envelope.
+    fresh = tmp_path / "fresh-probe"
+    shutil.copytree(index.parent, fresh)
+    fresh_index = fresh / index.name
+    document = json.loads(fresh_index.read_text())
+    entry = document["configurations"]["tp2"]
+    entry["launch"]["collection"]["max_num_batched_tokens"] = 2048
+    for phase in entry["attempts"][0]["phases"].values():
+        for ref in [phase["launch_manifest"], *phase["artifacts"]]:
+            path = fresh / ref["path"]
+            record = json.loads(path.read_text())
+            record["launch"] = entry["launch"]
+            if "resolved_config" in record:
+                record["resolved_config"]["scheduler_config"]["max_num_batched_tokens"] = 2048
+            _write(path, record)
+            ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(fresh_index, document)
+    assert _import(checkpoint, fresh_index, tmp_path / "new-drafts", configurations=["tp2"]) == 0
+    capsys.readouterr()
+    state = _load(checkpoint)
+    assert state.configurations["tp2"].acceptance is None
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_failed_reimport_keeps_accepted_profile_and_historical_error_evidence(tmp_path, capsys):
+    checkpoint, index, _, _ = _imported(tmp_path, capsys)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    previous = copy.deepcopy(state.configurations["tp2"])
+    valid = index.read_bytes()
+    document = json.loads(valid)
+    document["configurations"]["tp2"]["attempts"] = []
+    _write(index, document)
+    failed = tmp_path / "failed-drafts"
+    assert _import(checkpoint, index, failed, configurations=["tp2"]) == 1
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    state = _load(checkpoint)
+    saved = state.configurations["tp2"]
+    assert saved.acceptance == previous.acceptance
+    assert saved.draft_request == previous.draft_request
+    assert saved.progress.status == "blocked"
+    assert saved.progress.blockers == result["diagnostics"]
+    assert result["diagnostics"]
+    refs = {key: ref for key, ref in saved.artifacts.items() if key not in previous.artifacts}
+    assert refs and all(ref.archived and ref.sha256 for ref in refs.values())
+    assert saved.history[-1]["validation"] == result["validation"]
+    assert saved.history[-1]["sha256"] == hashlib.sha256(Path(result["validation"]).read_bytes()).hexdigest()
+    assert cli.main(["onboard", "resume", "--checkpoint", str(checkpoint)]) == 0
+    resumed = json.loads(capsys.readouterr().out)
+    assert resumed["configurations"]["tp2"]["profile_accepted"]
+    assert resumed["configurations"]["tp2"]["reported_progress"]["blockers"] == result["diagnostics"]
+    # Changing failed-attempt files cannot invalidate the independently accepted snapshot.
+    for ref in refs.values():
+        (checkpoint.parent / ref.path).write_text("changed failed historical evidence")
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+    assert report(state, checkpoint)["configurations"]["tp2"]["reported_progress"]["blockers"] == result["diagnostics"]
+    index.write_bytes(valid)
+    assert _import(checkpoint, index, tmp_path / "replacement-drafts", configurations=["tp2"]) == 0
+    capsys.readouterr()
+    saved = _load(checkpoint).configurations["tp2"]
+    assert saved.acceptance is None
+    assert any(item.get("acceptance") == previous.acceptance.model_dump(mode="json") for item in saved.history)
+
+
+def test_changed_inputs_archive_acceptance_even_when_draft_is_unchanged(tmp_path, capsys):
+    checkpoint, _, _, _ = _imported(tmp_path, capsys)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    previous = copy.deepcopy(state.configurations["tp2"])
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={
+            "configurations": {
+                "tp2": {
+                    "inputs": {"collection_deployment": {"image": "changed@sha256:" + "d" * 64}},
+                    "progress": {
+                        "status": "blocked",
+                        "blockers": ["Fresh image needs compatible observations."],
+                        "next_action": "Run the selected image's probe.",
+                    },
+                }
+            }
+        },
+        expected_revision=state.revision,
+        accept=[],
+    )
+    saved = state.configurations["tp2"]
+    assert saved.draft_request == previous.draft_request
+    assert saved.acceptance is None
+    history = saved.history[-1]
+    assert history["acceptance"] == previous.acceptance.model_dump(mode="json")
+    assert history["draft_request"] == previous.draft_request
+    assert history["inputs"] == previous.inputs
+    assert saved.progress.status == "blocked"
+    assert saved.progress.blockers == ["Fresh image needs compatible observations."]
+
+
+def test_unknown_geometry_does_not_mask_missing_explicit_topology(tmp_path, capsys):
+    checkpoint, index, _ = _campaign(tmp_path)
+    state = _load(checkpoint)
+    save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": {"search": {"tensor_parallel": None}}}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--instrumentation",
+                str(index.parent / "manifest.yaml"),
+                "--output-dir",
+                str(tmp_path / "preview"),
+            ]
+        )
+        == 1
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert "tensor_parallel" in str(result["configurations"]["tp2"]["diagnostics"])
+
+
+def _imported(
+    tmp_path,
+    capsys,
+    *,
+    capacity_multiplier=1,
+    context_length=None,
+    tp=2,
+    worker_type=None,
+    model=None,
+    resource_overrides=None,
+    page_bytes=128,
+    block_tokens=(16, 16),
+    layout="attention",
+    decode_prefix_caching=True,
+):
+    checkpoint, index, _ = _campaign(
+        tmp_path,
+        capacity_multiplier=capacity_multiplier,
+        context_length=context_length,
+        tp=tp,
+        worker_type=worker_type,
+        model=model,
+        resource_overrides=resource_overrides,
+        page_bytes=page_bytes,
+        block_tokens=block_tokens,
+        layout=layout,
+        decode_prefix_caching=decode_prefix_caching,
+    )
+    assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    state = _load(checkpoint)
+    request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
+    return checkpoint, index, request, result["configurations"]["tp2"]
+
+
+# The dense probe fixture measures two full-attention groups of 128 bytes per 16-token block: 16 bytes per token.
+_LINEAR_CLAIM = {"kv_bytes_per_token": 16}
+
+
+def test_matching_linear_claim_is_imported_and_accepted_as_a_linear_profile(tmp_path, capsys):
+    from aisim.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    checkpoint, _, request, result = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    resources = request.profile_deployment().resources
+    assert resources.cache_layout == "linear" and resources.kv_bytes_per_token == 16 and not resources.cache_groups
+    # The import result names the layout outcome of the claim with the reason that the profile provenance keeps.
+    assert result["cache_layout_reason"] == (
+        "linear: import wrote the linear layout because the supplied kv_bytes_per_token matched the measured "
+        "full-attention groups"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == result["cache_layout_reason"]
+    # The probe manifest records the evidence, which stays grouped.
+    assert runtime_probe_manifest(request)["observed_resources"]["cache_layout"] == "grouped"
+    verify_runtime_profile(request)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_linear_layout_claim_with_a_fractional_measurement_is_imported_as_grouped(tmp_path, capsys):
+    # The probe measures two full-attention groups of 100 bytes per 16-token block: 25/4 bytes per token each, as
+    # the 25-byte page per 4-token block in test_support_config_profile.py, and 25/2 in all. A linear profile needs
+    # a whole number.
+    _, _, request, result = _imported(tmp_path, capsys, page_bytes=100, resource_overrides={"cache_layout": "linear"})
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    reason = (
+        "grouped: the supplied cache_layout matched the measured full-attention groups, but the measured bytes per "
+        "token, 25/2, are not a whole number"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == reason
+    # The command exits 0. Its result names the grouped outcome, and import.json holds the same result.
+    assert result["cache_layout_reason"] == reason
+    assert json.loads((tmp_path / "drafts" / "import.json").read_text())["configurations"]["tp2"] == result
+
+
+def test_grouped_layout_claim_with_kv_bytes_per_token_is_imported_as_incomplete(tmp_path, capsys):
+    # The campaign writes the overrides into the checkpoint without intake, as a hand-edited checkpoint does. The
+    # fixture measures 16 bytes per token, so each claim alone matches the probe.
+    overrides = {"cache_layout": "grouped", "kv_bytes_per_token": 16}
+    checkpoint, index, _ = _campaign(tmp_path, resource_overrides=overrides)
+    assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 1
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    assert result["status"] == "incomplete"
+    assert "kv_bytes_per_token cannot be combined with grouped cache_layout" in result["diagnostics"]
+    assert not _load(checkpoint).configurations["tp2"].draft_request.get("fpm_profile")
+
+
+def test_linear_claim_on_groups_with_different_block_sizes_is_imported_as_grouped(tmp_path, capsys):
+    # The two groups have 128-byte pages of 16 and 32 tokens: 8 + 4 = 12 bytes per token, so the claim matches. A
+    # linear profile replays one block size, so import keeps the measured groups.
+    checkpoint, _, request, result = _imported(
+        tmp_path, capsys, block_tokens=(16, 32), resource_overrides={"kv_bytes_per_token": 12}
+    )
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    reason = (
+        "grouped: the supplied kv_bytes_per_token matched the measured full-attention groups, but cache groups "
+        "runtime_group_0 and runtime_group_1 have different block sizes, 16 and 32 tokens"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == reason
+    assert result["cache_layout_reason"] == reason
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, capsys):
+    checkpoint, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    payload["fpm_profile"]["deployments"][0]["resources"]["kv_bytes_per_token"] = 17
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": payload}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    with pytest.raises(ValueError, match="runtime cache geometry or settings changed; a compatible fresh probe"):
+        save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+
+
+# The groups that the GLM-5.3-Flash TP4 probe fixture imports, as the import of its live vLLM 0.33.0 record gives them:
+# four KDA groups with one prefill checkpoint block aligned to 16 tokens each, the 11 MLA and 11 indexer layers and the
+# 11 tail layers. Every page is one pool block of 13,516,800 bytes.
+_GLM_GROUPS = [
+    {
+        "name": f"runtime_group_{index}",
+        "kind": "attention" if index == 4 else "state",
+        "num_layers": layers,
+        "block_size_tokens": 4 if index == 5 else 2176,
+        "page_size_bytes": 13_516_800,
+        "sliding_window": None,
+        **({} if index == 4 else {"blocks_per_request": 1}),
+        **({"prefill_checkpoint_blocks": 1, "prefill_checkpoint_alignment": 16} if index < 4 else {}),
+    }
+    for index, layers in enumerate((9, 9, 8, 8, 22, 11))
+]
+
+
+def test_glm_state_groups_import_into_a_grouped_draft(tmp_path, capsys):
+    from aisim.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    _, _, request, _ = _imported(tmp_path, capsys, tp=4, layout="glm_tp4")
+    resources = request.profile_deployment().resources
+    assert resources.cache_layout == "grouped"
+    groups = resources.cache_groups
+    assert len(groups) == 6
+    assert [group.kind for group in groups].count("state") == 5
+    assert all(group.blocks_per_request == 1 for group in groups if group.kind == "state")
+    assert [group.model_dump(mode="json") for group in groups] == _GLM_GROUPS
+    runtime = resources.runtime_memory
+    assert (runtime.enable_prefix_caching, runtime.mamba_cache_mode, runtime.hash_block_size_tokens) == (
+        True,
+        "align",
+        2176,
+    )
+    assert verify_runtime_profile(request) is not None
+    assert runtime_probe_manifest(request)["observed_resources"]["runtime_memory"]["mamba_cache_mode"] == "align"
+
+
+@pytest.mark.parametrize("blocks", [1, 2])
+def test_state_group_claim_must_match_blocks_per_request(tmp_path, capsys, blocks):
+    # The exact claim imports, so blocks_per_request is the only difference that refuses the second one.
+    claim = copy.deepcopy(_GLM_GROUPS)
+    claim[0]["blocks_per_request"] = blocks
+    checkpoint, index, _ = _campaign(tmp_path, tp=4, layout="glm_tp4", resource_overrides={"cache_groups": claim})
+    status = _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"])
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    diagnostics = "\n".join(json.loads(Path(result["validation"]).read_text())["diagnostics"])
+    if blocks == 1:
+        assert (status, diagnostics) == (0, "")
+    else:
+        assert status == 1
+        assert "resource_overrides.cache_groups" in diagnostics
+        assert '"blocks_per_request":2' in diagnostics and "differs from the runtime probe's measured" in diagnostics
+
+
+# The cache group fields that only the runtime probe import writes.
+_PROBE_FIELDS = ("prefill_checkpoint_blocks", "prefill_checkpoint_alignment")
+
+
+@pytest.mark.parametrize(
+    ("stated", "accepted"),
+    [
+        # The documented claim gives the geometry only, without the fields that only the probe import writes.
+        ({}, True),
+        # Stated fields must match the probe, and here they do: each KDA group has one block aligned to 16 tokens.
+        (
+            {
+                "prefill_checkpoint_blocks": [1, 1, 1, 1, None, None],
+                "prefill_checkpoint_alignment": [16, 16, 16, 16, None, None],
+            },
+            True,
+        ),
+        # The alignment differs from the probe.
+        (
+            {
+                "prefill_checkpoint_blocks": [1, 1, 1, 1, None, None],
+                "prefill_checkpoint_alignment": [32, 32, 32, 32, None, None],
+            },
+            False,
+        ),
+        # A field stated for one group is compared on every group, and the other groups then differ.
+        ({"prefill_checkpoint_blocks": [1, None, None, None, None, None]}, False),
+    ],
+)
+def test_cache_group_claim_compares_probe_fields_only_when_stated(tmp_path, capsys, stated, accepted):
+    claim = [{key: value for key, value in group.items() if key not in _PROBE_FIELDS} for group in _GLM_GROUPS]
+    for field, values in stated.items():
+        for group, value in zip(claim, values, strict=True):
+            if value is not None:
+                group[field] = value
+    # The KDA specs prefill with FlashKDA: one checkpoint block aligned to 16 tokens.
+    checkpoint, index, _ = _campaign(
+        tmp_path, tp=4, layout="glm_tp4", checkpoint=(1, 16), resource_overrides={"cache_groups": claim}
+    )
+    status = _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"])
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    diagnostics = "\n".join(json.loads(Path(result["validation"]).read_text())["diagnostics"])
+    if accepted:
+        assert (status, diagnostics) == (0, "")
+    else:
+        assert status == 1
+        assert "resource_overrides.cache_groups" in diagnostics
+        assert "differs from the runtime probe's measured" in diagnostics
+
+
+@pytest.mark.parametrize("claim", [False, True])
+def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, claim):
+    _, _, request, files = _imported(
+        tmp_path, capsys, capacity_multiplier=10, resource_overrides=_LINEAR_CLAIM if claim else None
+    )
+    assert request.profile_deployment().resources.cache_layout == ("linear" if claim else "grouped")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    prerequisite = json.loads((root / "support-plan.json").read_text())["prerequisites"][0]
+    # A linear profile has no cache groups. The grouped text stays as it was, so grouped outputs do not change.
+    geometry = "cache geometry" if claim else "grouped geometry"
+    assert prerequisite["status"] == "runtime_memory_resolved"
+    assert prerequisite["detail"] == (
+        f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope."
+    )
+
+
+def test_plan_admits_the_imported_glm_draft_at_its_observed_capacity(tmp_path, capsys):
+    # The live GLM probe record leaves 13,696 usable pool blocks of 13,516,800 bytes. A request at its 1,048,576-token
+    # context needs 482 attention blocks of 2,176 tokens and one block in each of the five state groups, the 4-token
+    # tail group too: 487 blocks.
+    _, _, _, files = _imported(tmp_path, capsys, tp=4, layout="glm_tp4")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    plan = json.loads((root / "support-plan.json").read_text())
+    assert plan["prerequisites"][0]["status"] == "runtime_memory_resolved"
+    assert plan["prerequisites"][0]["detail"] == (
+        "Observed cache capacity and grouped geometry are bound to this deployment and runtime envelope."
+    )
+    assert plan["resources"]["request_peak_cache_bytes"] == 487 * 13_516_800
+    assert plan["resources"]["total_kv_size_bytes"] == 13_696 * 13_516_800
+
+
+@pytest.mark.parametrize("claim", [False, True], ids=["grouped", "linear"])
+@pytest.mark.parametrize("block", [16, 256])
+def test_generated_configs_replay_a_linear_runtime_profile_with_the_measured_block_size(tmp_path, capsys, block, claim):
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+    from aisim.support.validation import _prediction_config
+
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        block_tokens=(block, block),
+        resource_overrides={"cache_layout": "linear"} if claim else None,
+    )
+    assert request.profile_deployment().resources.cache_layout == ("linear" if claim else "grouped")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    prediction = CorePredictionConfig.from_yaml(root / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(root / "recommend/pilot.yaml")
+    replay = CorePredictionConfig.model_validate(_prediction_config(request, root, tmp_path / "trace.jsonl"))
+    # A grouped profile keeps its configuration: replay allocates from its measured groups.
+    for config in (prediction, recommendation, replay):
+        assert config.engine.workers.aggregated.kv_cache.block_size == (block if claim else None)
+    for config in (prediction, replay):
+        args = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
+        # 64 tokens is the vLLM default of replay.
+        assert args["block_size"] == args["timing_model"]["config"]["kv_block_size"] == (block if claim else 64)
+
+
+def test_role_config_of_a_linear_runtime_profile_has_the_measured_block_size(tmp_path, capsys):
+    import yaml
+
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        worker_type="prefill",
+        block_tokens=(256, 256),
+        resource_overrides={"cache_layout": "linear"},
+    )
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    worker = yaml.safe_load((root / "worker.yaml").read_text())["engine"]["workers"]["prefill"]
+    assert worker["kv_cache"]["block_size"] == 256
+
+
+@pytest.mark.parametrize("extra_tokens", [-1, 0, 1], ids=["one-below", "exact-fit", "one-above"])
+def test_plan_accepts_an_exact_fit_of_observed_capacity_for_a_linear_profile(tmp_path, capsys, extra_tokens):
+    # Twice the probe's blocks give 24064 bytes: 94 blocks of 16 tokens, so 1504 tokens at 16 bytes per token.
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=2,
+        context_length=1504 + extra_tokens,
+        resource_overrides=_LINEAR_CLAIM,
+    )
+    resources = request.profile_deployment().resources
+    assert resources.cache_layout == "linear" and resources.runtime_memory.kv_cache_bytes == 24064
+    root = tmp_path / "collection"
+    command = ["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]
+    if extra_tokens > 0:
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+        assert (
+            "observed FPM resources leave insufficient rank-local KV capacity for the runtime context"
+            in capsys.readouterr().err
+        )
+    else:
+        # vLLM starts when one full-context request fills the observed capacity exactly.
+        assert cli.main(command) == 0
+        assert json.loads((root / "support-plan.json").read_text())["resources"]["total_kv_size_tokens"] == 1504
+
+
+@pytest.mark.parametrize("memory_source", ["runtime", "declared"])
+def test_grouped_peak_refusal_names_the_memory_source(tmp_path, capsys, memory_source):
+    # Twice the probe's blocks give 24064 bytes, but a 1505-token request needs 95 blocks of 128 bytes in each of
+    # the two groups: 24320 bytes.
+    _, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=2, context_length=1505)
+    config = Path(files["request"])
+    if memory_source == "declared":
+        payload = request.model_dump(mode="json", exclude_none=True)
+        resources = payload["fpm_profile"]["deployments"][0]["resources"]
+        del resources["runtime_memory"]
+        resources.update(weights_bytes=0, activations_bytes=0, runtime_overhead_bytes=0, comm_overhead_bytes=0)
+        # Declared memory gets its KV budget from the GPU capacity, which these pages exceed.
+        for group in resources["cache_groups"]:
+            group["page_size_bytes"] = 2**40
+        config = tmp_path / "declared.yaml"
+        _write(config, payload)
+    assert SupportRequest.from_yaml(config).profile_deployment().resources.memory_source == memory_source
+    with pytest.raises(SystemExit) as error:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "collection")])
+    assert error.value.code == 2
+    word = "observed" if memory_source == "runtime" else "declared"
+    assert (
+        f"{word} FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+        in capsys.readouterr().err
+    )
+
+
+def _capacity_campaign(tmp_path, capsys, resource_overrides=None):
+    """A 1500-token draft whose probe measured 378 pages of 128 bytes: 48384 bytes, shared by two groups."""
+    checkpoint, _, request, _ = _imported(
+        tmp_path, capsys, capacity_multiplier=4, context_length=1500, resource_overrides=resource_overrides
+    )
+    return checkpoint, request
+
+
+def _capacity_override(checkpoint, request, capacity):
+    """Register a capacity edit of the draft in its checkpoint, where it becomes a labeled user override."""
+    payload = request.model_dump(mode="json", exclude_none=True)
+    payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]["kv_cache_bytes"] = capacity
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": payload}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    return SupportRequest.model_validate(state.configurations["tp2"].draft_request)
+
+
+def _plan_override(tmp_path, request):
+    config = tmp_path / "override.yaml"
+    _write(config, request.model_dump(mode="json", exclude_none=True))
+    return ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "collection")]
+
+
+def test_measured_capacity_is_whole_linear_cache_blocks(tmp_path, capsys):
+    from aisim.support.config_profile import linear_block_bytes
+    from aisim.support.runtime import runtime_probe_manifest
+
+    _, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    observed = runtime_probe_manifest(request)["observed_resources"]
+    # 16 tokens fill one 128-byte page of each of the two groups, at 16 bytes per token.
+    assert linear_block_bytes(observed) == 256
+    assert observed["runtime_memory"]["kv_cache_bytes"] == 189 * 256
+    assert request.profile_deployment().resources.runtime_memory.kv_cache_bytes == 189 * 256
+
+
+@pytest.mark.parametrize("capacity", [24063, 24000])
+def test_linear_capacity_override_must_be_whole_measured_blocks(tmp_path, capsys, capacity):
+    from aisim.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    changed = _capacity_override(checkpoint, request, capacity)
+    assert runtime_probe_manifest(changed)["user_overrides"]["runtime_memory.kv_cache_bytes"]["value"] == capacity
+    # The plan counts 1503 or 1500 whole tokens, but 93 whole blocks in each group hold only 1488 tokens.
+    with pytest.raises(ValueError) as error:
+        verify_runtime_profile(changed)
+    assert str(error.value) == (
+        f"the runtime_memory.kv_cache_bytes override {capacity} is not a whole multiple of 256 bytes (16 tokens). "
+        "That is the smallest capacity that fills whole cache blocks in every measured group. A linear runtime "
+        "profile needs whole blocks. The nearest lower capacity of whole blocks is 23808 bytes"
+    )
+    # The refusal does not rewrite the draft.
+    assert changed.profile_deployment().resources.runtime_memory.kv_cache_bytes == capacity
+
+
+@pytest.mark.parametrize("blocks", [93, 94])
+def test_linear_capacity_override_of_whole_blocks_plans_whole_blocks(tmp_path, capsys, blocks):
+    from aisim.support.runtime import verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    changed = _capacity_override(checkpoint, request, blocks * 256)
+    verify_runtime_profile(changed)
+    command = _plan_override(tmp_path, changed)
+    if blocks == 93:
+        # 93 blocks hold 1488 tokens, fewer than the 1500-token context.
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+        assert (
+            "observed FPM resources leave insufficient rank-local KV capacity for the runtime context"
+            in capsys.readouterr().err
+        )
+    else:
+        assert cli.main(command) == 0
+        plan = json.loads((tmp_path / "collection" / "support-plan.json").read_text())
+        assert plan["resources"]["total_kv_size_tokens"] == 1504
+
+
+def test_grouped_capacity_override_keeps_its_whole_block_plan_check(tmp_path, capsys):
+    from aisim.support.runtime import verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys)
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    changed = _capacity_override(checkpoint, request, 24063)
+    # The grouped estimate already counts whole blocks, so acceptance takes the override.
+    verify_runtime_profile(changed)
+    with pytest.raises(SystemExit) as error:
+        cli.main(_plan_override(tmp_path, changed))
+    assert error.value.code == 2
+    # A 1500-token request needs 94 pages of 128 bytes in each group: 24064 bytes.
+    assert (
+        "observed FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+        in capsys.readouterr().err
+    )
+
+
+def test_profile_edit_preserves_measured_values_and_requires_fresh_probe_for_settings(tmp_path, capsys):
+    from aisim.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    checkpoint, _, request, _ = _imported(tmp_path, capsys)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    payload = request.model_dump(mode="json", exclude_none=True)
+    resources = payload["fpm_profile"]["deployments"][0]["resources"]
+    observed = resources["runtime_memory"]["kv_cache_bytes"]
+    resources["runtime_memory"]["kv_cache_bytes"] = observed - 128
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": payload}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    changed = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
+    manifest = runtime_probe_manifest(changed)
+    assert manifest["observed_resources"]["runtime_memory"]["kv_cache_bytes"] == observed
+    assert manifest["user_overrides"]["runtime_memory.kv_cache_bytes"]["value"] == observed - 128
+    assert state.configurations["tp2"].acceptance is None
+    assert state.configurations["tp2"].history[-1]["acceptance"] is not None
+    verify_runtime_profile(changed)
+    payload = changed.model_dump(mode="json", exclude_none=True)
+    payload["collection"]["prefill_cudagraph_policy"] = "explicit"
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": payload}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    with pytest.raises(ValueError, match="fresh probe"):
+        save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+
+
+def test_plan_carries_explicit_formal_observer_flags_and_execution_requires_acceptance(tmp_path, capsys, monkeypatch):
+    from aisim.support.runtime import runtime_probe_manifest
+
+    checkpoint, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=10)
+    root = tmp_path / "collection"
+    assert (
+        cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root), "--format", "json"]) == 0
+    )
+    capsys.readouterr()
+    commands = json.loads((root / "commands.json").read_text())
+    preview = commands["fpm_plan_local"]
+    assert "--fpm-runtime-instrumentation" in preview
+    assert "--fpm-runtime-launch" in preview
+    assert preview[preview.index("--fpm-runtime-configuration") + 1] == "tp2"
+    execute = commands["fpm_run_local"][1:]
+    assert "--executor" in execute and "slurm" in execute
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(execute)
+    assert "acceptance" in capsys.readouterr().err
+    state = _load(checkpoint)
+    save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    from types import SimpleNamespace
+
+    from collector.fpm_forward import cli as collector_cli
+    from collector.fpm_forward import entry
+
+    from aisim.support import collection_readiness, fpm
+
+    commands = []
+
+    def resolve(command):
+        commands.append(command[3:])
+        return collector_cli._parser().parse_args(command[3:]), (SimpleNamespace(cells=()), {})
+
+    monkeypatch.setattr(fpm, "_resolve_execution", resolve)
+    monkeypatch.setattr(collection_readiness, "assess_readiness", lambda *a, **k: {"ready_for_full_collection": True})
+
+    def fake_collect(argv):
+        assert "--fpm-runtime-instrumentation" in argv
+        manifest = runtime_probe_manifest(request)
+        target = root / "observed"
+        shutil.copytree(Path(manifest["observations_index"]).parent, target)
+        (root / "fpm-checkpoint").mkdir(exist_ok=True)
+        bindings = _formal_bindings(target / "observations.json")
+        metadata = root / "synthetic-publication.metadata.json"
+        _write(metadata, {"backend_version": request.identity.framework_version})
+        bindings["database"] = {"status": "passed", "metadata": str(metadata)}
+        _write(
+            root / "fpm-checkpoint" / "fpm_forward.json",
+            {"runtime_observations": str(target / "observations.json"), **bindings},
+        )
+        return 0
+
+    monkeypatch.setattr(entry, "run_resolved", lambda *_: fake_collect(commands[-1]) or [])
+    assert cli.main(execute) == 0
+    comparison = json.loads((root / "runtime-compatibility.json").read_text())
+    assert comparison["compatibility"]["status"] == "compatible"
+    assert comparison["compatibility"]["accepted_capacity_bytes"] == 948 * 128
+
+
+def _formal_bindings(index, cells=None):
+    """Synthetic formal contexts bound to distinct native cell attempts."""
+    document = json.loads(index.read_text())
+    entry = document["configurations"]["tp2"]
+    entry["active_attempt_id"] = "formal-parent"
+    attempt = entry["attempts"][0]
+    attempt["attempt_id"] = "formal-parent"
+    entries = {}
+    for phase, result in attempt["phases"].items():
+        cell_id = cells[phase] if cells else f"cell-{phase}"
+        attempt_id = f"native-{phase}"
+        result.update(cell_id=cell_id, collector_attempt_id=attempt_id, status="passed")
+        entries[cell_id] = {"status": "passed", "attempt_id": attempt_id}
+        for ref in [result["launch_manifest"], *result["artifacts"]]:
+            path = index.parent / ref["path"]
+            value = json.loads(path.read_text())
+            value.update(attempt_id="formal-parent", cell_id=cell_id, collector_attempt_id=attempt_id)
+            _write(path, value)
+            ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+    return {"runtime_observation_attempt_id": "formal-parent", "cells": entries}
+
+
+def _completed_runtime_collection(
+    tmp_path,
+    capsys,
+    *,
+    tp=2,
+    worker_type=None,
+    model=None,
+    resource_overrides=None,
+    block_tokens=(16, 16),
+    layout="attention",
+    decode_prefix_caching=True,
+):
+    from collector.fpm_forward.cli import _parser
+    from collector.fpm_forward.config import FPMCollectionOptions
+    from collector.fpm_forward.database import aggregate_cell, write_formal_database
+    from collector.fpm_forward.entry import _load_generator_overrides
+    from collector.fpm_forward.planner import build_collection_plan
+    from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
+
+    from aisim.support.runtime import runtime_probe_manifest
+
+    from .test_onboard_finalization import _native
+
+    checkpoint, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        tp=tp,
+        worker_type=worker_type,
+        model=model,
+        resource_overrides=resource_overrides,
+        block_tokens=block_tokens,
+        layout=layout,
+        decode_prefix_caching=decode_prefix_caching,
+    )
+    state = _load(checkpoint)
+    save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    capsys.readouterr()
+    args = _parser().parse_args(json.loads((root / "commands.json").read_text())["fpm_plan_local"][3:])
+    manifest = runtime_probe_manifest(request)
+    snapshot = Path(manifest["observations_index"])
+    launch = json.loads(snapshot.read_text())["configurations"]["tp2"]["launch"]
+    plan = build_collection_plan(
+        backend="vllm",
+        model_path=request.identity.model,
+        model_architecture=request.fpm_profile.architecture,
+        model_config_path=launch["model_config"]["path"],
+        system=request.identity.gpu,
+        selected_ops={"attention_context", "attention_generation"},
+        options=FPMCollectionOptions.from_args(args),
+        fpm_profile=request.fpm_profile,
+        generator_overrides=_load_generator_overrides(args),
+        runtime_instrumentation=args.fpm_runtime_instrumentation,
+        runtime_launch=launch,
+        runtime_configuration="tp2",
+    )
+    artifact_root = root / "fpm-artifacts" / plan.sha256[:16]
+    artifact_root.mkdir(parents=True)
+    _write(artifact_root / "collection-plan.json", plan.to_dict())
+    observed = artifact_root / "observations"
+    shutil.copytree(snapshot.parent, observed)
+    bindings = _formal_bindings(
+        observed / "observations.json", {cell.workload_kind: cell.cell_id for cell in plan.cells}
+    )
+    rows = []
+    for cell in plan.cells:
+        directory = artifact_root / "cells" / cell.cell_id
+        raw = directory / "raw/pod-0"
+        raw.mkdir(parents=True)
+        _write(directory / "cell.json", cell.to_dict())
+        provenance = {
+            "schema_name": "aic_fpm_collector_provenance",
+            "schema_version": 1,
+            "cell_id": cell.cell_id,
+            "plan_sha256": plan.sha256,
+            "attempt_id": f"native-{cell.workload_kind}",
+            "runtime": {"backend": "vllm", "backend_version": request.identity.framework_version},
+        }
+        _write(raw / "collector-provenance.json", provenance)
+        _write(raw / "benchmark.json", _native(cell.workload_kind))
+        rows.extend(aggregate_cell(plan, cell, directory, expected_attempt_id=provenance["attempt_id"]))
+    parquet, metadata, skipped = write_formal_database(plan, rows, systems_root=root / "systems/data")
+    assert not skipped
+    (root / "fpm-checkpoint").mkdir(exist_ok=True)
+    _write(
+        root / "fpm-checkpoint/fpm_forward.json",
+        {
+            "schema": CHECKPOINT_SCHEMA,
+            "plan_sha256": plan.sha256,
+            **bindings,
+            "runtime_observations": str(observed / "observations.json"),
+            "database": {
+                "status": "passed",
+                "parquet": str(parquet),
+                "metadata": str(metadata),
+                "published_cells": len(plan.cells),
+                "plan_cells": len(plan.cells),
+                "missing_cells": [],
+                "skipped_first_publisher_wins": [],
+            },
+        },
+    )
+    return checkpoint, request, files, root
+
+
+def test_finalize_refuses_a_linear_profile_whose_collection_groups_have_no_linear_layout(tmp_path, capsys, monkeypatch):
+    from aisim.support import finalization
+
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    merge = finalization._merge_resources
+
+    def windowed(*args, **kwargs):
+        resources = merge(*args, **kwargs)
+        resources["cache_groups"][1]["sliding_window"] = 128
+        return resources
+
+    monkeypatch.setattr(finalization, "_merge_resources", windowed)
+    target = tmp_path / "finalized"
+    with pytest.raises(ValueError) as error:
+        finalization.finalize(request, root, target)
+    assert str(error.value) == (
+        "the accepted profile is linear, but the collection's measured cache groups have no linear layout: "
+        "cache group runtime_group_1 has sliding_window=128"
+    )
+    assert not target.exists()
+
+
+def test_finalized_linear_runtime_profile_keeps_the_measured_block_size(tmp_path, capsys):
+    import yaml
+
+    from aisim.support.finalization import finalize
+    from aisim.support.plan import check_plan
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    target = tmp_path / "finalized"
+    finalize(request, root, target)
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.profile_deployment().resources.cache_layout == "linear"
+    # The finalization manifest keeps the runtime probe evidence that gives the block size.
+    for name in ("predict/pilot.yaml", "recommend/pilot.yaml"):
+        worker = yaml.safe_load((target / name).read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+    check_plan(resolved, target)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing-observed-resources", "probe-not-a-dict", "observed-resources-not-a-dict", "missing-cache-groups"],
+)
+def test_plan_refuses_finalized_probe_evidence_without_observed_cache_groups(tmp_path, capsys, corruption):
+    from aisim.support.finalization import finalize
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # A hand edit of the finalized request: its finalization manifest is the runtime memory provenance.
+    runtime = payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+    manifest = json.loads(runtime["provenance"])
+    probe = manifest["runtime_probe"]
+    if corruption == "missing-observed-resources":
+        del probe["observed_resources"]
+    elif corruption == "probe-not-a-dict":
+        manifest["runtime_probe"] = "x"
+    elif corruption == "observed-resources-not-a-dict":
+        probe["observed_resources"] = ["x"]
+    else:
+        del probe["observed_resources"]["cache_groups"]
+    runtime["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    with pytest.raises(SystemExit) as error:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")])
+    assert error.value.code == 2
+    assert (
+        "invalid onboarding runtime probe provenance: the probe evidence has no observed_resources with cache_groups"
+        in capsys.readouterr().err
+    )
+
+
+_DIFFERS = "finalized runtime probe provenance differs from the profile: its observed cache_groups "
+_GROUPS_DIFFER = _DIFFERS + "differ from measured_cache_groups in the profile provenance"
+
+
+def _set_block_sizes(groups, block_tokens, *, scale_pages=False):
+    for group, tokens in zip(groups, block_tokens, strict=True):
+        if scale_pages:
+            group["page_size_bytes"] = group["page_size_bytes"] * tokens // group["block_size_tokens"]
+        group["block_size_tokens"] = tokens
+
+
+@pytest.mark.parametrize(
+    "edit,error",
+    [
+        ("none", None),
+        ("every-group", _GROUPS_DIFFER),
+        ("one-group", _GROUPS_DIFFER),
+        ("every-group-with-scaled-pages", _GROUPS_DIFFER),
+        ("profile-kv-bytes", _DIFFERS + "give kv_bytes_per_token=1, and the profile has kv_bytes_per_token=2"),
+        ("evidence-and-measured-groups", _DIFFERS + "have no linear layout, and the profile is linear"),
+    ],
+    ids=[
+        "unedited",
+        "every-group",
+        "one-group",
+        "every-group-with-scaled-pages",
+        "profile-kv-bytes",
+        "evidence-and-measured-groups",
+    ],
+)
+def test_plan_checks_finalized_probe_evidence_against_the_profile(tmp_path, capsys, edit, error):
+    import yaml
+
+    from aisim.support.finalization import finalize
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # Hand edits of the finalized request. The profile says linear, 1 byte per token, and 256-token measured groups.
+    resources = payload["fpm_profile"]["deployments"][0]["resources"]
+    manifest = json.loads(resources["runtime_memory"]["provenance"])
+    groups = manifest["runtime_probe"]["observed_resources"]["cache_groups"]
+    if edit == "every-group":
+        _set_block_sizes(groups, (16, 16))
+    elif edit == "one-group":
+        _set_block_sizes(groups, (16, 256))
+    elif edit == "every-group-with-scaled-pages":
+        # The evidence then still gives the profile's 1 byte per token.
+        _set_block_sizes(groups, (16, 16), scale_pages=True)
+    elif edit == "profile-kv-bytes":
+        resources["kv_bytes_per_token"] = 2
+    elif edit == "evidence-and-measured-groups":
+        # Both copies of the groups agree, but groups with different block sizes have no linear layout.
+        _set_block_sizes(groups, (16, 256))
+        provenance = json.loads(payload["fpm_profile"]["provenance"])
+        provenance["measured_cache_groups"] = copy.deepcopy(groups)
+        payload["fpm_profile"]["provenance"] = json.dumps(provenance)
+    resources["runtime_memory"]["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    command = ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]
+    if error is None:
+        assert cli.main(command) == 0
+        worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+        return
+    with pytest.raises(SystemExit) as failure:
+        cli.main(command)
+    assert failure.value.code == 2
+    assert error in capsys.readouterr().err
+
+
+_NO_PROBE_EVIDENCE = (
+    "the profile provenance records measured_cache_groups, but the request has no runtime probe evidence"
+)
+
+
+@pytest.mark.parametrize("remove", [False, True], ids=["unedited", "runtime-probe-removed"])
+def test_plan_refuses_a_finalized_linear_profile_without_its_runtime_probe(tmp_path, capsys, remove):
+    import yaml
+
+    from aisim.support.finalization import finalize
+    from aisim.support.plan import _probe_observed_resources
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # Finalization records the measured groups of a linear profile from the probe in the profile provenance.
+    assert "measured_cache_groups" in json.loads(payload["fpm_profile"]["provenance"])
+    if remove:
+        # A hand edit removes the probe evidence from the finalization manifest.
+        runtime = payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+        manifest = json.loads(runtime["provenance"])
+        del manifest["runtime_probe"]
+        runtime["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    command = ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]
+    if not remove:
+        assert cli.main(command) == 0
+        worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+        return
+    with pytest.raises(ValueError) as error:
+        _probe_observed_resources(SupportRequest.from_yaml(config))
+    assert str(error.value) == _NO_PROBE_EVIDENCE
+    with pytest.raises(SystemExit) as failure:
+        cli.main(command)
+    assert failure.value.code == 2
+    assert _NO_PROBE_EVIDENCE in capsys.readouterr().err
+
+
+def test_plan_refuses_a_linear_draft_from_the_probe_without_its_runtime_memory(tmp_path, capsys):
+    from aisim.support.finalization import finalization_manifest
+    from aisim.support.plan import _probe_observed_resources
+    from aisim.support.runtime import runtime_probe_manifest
+
+    _, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    # A hand edit removes the runtime memory of the draft, and with it the probe evidence. The profile provenance
+    # still records the measured groups of the probe.
+    del payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+    edited = SupportRequest.model_validate(payload)
+    assert edited.profile_deployment().resources.cache_layout == "linear"
+    assert "measured_cache_groups" in json.loads(edited.fpm_profile.provenance)
+    assert runtime_probe_manifest(edited) is None and finalization_manifest(edited) is None
+    with pytest.raises(ValueError) as error:
+        _probe_observed_resources(edited)
+    assert str(error.value) == _NO_PROBE_EVIDENCE
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    with pytest.raises(SystemExit) as failure:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")])
+    assert failure.value.code == 2
+    assert _NO_PROBE_EVIDENCE in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "provenance", [None, "Declared synthetic rank-local bounds."], ids=["onboard-init", "free-text"]
+)
+def test_plan_of_a_linear_profile_without_measured_cache_groups_has_no_block_size(tmp_path, provenance):
+    import yaml
+
+    from aisim.support.plan import _probe_observed_resources
+
+    from .test_onboard_finalization import _prepare_collection
+
+    # onboard init declares kv_bytes_per_token from the model config. The linear profile has no probe evidence and
+    # records no measured_cache_groups, so its configs keep the default block size, as on main.
+    request, _ = _prepare_collection(tmp_path)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    if provenance is not None:
+        payload["fpm_profile"]["provenance"] = provenance
+    request = SupportRequest.model_validate(payload)
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    assert "measured_cache_groups" not in request.fpm_profile.provenance
+    assert _probe_observed_resources(request) is None
+    config = tmp_path / "declared.yaml"
+    _write(config, payload)
+    assert cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]) == 0
+    worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+    assert "block_size" not in worker.get("kv_cache", {})
+
+
+def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
+    from aisim.support.finalization import finalization_manifest
+
+    checkpoint, request, files, root = _completed_runtime_collection(tmp_path, capsys)
+    target = tmp_path / "finalized"
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "finalize",
+                "--config",
+                files["request"],
+                "--output-dir",
+                str(root),
+                "--resolved-output-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    evidence = finalization_manifest(resolved)
+    assert evidence["runtime_compatibility"]["status"] == "compatible"
+    assert len(evidence["formal_data"]) == 2
+    assert list((target / "systems/data").rglob("fpm_forward_perf.parquet"))
+    assert _load(checkpoint).configurations["tp2"].acceptance is not None
+    # Finalization produces another draft. Replacing the imported request keeps
+    # the accepted probe in history and does not treat the new profile as accepted.
+    state = _load(checkpoint)
+    artifacts = {key: {"archived": True} for key in state.configurations["tp2"].artifacts}
+    artifacts["final-request"] = {"path": str(target / "request.yaml"), "kind": "request"}
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={
+            "configurations": {
+                "tp2": {"draft_request": resolved.model_dump(mode="json", exclude_none=True), "artifacts": artifacts}
+            }
+        },
+        expected_revision=state.revision,
+        accept=[],
+    )
+    assert state.configurations["tp2"].acceptance is None
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
+def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, capsys, worker_type):
+    import pyarrow.parquet as pq
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    from aisim.support.finalization import finalization_manifest, finalize
+    from aisim.support.plan import check_plan
+    from aisim.support.runtime import verify_runtime_profile
+
+    checkpoint, request, _, root = _completed_runtime_collection(tmp_path, capsys, worker_type=worker_type)
+    assert request.worker_type == request.profile_deployment().worker_type == worker_type
+    assert report(_load(checkpoint), checkpoint)["configurations"]["tp2"]["profile_accepted"]
+    plan_path = next((root / "fpm-artifacts").glob("*/collection-plan.json"))
+    frozen = load_repeatability_source(plan_path.parent)
+    assert frozen.options.worker_type == worker_type
+    assert {cell.workload_kind for cell in frozen.cells} == set(request.collection_phases)
+    target = tmp_path / "finalized"
+    finalize(request, root, target)
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.worker_type == resolved.profile_deployment().worker_type == worker_type
+    assert resolved.collection.cudagraph_mode == request.collection.cudagraph_mode
+    assert (
+        resolved.profile_deployment().resources.runtime_memory.kv_cache_bytes
+        == request.profile_deployment().resources.runtime_memory.kv_cache_bytes
+    )
+    evidence = finalization_manifest(resolved)
+    assert evidence["runtime_compatibility"]["status"] == "compatible"
+    assert len(evidence["formal_data"]) == 2
+    parquet = next((target / "systems/data").rglob("fpm_forward_perf.parquet"))
+    assert set(pq.read_table(parquet).column("workload_kind").to_pylist()) == set(request.collection_phases)
+    verify_runtime_profile(resolved)
+    check_plan(resolved, target)
+
+
+def _run_decode_with_prefix_caching(index):
+    """Give the decode phase of an observation index the records of a run with prefix caching on.
+
+    With prefix caching on, vLLM resolves the Mamba cache mode to align and the Mamba block to the attention block
+    (models/config.py:640-667, platforms/interface.py:995-996). The engine core then gives the scheduler the LCM and
+    the GCD of the group blocks as its block and hash block sizes (v1/core/kv_cache_utils.py:761-798). The prefill
+    records of the same run hold these values, so each decode record takes the cache and the cache settings of the
+    prefill record of its rank.
+    """
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    for reference in phase["artifacts"]:
+        if reference.get("kind") != "observation":
+            continue
+        path = index.parent / reference["path"]
+        assert path.parent.name == "decode"
+        record = json.loads(path.read_text())
+        prefill = json.loads((path.parent.parent / "prefill" / path.name).read_text())
+        assert (record["kind"], record["dp_rank"], record["tp_rank"]) == (
+            prefill["kind"],
+            prefill["dp_rank"],
+            prefill["tp_rank"],
+        )
+        record["cache"] = prefill["cache"]
+        record["resolved_config"]["cache_config"] = prefill["resolved_config"]["cache_config"]
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+def test_formal_collection_compares_prefix_caching_of_every_phase(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime
+
+    # Both records hold the prefill phase's settings, and both first worker records belong to prefill. Decode runs
+    # without prefix caching, so its Mamba groups hold max_model_len tokens per block.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=False
+    )
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(checkpoint["runtime_observations"])
+    compatibility = verify_collection_runtime(request, index, collection_checkpoint=checkpoint)["compatibility"]
+    assert compatibility["status"] == "compatible"
+    # The probe's decode phase runs without prefix caching and hashes 4096-token blocks. A formal decode phase that ran
+    # with prefix caching on is refused too, although its records agree with each other.
+    _run_decode_with_prefix_caching(index)
+    with pytest.raises(ValueError, match="decode: runtime prefix-caching settings differ from the accepted probe"):
+        verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
+
+
+def _formal_phase_bindings(tmp_path, capsys, *, decode_prefix_caching=False):
+    """A completed formal campaign of the mamba_hybrid probe, its observation index and a binding builder."""
+    from collector.fpm_forward.cli import _parser
+    from collector.fpm_forward.entry import _load_generator_overrides
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    # By default decode runs without prefix caching: its Mamba groups hold max_model_len tokens per block in none
+    # mode, while the accepted record holds the prefill phase's align mode and 64-token blocks.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=decode_prefix_caching
+    )
+    checkpoint_path = root / "fpm-checkpoint/fpm_forward.json"
+    checkpoint = json.loads(checkpoint_path.read_text())
+    campaign = root / "fpm-artifacts" / checkpoint["plan_sha256"][:16]
+    args = _parser().parse_args(json.loads((root / "commands.json").read_text())["fpm_plan_local"][3:])
+    _write(campaign / "generator-overrides.json", _load_generator_overrides(args))
+    plan = load_repeatability_source(campaign)
+    index = Path(checkpoint["runtime_observations"])
+
+    def bindings():
+        # One binding per phase of the formal campaign, as collection readiness selects them.
+        return [
+            {
+                "phase": cell.workload_kind,
+                "plan": {"path": str(campaign / "collection-plan.json"), "sha256": plan.sha256},
+                "checkpoint": {
+                    "path": str(checkpoint_path),
+                    "sha256": hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
+                },
+                "observations": {"path": str(index), "sha256": hashlib.sha256(index.read_bytes()).hexdigest()},
+                "attempt_id": checkpoint["runtime_observation_attempt_id"],
+                "collector_attempt_id": checkpoint["cells"][cell.cell_id]["attempt_id"],
+            }
+            for cell in plan.cells
+        ]
+
+    return request, index, bindings
+
+
+def _resolve_decode_prefix_match_unit(index, tokens):
+    """Give every decode process of an observation index a prefix-match unit of ``tokens``.
+
+    With prefix caching on, the engine core then hashes in that many tokens (v1/core/kv_cache_utils.py:797-805). No
+    block size follows the unit, so only the resolved setting and both copies of the scheduler's hash block size change.
+    """
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    for reference in phase["artifacts"]:
+        if reference.get("kind") != "observation":
+            continue
+        path = index.parent / reference["path"]
+        record = json.loads(path.read_text())
+        record["resolved_config"]["cache_config"]["prefix_match_unit"] = tokens
+        if record["kind"] == "scheduler":
+            record["cache"]["hash_block_size"] = record["cache"]["prefix_caching"]["hash_block_size"] = tokens
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+@pytest.mark.parametrize(
+    "decode_prefix_caching,change,error",
+    [
+        # Both runs hash 64-token blocks in decode with prefix caching on. The formal decode processes resolve a
+        # 32-token prefix-match unit, which changes their hash block size and no cache group, so only the
+        # prefix-caching settings of the phase differ from the accepted probe.
+        (True, "prefix_match_unit", "decode: runtime prefix-caching settings differ from the accepted probe"),
+        # The probe's decode phase runs without prefix caching. A formal decode phase that ran with prefix caching on
+        # holds align-mode Mamba groups of 64-token blocks. vLLM changes these groups together with the prefix-caching
+        # mode, and the binding compares the raw groups of the phase first, so the cache geometry check refuses it.
+        (False, "prefix_caching_mode", "decode: runtime cache group geometry differs from the accepted probe"),
+    ],
+    ids=["prefix_match_unit", "prefix_caching_mode"],
+)
+def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys, decode_prefix_caching, change, error):
+    from aisim.support.runtime import verify_collection_runtime_bindings
+
+    request, index, bindings = _formal_phase_bindings(tmp_path, capsys, decode_prefix_caching=decode_prefix_caching)
+    result = verify_collection_runtime_bindings(request, bindings())
+    assert result["status"] == "complete"
+    assert result["phases"]["decode"]["provenance"]["prefix_caching"]["decode"] == (
+        {"enable_prefix_caching": True, "mamba_cache_mode": "align", "hash_block_size_tokens": 64}
+        if decode_prefix_caching
+        else {"enable_prefix_caching": False, "mamba_cache_mode": "none", "hash_block_size_tokens": 4096}
+    )
+    if change == "prefix_match_unit":
+        _resolve_decode_prefix_match_unit(index, 32)
+    else:
+        _run_decode_with_prefix_caching(index)
+    with pytest.raises(ValueError, match=error):
+        verify_collection_runtime_bindings(request, bindings())
+
+
+def test_reversed_phase_bindings_merge_into_the_record_of_the_first_collection_phase(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime_bindings
+
+    request, _, bindings = _formal_phase_bindings(tmp_path, capsys)
+    # The record holds the role's first collection phase, prefill, in whatever order the caller binds.
+    resources = verify_collection_runtime_bindings(request, bindings()[::-1])["resources"]
+    runtime = resources["runtime_memory"]
+    assert (runtime["enable_prefix_caching"], runtime["mamba_cache_mode"], runtime["hash_block_size_tokens"]) == (
+        True,
+        "align",
+        64,
+    )
+    assert [group["block_size_tokens"] for group in resources["cache_groups"]] == [64, 64, 64]
+    assert resources == verify_collection_runtime_bindings(request, bindings())["resources"]
+
+
+def _record_decode_state_block_size(index, tokens):
+    """Give every Mamba group in the decode records of an observation index a block of ``tokens`` tokens.
+
+    The decode phase must run with prefix caching on. Every record of the phase changes together: the resolved
+    mamba_block_size, the block of each Mamba group that vLLM builds from it (mamba/abstract.py:66-73), the kernel
+    block of its views and of the runner (v1/worker/utils.py:445-450, :500-502), and the scheduler's block and hash
+    block sizes (v1/core/kv_cache_utils.py:761-798).
+    Each Mamba view keeps one kernel block per pool block, so the phase still validates on its own.
+    """
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    for reference in phase["artifacts"]:
+        path = index.parent / reference["path"]
+        record = json.loads(path.read_text())
+        cache = record["cache"]
+        groups = cache["groups"]
+        mamba = [position for position, group in enumerate(groups) if group["spec_type"].endswith(".MambaSpec")]
+        assert mamba
+        for position in mamba:
+            groups[position]["block_size_tokens"] = tokens
+            if record["kind"] == "worker":
+                cache["model_runner"]["kernel_block_sizes"][position] = tokens
+                for name in groups[position]["layer_names"]:
+                    for view in cache["layer_tensors"][name]:
+                        view["kernel_block_size_tokens"] = tokens
+        record["resolved_config"]["cache_config"]["mamba_block_size"] = tokens
+        if record["kind"] == "scheduler":
+            # The fixture sets no prefix-match unit, and every one of its groups takes part in prefix caching. With
+            # prefix caching on in align mode, the scheduler block is the LCM of the group blocks and the hash block
+            # is their GCD.
+            evidence = cache["prefix_caching"]
+            assert evidence["enable_prefix_caching"] and evidence["mamba_cache_mode"] == "align"
+            assert record["resolved_config"]["cache_config"]["prefix_match_unit"] is None
+            blocks = [group["block_size_tokens"] for group in groups]
+            cache["block_size"] = evidence["block_size"] = math.lcm(*blocks)
+            cache["hash_block_size"] = evidence["hash_block_size"] = math.gcd(*blocks)
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+def test_formal_phase_binding_compares_the_raw_block_size_of_a_state_group(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime_bindings
+
+    # Decode runs with prefix caching on, so the accepted probe's decode Mamba groups hold the 64-token block of align
+    # mode. The formal decode Mamba groups hold 2048-token blocks, which breaks only vLLM's align rule that the Mamba
+    # block size equals the block size (platforms/interface.py:995-996). The import does not check that rule.
+    request, index, bindings = _formal_phase_bindings(tmp_path, capsys, decode_prefix_caching=True)
+    # The whole-record comparison leaves out the block sizes of state groups, so the raw groups of the bound phase
+    # are the only check of the decode Mamba block.
+    _record_decode_state_block_size(index, 2048)
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+        verify_collection_runtime_bindings(request, bindings())
+
+
+def test_formal_collection_compares_the_cache_geometry_of_every_phase(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime
+
+    # Decode runs with prefix caching on, so the accepted probe's decode Mamba groups hold 64-token blocks. The first
+    # worker records and the resource records belong to prefill, so only a per-phase comparison sees the decode block.
+    # The formal decode Mamba groups hold 2048-token blocks: the scheduler still hashes in their GCD with the
+    # attention block, 64 tokens, so the prefix-caching settings of the phase stay equal. The records break only
+    # vLLM's align rule that the Mamba block size equals the block size (platforms/interface.py:995-996), which the
+    # import does not check.
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, layout="mamba_hybrid")
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(checkpoint["runtime_observations"])
+    _record_decode_state_block_size(index, 2048)
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+        verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
+
+
+@pytest.mark.parametrize("decode_block", [None, 2048])
+def test_finalization_compares_the_cache_geometry_of_every_formal_phase(tmp_path, capsys, decode_block):
+    from aisim.support.finalization import finalization_manifest, finalize
+    from aisim.support.runtime import verify_runtime_profile
+
+    # Without an edit, decode runs without prefix caching, so its Mamba blocks differ from those of prefill in the
+    # probe and in the formal run alike, and finalization accepts the role. The edited case runs decode with prefix
+    # caching on, where 2048-token Mamba blocks keep the scheduler's 64-token hash block and break only vLLM's align
+    # rule (platforms/interface.py:995-996), which the import does not check.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=decode_block is not None
+    )
+    target = tmp_path / "finalized"
+    if decode_block is None:
+        finalize(request, root, target)
+        resolved = SupportRequest.from_yaml(target / "request.yaml")
+        assert finalization_manifest(resolved)["runtime_compatibility"]["status"] == "compatible"
+        # Re-verification of the finalized profile runs the formal comparison again.
+        verify_runtime_profile(resolved)
+        return
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    _record_decode_state_block_size(Path(checkpoint["runtime_observations"]), decode_block)
+    # Finalization verifies the formal observations against the accepted probe before it writes anything.
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+        finalize(request, root, target)
+    assert not target.exists()
+
+
+def _reviewed_capacity_revision(tmp_path, capsys, resource_overrides=None):
+    checkpoint, original, files, root = _completed_runtime_collection(
+        tmp_path, capsys, resource_overrides=resource_overrides
+    )
+    collection = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(collection["runtime_observations"])
+    document = json.loads(index.read_text())
+    for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
+        for ref in phase["artifacts"]:
+            path = index.parent / ref["path"]
+            record = json.loads(path.read_text())
+            if record["kind"] == "scheduler":
+                record["cache"]["initial_free_blocks"] -= 1
+                record["cache"]["reserved_blocks"] += 1
+                record["cache"]["permanent_reserved_block_ids"].append(2)
+                _write(path, record)
+                ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+    assert _import(checkpoint, index, tmp_path / "revised", configurations=["tp2"]) == 0
+    revised = Path(json.loads(capsys.readouterr().out)["configurations"]["tp2"]["request"])
+    state = _load(checkpoint)
+    save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    return checkpoint, original, files, root, revised
+
+
+@pytest.mark.parametrize("claim", [False, True])
+def test_finalization_reuses_original_collection_with_accepted_observed_capacity_revision(tmp_path, capsys, claim):
+    from aisim.support.finalization import finalization_manifest, finalize
+    from aisim.support.plan import check_plan, request_id
+    from aisim.support.runtime import verify_runtime_profile
+
+    checkpoint, original, files, root, memory_config = _reviewed_capacity_revision(
+        tmp_path, capsys, resource_overrides=_LINEAR_CLAIM if claim else None
+    )
+    revised = SupportRequest.from_yaml(memory_config)
+    # The capacity revision imports the formal observations with the same checkpoint claim, so its layout matches.
+    layout = "linear" if claim else "grouped"
+    assert original.profile_deployment().resources.cache_layout == layout
+    assert revised.profile_deployment().resources.cache_layout == layout
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    accepted = checkpoint.read_bytes()
+    with pytest.raises(ValueError, match="smaller than the accepted bound"):
+        finalize(original, root, tmp_path / "unreviewed")
+    with pytest.raises(ValueError, match="different request identity"):
+        check_plan(revised, root)
+    target = tmp_path / "resolved-revision"
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "finalize",
+                "--config",
+                files["request"],
+                "--output-dir",
+                str(root),
+                "--memory-config",
+                str(memory_config),
+                "--resolved-output-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.profile_deployment().resources.cache_layout == layout
+    manifest = finalization_manifest(resolved)
+    assert manifest["source_request_id"] == request_id(original)
+    assert manifest["memory_revision"]["request_id"] == request_id(revised)
+    assert resolved.profile_deployment().resources.runtime_memory.kv_cache_bytes == (
+        revised.profile_deployment().resources.runtime_memory.kv_cache_bytes
+    )
+    assert before == {path: path.read_bytes() for path in before}
+    assert checkpoint.read_bytes() == accepted
+    check_plan(resolved, target)
+    verify_runtime_profile(resolved)
+    state = _load(checkpoint)
+    artifacts = {key: {"archived": True} for key in state.configurations["tp2"].artifacts}
+    artifacts["resolved-request"] = {"path": str(target / "request.yaml"), "kind": "request"}
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={
+            "configurations": {
+                "tp2": {
+                    "draft_request": resolved.model_dump(mode="json", exclude_none=True),
+                    "artifacts": artifacts,
+                }
+            }
+        },
+        expected_revision=state.revision,
+        accept=[],
+    )
+    assert state.configurations["tp2"].acceptance is None
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+    memory_config.write_text(memory_config.read_text() + "\n")
+    with pytest.raises(ValueError, match="memory revision.*changed"):
+        verify_runtime_profile(resolved)
+
+
+@pytest.mark.parametrize(
+    ("change", "diagnostic"),
+    [
+        ("runtime", "non-capacity"),
+        ("layout", "non-capacity"),
+        ("workload", "non-capacity"),
+        ("capacity_increase", "must lower"),
+        ("capacity_override", "without capacity overrides"),
+        ("forged_observation", "saved observed resources differ"),
+        ("missing_attempts", "complete formal collection attempt bindings"),
+        ("wrong_attempt", "different collection attempt"),
+    ],
+)
+def test_capacity_revision_rejects_unrelated_changes_and_unverified_evidence(tmp_path, capsys, change, diagnostic):
+    from aisim.support.runtime import verify_collection_runtime
+
+    _, original, _, root, memory_config = _reviewed_capacity_revision(tmp_path, capsys)
+    revised = SupportRequest.from_yaml(memory_config)
+    resources = revised.profile_deployment().resources
+    evidence = json.loads(resources.runtime_memory.provenance)
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(checkpoint["runtime_observations"])
+    if change == "runtime":
+        revised.collection.gpu_memory_utilization = 0.8
+    elif change == "layout":
+        resources.cache_groups[0].page_size_bytes += 128
+    elif change == "workload":
+        revised.workload.request_count += 1
+    elif change == "capacity_increase":
+        resources.runtime_memory.kv_cache_bytes = (
+            original.profile_deployment().resources.runtime_memory.kv_cache_bytes + 128
+        )
+    elif change == "capacity_override":
+        resources.runtime_memory.kv_cache_bytes -= 128
+        evidence["user_overrides"] = {
+            "runtime_memory.kv_cache_bytes": {"value": resources.runtime_memory.kv_cache_bytes}
+        }
+    elif change == "forged_observation":
+        evidence["observed_resources"]["runtime_memory"]["kv_cache_bytes"] -= 128
+    elif change == "missing_attempts":
+        checkpoint = None
+    elif change == "wrong_attempt":
+        checkpoint["runtime_observation_attempt_id"] = "unrelated"
+    resources.runtime_memory.provenance = json.dumps(evidence)
+    with pytest.raises(ValueError, match=diagnostic):
+        verify_collection_runtime(original, index, collection_checkpoint=checkpoint, memory_request=revised)
+
+
+def test_capacity_revision_requires_acceptance_and_exact_formal_observations(tmp_path, capsys):
+    from aisim.support.finalization import finalize
+    from aisim.support.runtime import verify_collection_runtime
+
+    checkpoint, original, _, root, memory_config = _reviewed_capacity_revision(tmp_path, capsys)
+    formal = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    source = Path(formal["runtime_observations"])
+    unrelated = tmp_path / "other-attempt"
+    shutil.copytree(source.parent, unrelated)
+    index = unrelated / source.name
+    document = json.loads(index.read_text())
+    attempt = document["configurations"]["tp2"]["attempts"][0]
+    attempt["attempt_id"] = "unrelated-parent"
+    document["configurations"]["tp2"]["active_attempt_id"] = attempt["attempt_id"]
+    for phase in attempt["phases"].values():
+        for ref in [phase["launch_manifest"], *phase["artifacts"]]:
+            path = index.parent / ref["path"]
+            record = json.loads(path.read_text())
+            record["attempt_id"] = attempt["attempt_id"]
+            _write(path, record)
+            ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+    assert _import(checkpoint, index, tmp_path / "unrelated-revision", configurations=["tp2"]) == 0
+    revised_path = json.loads(capsys.readouterr().out)["configurations"]["tp2"]["request"]
+    revised = SupportRequest.from_yaml(revised_path)
+    with pytest.raises(ValueError, match="explicit acceptance"):
+        finalize(original, root, tmp_path / "unaccepted", memory_config=revised_path)
+    assert not (tmp_path / "unaccepted").exists()
+    with pytest.raises(ValueError, match="same complete formal collection observations"):
+        verify_collection_runtime(original, source, collection_checkpoint=formal, memory_request=revised)
+    # The previously reviewed request is no longer the checkpoint's accepted
+    # draft, even though its immutable evidence is still available.
+    with pytest.raises(ValueError, match="explicit acceptance"):
+        finalize(original, root, tmp_path / "superseded", memory_config=memory_config)
+
+
+def test_large_runtime_provenance_reaches_supervised_recommendation_and_keeps_sources(tmp_path, capsys):
+    from aisim.support.finalization import _merge_resources, _verify_collection, finalization_manifest
+    from aisim.support.runtime import verify_runtime_profile
+
+    # The fixture's arbitrary configuration label is independent of topology.
+    checkpoint, original, files, root = _completed_runtime_collection(tmp_path, capsys, tp=8)
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    accepted = checkpoint.read_bytes()
+    target = tmp_path / "resolved"
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "finalize",
+                "--config",
+                files["request"],
+                "--output-dir",
+                str(root),
+                "--resolved-output-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert before == {path: path.read_bytes() for path in before}
+    assert checkpoint.read_bytes() == accepted
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.profile_deployment().tp == 8
+    manifest = finalization_manifest(resolved)
+    assert manifest == json.loads((target / "finalization.json").read_text())
+    assert manifest["observation_provenance"] == "source_references"
+    observation = json.loads(manifest["cell_observations"][0]["runtime_memory"]["provenance"])
+    assert len(observation["rank_capacities"]) == 16
+    assert len(observation["artifacts"]) == 18
+    assert all(set(reference) == {"path", "sha256"} for reference in observation["artifacts"])
+    for reference in manifest["source_artifacts"]:
+        assert hashlib.sha256(Path(reference["path"]).read_bytes()).hexdigest() == reference["sha256"]
+    output = tmp_path / "recommendation"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisim",
+            "recommend",
+            "--config",
+            str(target / "recommend/pilot.yaml"),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1, result.stderr
+    recommendation = json.loads((output / "recommendation.json").read_text())
+    assert len(recommendation["candidates"]) == 1
+    candidate = recommendation["candidates"][0]
+    assert candidate["status"] == "failed"
+    assert "FPM direct" in candidate["reason"] and "unsupported" in candidate["reason"]
+    assert "bounded checkpoint budget" not in result.stderr
+    events = [json.loads(line) for line in (output / "execution-events.jsonl").read_text().splitlines()]
+    assert any(event["event"] == "candidate_completed" for event in events)
+    verify_runtime_profile(resolved)
+    observations, legacy_manifest, _, _ = _verify_collection(original, root)
+    legacy = resolved.model_dump(mode="json")
+    legacy["fpm_profile"]["deployments"][0]["resources"] = _merge_resources(observations, legacy_manifest)
+    review = tmp_path / "resolved-checkpoint.json"
+    state, _ = save_checkpoint(
+        review,
+        patch={
+            "configurations": {
+                "legacy": {"draft_request": legacy},
+                "references": {"draft_request": resolved.model_dump(mode="json")},
+            }
+        },
+        expected_revision=None,
+        accept=["legacy", "references"],
+    )
+    assert all(config["profile_accepted"] for config in report(state, review)["configurations"].values())
+    assert SupportRequest.model_validate(state.configurations["legacy"].draft_request).model_dump(mode="json") == legacy
+    changed = resolved.model_dump(mode="json")
+    resources = changed["fpm_profile"]["deployments"][0]["resources"]
+    forged = copy.deepcopy(manifest)
+    forged["source_artifacts"][0]["sha256"] = "0" * 64
+    resources["runtime_memory"]["provenance"] = json.dumps(forged, sort_keys=True, separators=(",", ":"))
+    with pytest.raises(ValueError, match="resources differ"):
+        verify_runtime_profile(SupportRequest.model_validate(changed))
+    for value in (None, "future-format", {}):
+        forged["observation_provenance"] = value
+        resources["runtime_memory"]["provenance"] = json.dumps(forged)
+        with pytest.raises(ValueError, match="unsupported finalized observation provenance format"):
+            verify_runtime_profile(SupportRequest.model_validate(changed))
+    # The compact representation must still bind every immutable raw record.
+    source = next(path for path in before if path.name == "worker-0-0.json")
+    source.write_text(source.read_text() + "\n")
+    with pytest.raises(ValueError, match="changed|hash|incomplete"):
+        verify_runtime_profile(resolved)
+    assert all(not config["profile_accepted"] for config in report(state, review)["configurations"].values())
+
+
+def test_formal_capacity_drop_and_geometry_change_are_rejected(tmp_path, capsys):
+    from aisim.support.runtime import verify_collection_runtime
+
+    _, index, request, _ = _imported(tmp_path, capsys)
+    result = verify_collection_runtime(request, index)
+    assert result["compatibility"]["status"] == "compatible"
+    document = json.loads(index.read_text())
+    for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
+        for ref in phase["artifacts"]:
+            path = index.parent / ref["path"]
+            record = json.loads(path.read_text())
+            if record["kind"] == "scheduler":
+                record["cache"]["initial_free_blocks"] -= 1
+                record["cache"]["reserved_blocks"] += 1
+                record["cache"]["permanent_reserved_block_ids"].append(2)
+            _write(path, record)
+            ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+    with pytest.raises(ValueError, match="smaller than the accepted bound"):
+        verify_collection_runtime(request, index)
+    for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
+        for ref in phase["artifacts"]:
+            path = index.parent / ref["path"]
+            record = json.loads(path.read_text())
+            cache = record["cache"]
+            if record["kind"] == "scheduler":
+                cache["initial_free_blocks"] += 1
+                cache["reserved_blocks"] -= 1
+                cache["permanent_reserved_block_ids"].remove(2)
+            else:
+                cache["layer_tensors"]["changed_layer"] = cache["layer_tensors"].pop("layer0")
+                for allocation in cache["tensor_allocations"]:
+                    allocation["shared_by"] = [
+                        "changed_layer" if name == "layer0" else name for name in allocation["shared_by"]
+                    ]
+            for group in cache["groups"]:
+                group["layer_names"] = ["changed_layer" if name == "layer0" else name for name in group["layer_names"]]
+                if "layer_classes" in group and "layer0" in group["layer_classes"]:
+                    group["layer_classes"]["changed_layer"] = group["layer_classes"].pop("layer0")
+            _write(path, record)
+            ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+    with pytest.raises(ValueError, match="geometry differs"):
+        verify_collection_runtime(request, index)
+
+
+def test_malformed_configuration_does_not_discard_an_independent_valid_draft(tmp_path, capsys):
+    checkpoint, index, _ = _campaign(tmp_path)
+    document = json.loads(index.read_text())
+    document["configurations"]["incomplete"] = {"attempts": "malformed"}
+    _write(index, document)
+    assert _import(checkpoint, index, tmp_path / "drafts") == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["configurations"]["tp2"]["status"] == "complete"
+    assert "list of objects" in str(result["configurations"]["incomplete"]["diagnostics"])
+
+
+def test_import_optimistic_lock_keeps_concurrent_checkpoint_update(tmp_path, capsys, monkeypatch):
+    import aisim.support.runtime as runtime
+
+    checkpoint, index, _ = _campaign(tmp_path)
+    actual_draft = runtime._draft
+
+    def concurrent_edit(*args, **kwargs):
+        result = actual_draft(*args, **kwargs)
+        state = _load(checkpoint)
+        save_checkpoint(
+            checkpoint, patch={"research": {"concurrent": "preserved"}}, expected_revision=state.revision, accept=[]
+        )
+        return result
+
+    monkeypatch.setattr(runtime, "_draft", concurrent_edit)
+    with pytest.raises(SystemExit, match="2"):
+        _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"])
+    assert "checkpoint revision" in capsys.readouterr().err
+    assert _load(checkpoint).research["concurrent"] == "preserved"
+    assert not _load(checkpoint).configurations["tp2"].draft_request.get("fpm_profile")
+
+
+def test_collection_inputs_without_probe_do_not_reverify_finalized_quality(monkeypatch):
+    from aisim.support import runtime
+
+    monkeypatch.setattr(runtime, "runtime_probe_manifest", lambda request: None)
+    monkeypatch.setattr(runtime, "verify_runtime_profile", lambda request: pytest.fail("unnecessary full verification"))
+    assert runtime.runtime_collection_inputs(None, None) == ([], None)
+
+
+@pytest.mark.parametrize("label", [None, "custom-vllm"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_pending_probe_preview_then_execute_reuses_output_directory(tmp_path, monkeypatch, label, resume):
+    from collector.fpm_forward import runner
+
+    from aisim.support import versioning
+
+    from .collector.test_fpm_runtime_probe import _SyntheticExecutor
+
+    checkpoint, _, _ = _campaign(tmp_path)
+    state = _load(checkpoint)
+    draft = copy.deepcopy(state.configurations["tp2"].draft_request)
+    draft["identity"]["framework_version"] = label
+    save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": draft}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    output = tmp_path / "pending-probe"
+    command = [
+        "onboard",
+        "probe-runtime",
+        "--checkpoint",
+        str(checkpoint),
+        "--configuration",
+        "tp2",
+        "--output-dir",
+        str(output),
+    ]
+    monkeypatch.setattr(versioning, "detect_runtime_versions", lambda *_: pytest.fail("preview must not detect"))
+    assert cli.main(command) == 1
+    assert not output.exists()
+    preview = _load(checkpoint).configurations["tp2"].history[-1]
+    assert preview["result"]["status"] == "pending_runtime_version"
+    assert "report" not in preview
+    monkeypatch.setattr(versioning, "detect_runtime_versions", lambda *_: {"backend_version": "0.27.0"})
+    executions = []
+    monkeypatch.setattr(runner, "_cell_runner", lambda p, c, _m, d: _SyntheticExecutor(p, c, d, executions))
+
+    assert cli.main([*command, "--execute", *(["--resume"] if resume else [])]) == 0
+    assert executions == [("tp2", "prefill"), ("tp2", "decode")]
+    assert (output / "probe-plan.json").exists()
+    observed = json.loads((output / "observations.json").read_text())["configurations"]["tp2"]
+    assert observed["launch"]["identity"]["framework_version"] == (label or "0.27.0")
+    assert cli.main([*command, "--execute", "--resume"]) == 0
+    assert len(executions) == 2
+
+
+def test_mixed_known_and_pending_probe_preview_records_every_configuration(tmp_path, monkeypatch):
+    from collector.fpm_forward import runner
+
+    from aisim.support import versioning
+
+    checkpoint, _, _ = _campaign(tmp_path)
+    state = _load(checkpoint)
+    patches = {}
+    for name, label in (("tp2", "0.27.0"), ("incomplete", None)):
+        draft = copy.deepcopy(state.configurations[name].draft_request)
+        draft["identity"]["framework_version"] = label
+        patches[name] = {"draft_request": draft}
+    save_checkpoint(checkpoint, patch={"configurations": patches}, expected_revision=state.revision, accept=[])
+    monkeypatch.setattr(versioning, "detect_runtime_versions", lambda *_: pytest.fail("preview must not detect"))
+    monkeypatch.setattr(runner, "_cell_runner", lambda *_: pytest.fail("preview must not launch workers"))
+    output = tmp_path / "mixed-probe"
+
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--configuration",
+                "incomplete",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 1
+    )
+    state = _load(checkpoint)
+    assert state.configurations["tp2"].history[-1]["result"]["status"] == "deferred"
+    assert state.configurations["incomplete"].history[-1]["result"]["status"] == "pending_runtime_version"
+    assert not output.exists()

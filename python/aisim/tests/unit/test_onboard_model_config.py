@@ -1,0 +1,2372 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Public local-config onboarding, including saved-request replay."""
+
+from __future__ import annotations
+
+import builtins
+import hashlib
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+import aisim.main as cli
+from aisim.config import CorePredictionConfig, CoreRecommendationConfig
+from aisim.support.fpm import fpm_cli_args
+from aisim.support.plan import MEMORY_OBSERVATION_VERSIONS, check_plan, request_id
+from aisim.support.schema import SupportRequest
+
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
+
+# Synthetic geometry and explicit illustrative bounds, not checkpoint measurements.
+_CONFIG = {
+    "_name_or_path": "example/local-decoder",
+    "architectures": ["LlamaForCausalLM"],
+    "model_type": "llama",
+    "max_position_embeddings": 32768,
+    "hidden_size": 128,
+    "intermediate_size": 256,
+    "num_hidden_layers": 2,
+    "num_attention_heads": 4,
+    "num_key_value_heads": 2,
+    "vocab_size": 1024,
+    "torch_dtype": "bfloat16",
+    "tie_word_embeddings": False,
+}
+_OVERRIDES = {
+    "weights_bytes": 2 * 1024**3,
+    "activations_bytes": 32 * 1024**2,
+    "runtime_overhead_bytes": 16 * 1024**2,
+    "comm_overhead_bytes": 16 * 1024**2,
+    "kv_bytes_per_token": 4096,
+    "cache_layout": "linear",
+    "max_num_tokens": 4096,
+    "max_batch_size": 8,
+    "gemm_quant_mode": "bfloat16",
+    "moe_quant_mode": "bfloat16",
+    "fmha_quant_mode": "bfloat16",
+    "comm_quant_mode": "half",
+    "kv_cache_dtype": "bfloat16",
+    "provenance": "Synthetic CLI test bounds; not measured.",
+}
+_IDENTITY = {
+    "model_revision": "checkpoint-revision-123",
+    "framework_version": "0.25.1",
+    "gpu": "h200_sxm",
+    "interconnect": "nvswitch",
+}
+_PILOT = {
+    "tensor_parallel": 1,
+    "input_tokens": 1024,
+    "output_tokens": 128,
+    "concurrency": 1,
+    "ttft_ms": 1000,
+    "tpot_ms": 100,
+}
+
+
+def test_validation_changes_preserve_profile_and_collection_command(tmp_path, capsys):
+    source, resources = _files(tmp_path)
+    requests = []
+    for name, validation in (
+        ("small", {}),
+        (
+            "large",
+            {"input_tokens": 4096, "output_tokens": 256, "concurrency": 16, "request_count": 32, "ttft_ms": 5000},
+        ),
+    ):
+        output = tmp_path / f"{name}.yaml"
+        assert cli.main(_args(output, source, resources, **validation)) == 0
+        requests.append(SupportRequest.from_yaml(output))
+    first, second = requests
+    assert first.workload != second.workload
+    assert first.fpm_profile == second.fpm_profile
+    assert request_id(first) == request_id(second)
+    assert fpm_cli_args(first, output_dir=tmp_path / "plan", plan_only=True) == fpm_cli_args(
+        second, output_dir=tmp_path / "plan", plan_only=True
+    )
+    assert first.scheduler_limits() == {"max_batched_tokens": 4096, "max_sequences": 8}
+
+
+@pytest.mark.parametrize("role,graph", [("prefill", "PIECEWISE"), ("decode", "FULL_DECODE_ONLY")])
+def test_role_init_exports_independent_collection_config_without_claiming_replay(tmp_path, role, graph):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    args = _args(output, source, resources, worker_type=role, cudagraph_mode=graph)
+    args += ["--cudagraph-capture-sizes", "1", "2", "4", "8", "--max-cudagraph-capture-size", "8"]
+    assert cli.main(args) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.worker_type == request.profile_deployment().worker_type == role
+    assert request.collection_phases == (role,)
+    assert request.collection.cudagraph_capture_sizes == [1, 2, 4, 8]
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+    saved = SupportRequest.from_yaml(root / "request.yaml")
+    assert saved.model_dump(mode="json") == request.model_dump(mode="json")
+    artifact = yaml.safe_load((root / "worker.yaml").read_text())
+    assert artifact["worker_type"] == role
+    assert artifact["serving_mode"] == artifact["engine"]["mode"] == "disaggregated"
+    assert set(artifact["engine"]["workers"]) == {role}
+    worker = artifact["engine"]["workers"][role]
+    from aisim.config.engine import WorkerPredictionConfig
+
+    parsed_worker = WorkerPredictionConfig.model_validate(worker)
+    assert parsed_worker.timing.systems_paths == [str(root / "systems")]
+    assert worker["timing"]["estimation_mode"] == "fpm_interpolation"
+    assert worker["timing"]["fallback_policy"] == "deny"
+    assert artifact["engine"]["systems_paths"] == [str(root / "systems")]
+    assert artifact["engine"]["fpm_profile"] == request.fpm_profile.model_dump(mode="json")
+    assert artifact["collection"]["cudagraph_mode"] == graph
+    commands = json.loads((root / "commands.json").read_text())
+    assert commands["predict"] == commands["recommend"] == []
+    assert not (root / "predict/pilot.yaml").exists()
+    command = commands["fpm_plan_local"]
+    assert command[command.index("--fpm-worker-type") + 1] == role
+    assert command[command.index("--fpm-cudagraph-mode") + 1] == graph
+    plan = json.loads((root / "support-plan.json").read_text())
+    assert plan["fpm"]["collection_phases"] == [role]
+    assert plan["replay"]["status"] == "not_assessed"
+    from aisim.support.validation import _prediction_config
+
+    with pytest.raises(ValueError, match="aggregated replay only"):
+        _prediction_config(request, root, tmp_path / "trace.json")
+
+
+def test_explicit_aggregated_role_retains_executable_prediction_and_recommendation(tmp_path):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert (
+        cli.main(_args(output, source, resources, worker_type="aggregated", cudagraph_mode="FULL_AND_PIECEWISE")) == 0
+    )
+    request = SupportRequest.from_yaml(output)
+    assert request.collection_phases == ("prefill", "decode")
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+    prediction = CorePredictionConfig.model_validate(yaml.safe_load((root / "predict/pilot.yaml").read_text()))
+    recommendation = CoreRecommendationConfig.model_validate(
+        yaml.safe_load((root / "recommend/pilot.yaml").read_text())
+    )
+    assert prediction.engine.mode == recommendation.engine.mode == "aggregated"
+    assert prediction.engine.fpm_profile.deployments[0].worker_type == "aggregated"
+    assert not (root / "worker.yaml").exists()
+
+
+def test_explicit_role_does_not_relabel_a_legacy_shared_profile(tmp_path):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "legacy.yaml"
+    assert cli.main(_args(output, source, resources)) == 0
+    legacy = SupportRequest.from_yaml(output)
+    payload = legacy.model_dump(mode="json")
+    assert "worker_type" not in payload
+    assert "worker_type" not in payload["fpm_profile"]["deployments"][0]
+    with pytest.raises(ValueError, match="do not relabel a legacy shared profile"):
+        SupportRequest.model_validate({**payload, "worker_type": "decode"})
+    assert SupportRequest.model_validate(payload).model_dump(mode="json") == payload
+
+
+def test_guided_role_and_graph_review_edits_are_saved(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    _terminal(
+        monkeypatch,
+        [
+            "edit",
+            "worker_type",
+            "decode",
+            "edit",
+            "cudagraph_mode",
+            "FULL_DECODE_ONLY",
+            "edit",
+            "cudagraph_capture_sizes",
+            "1 2 4 8",
+            "accept",
+        ],
+    )
+    assert (
+        cli.main(
+            _args(output, source, resources, worker_type="prefill", cudagraph_mode="PIECEWISE") + ["--interactive"]
+        )
+        == 0
+    )
+    request = SupportRequest.from_yaml(output)
+    assert request.worker_type == request.profile_deployment().worker_type == "decode"
+    assert request.collection.cudagraph_mode == "FULL_DECODE_ONLY"
+    assert request.collection.cudagraph_capture_sizes == [1, 2, 4, 8]
+
+
+def test_guided_graph_overrides_can_be_cleared_before_changing_to_none(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["edit", "max_cudagraph_capture_size", "clear", "edit", "cudagraph_mode", "NONE", "accept"])
+    args = _args(output, source, resources, worker_type="decode", cudagraph_mode="FULL", max_cudagraph_capture_size=8)
+    assert cli.main([*args, "--interactive"]) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.collection.cudagraph_mode == "NONE"
+    assert "max_cudagraph_capture_size" not in request.collection.model_dump(mode="json")
+
+
+def test_multiple_roles_on_same_topology_keep_distinct_requests_and_collection_limits(tmp_path):
+    source, _ = _files(tmp_path)
+    selections = tmp_path / "roles.yaml"
+    selections.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "worker_type": "prefill",
+                    "tensor_parallel": 1,
+                    "resource_overrides": _OVERRIDES,
+                    "collection": {"cudagraph_mode": "PIECEWISE", "max_num_tokens": 4096, "max_batch_size": 8},
+                },
+                {
+                    "worker_type": "decode",
+                    "tensor_parallel": 1,
+                    "resource_overrides": {**_OVERRIDES, "max_num_tokens": 2048, "max_batch_size": 4},
+                    "collection": {
+                        "cudagraph_mode": "FULL_DECODE_ONLY",
+                        "max_num_tokens": 2048,
+                        "max_batch_size": 4,
+                        "gpu_memory_utilization": 0.92,
+                    },
+                },
+            ]
+        )
+    )
+    root = tmp_path / "onboarding"
+    args = _args(root, source, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    assert cli.main([*args, "--parallel-configs", str(selections)]) == 0
+    index = json.loads((root / "onboarding.json").read_text())
+    assert [entry["worker_type"] for entry in index["configurations"]] == ["prefill", "decode"]
+    requests = [SupportRequest.from_yaml(entry["request"]) for entry in index["configurations"]]
+    assert requests[0].parallelism() == requests[1].parallelism()
+    assert request_id(requests[0]) != request_id(requests[1])
+    assert requests[0].scheduler_limits() == {"max_batched_tokens": 4096, "max_sequences": 8}
+    assert requests[1].scheduler_limits() == {"max_batched_tokens": 2048, "max_sequences": 4}
+    assert requests[1].collection.memory_fraction == 0.92
+    assert [Path(entry["request"]).parent.name.split("-")[0] for entry in index["configurations"]] == [
+        "prefill",
+        "decode",
+    ]
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+@pytest.mark.parametrize(
+    "shared",
+    [
+        {"cudagraph_mode": "FULL_AND_PIECEWISE"},
+        {"cudagraph_capture_sizes": [1, 2, 4]},
+        {"max_cudagraph_capture_size": 4},
+        {
+            "cudagraph_mode": "FULL_AND_PIECEWISE",
+            "cudagraph_capture_sizes": [1, 2, 4],
+            "max_cudagraph_capture_size": 4,
+        },
+    ],
+)
+def test_parallel_roles_accept_shared_graph_settings_without_a_global_role(tmp_path, monkeypatch, shared, interactive):
+    source, _ = _files(tmp_path)
+    selections = tmp_path / "roles.yaml"
+    selections.write_text(
+        yaml.safe_dump(
+            [
+                {"worker_type": "prefill", "tensor_parallel": 1, "resource_overrides": _OVERRIDES},
+                {
+                    "worker_type": "decode",
+                    "tensor_parallel": 1,
+                    "resource_overrides": _OVERRIDES,
+                    "collection": {"cudagraph_mode": "FULL_DECODE_ONLY"},
+                },
+            ]
+        )
+    )
+    root = tmp_path / "onboarding"
+    args = _args(root, source, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    for name, value in shared.items():
+        args += ["--" + name.replace("_", "-"), *map(str, value if isinstance(value, list) else [value])]
+    if interactive:
+        _terminal(monkeypatch, ["accept", "accept"])
+        args.append("--interactive")
+    assert cli.main([*args, "--parallel-configs", str(selections)]) == 0
+    index = json.loads((root / "onboarding.json").read_text())
+    requests = [SupportRequest.from_yaml(entry["request"]) for entry in index["configurations"]]
+    assert [request.worker_type for request in requests] == ["prefill", "decode"]
+    assert [request.profile_deployment().worker_type for request in requests] == ["prefill", "decode"]
+    for name, value in shared.items():
+        assert getattr(requests[0].collection, name) == value
+        assert getattr(requests[1].collection, name) == ("FULL_DECODE_ONLY" if name == "cudagraph_mode" else value)
+    assert requests[1].collection.cudagraph_mode == "FULL_DECODE_ONLY"
+
+
+@pytest.mark.parametrize("roleless_position", [0, 1])
+@pytest.mark.parametrize(
+    "graph_flags",
+    [
+        ["--cudagraph-mode", "FULL_AND_PIECEWISE"],
+        ["--cudagraph-capture-sizes", "1", "2", "4"],
+        ["--max-cudagraph-capture-size", "4"],
+    ],
+)
+def test_shared_graph_settings_reject_any_roleless_parallel_entry(tmp_path, capsys, roleless_position, graph_flags):
+    source, _ = _files(tmp_path)
+    entries = [
+        {"worker_type": role, "tensor_parallel": 1, "resource_overrides": _OVERRIDES} for role in ("prefill", "decode")
+    ]
+    entries[roleless_position].pop("worker_type")
+    selections = tmp_path / "roles.yaml"
+    selections.write_text(yaml.safe_dump(entries))
+    root = tmp_path / "onboarding"
+    args = _args(root, source, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    with pytest.raises(SystemExit) as error:
+        cli.main([*args, "--parallel-configs", str(selections), *graph_flags])
+    assert error.value.code == 2
+    assert "generic CUDA graph settings require an explicit worker_type" in capsys.readouterr().err
+    assert not root.exists()
+
+
+@pytest.mark.parametrize(
+    "graph_flags,collection,error_message",
+    [
+        (
+            ["--cudagraph-mode", "NONE", "--max-cudagraph-capture-size", "4"],
+            {},
+            "cudagraph_mode=NONE rejects CUDA graph capture settings",
+        ),
+        (
+            ["--cudagraph-capture-sizes", "4", "2"],
+            {},
+            "cudagraph_capture_sizes must be a nonempty, increasing list of distinct sizes",
+        ),
+        (
+            ["--max-cudagraph-capture-size", "4"],
+            {"prefill_cudagraph_policy": "explicit"},
+            "generic CUDA graph capture settings require prefill_cudagraph_policy=runtime",
+        ),
+    ],
+)
+def test_parallel_entries_validate_merged_graph_settings(tmp_path, capsys, graph_flags, collection, error_message):
+    source, resources = _files(tmp_path)
+    selections = tmp_path / "roles.yaml"
+    selections.write_text(yaml.safe_dump([{"worker_type": "decode", "tensor_parallel": 1, "collection": collection}]))
+    root = tmp_path / "onboarding"
+    args = _args(root, source, resources, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    with pytest.raises(SystemExit) as error:
+        cli.main([*args, "--parallel-configs", str(selections), *graph_flags])
+    assert error.value.code == 2
+    assert error_message in capsys.readouterr().err
+    assert not root.exists()
+
+
+def test_legacy_parallel_entry_preserves_single_request_serialization_and_hash(tmp_path):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources)) == 0
+    original = SupportRequest.from_yaml(output)
+    selections = tmp_path / "parallel.yaml"
+    selections.write_text(yaml.safe_dump([{"tensor_parallel": 1, "resource_overrides": _OVERRIDES}]))
+    root = tmp_path / "onboarding"
+    args = _args(root, source, tensor_parallel=None)
+    args[args.index("--output")] = "--output-dir"
+    assert cli.main([*args, "--parallel-configs", str(selections)]) == 0
+    index = json.loads((root / "onboarding.json").read_text())
+    request = SupportRequest.from_yaml(index["configurations"][0]["request"])
+    assert request.model_dump(mode="json") == original.model_dump(mode="json")
+    assert request_id(request) == request_id(original)
+    payload = request.model_dump(mode="json")
+    assert "worker_type" not in payload
+    assert "worker_type" not in payload["fpm_profile"]["deployments"][0]
+    assert (
+        not {"cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"} & payload["collection"].keys()
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"cudagraph_mode": "PIECEWISE"},
+        {"worker_type": "decode", "cudagraph_capture_sizes": [4, 2]},
+        {"worker_type": "decode", "cudagraph_capture_sizes": [2, 2]},
+        {"worker_type": "decode", "cudagraph_capture_sizes": [1, 2], "max_cudagraph_capture_size": 4},
+        {"worker_type": "decode", "cudagraph_capture_sizes": [1, 2], "prefill_cudagraph_policy": "explicit"},
+        {"worker_type": "decode", "max_cudagraph_capture_size": 2, "cudagraph_mode": "NONE"},
+    ],
+)
+def test_invalid_role_graph_settings_fail_before_saving(tmp_path, changes):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    sizes = changes.get("cudagraph_capture_sizes")
+    args = _args(output, source, resources, **{k: v for k, v in changes.items() if k != "cudagraph_capture_sizes"})
+    if sizes is not None:
+        args += ["--cudagraph-capture-sizes", *map(str, sizes)]
+    with pytest.raises(SystemExit):
+        cli.main(args)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("model_context,expected", [(32768, 32768), (262144, 256000)])
+def test_model_context_and_reference_cap_define_initial_runtime_context(tmp_path, model_context, expected):
+    source, resources = _files(tmp_path, config={**_CONFIG, "max_position_embeddings": model_context})
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources)) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.search.context_length == expected
+    assert request.fpm_profile.context_length == model_context
+    command = fpm_cli_args(request, output_dir=tmp_path / "plan", plan_only=True)
+    assert command[command.index("--fpm-max-model-len") + 1] == str(expected)
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "4096"
+
+
+def test_guided_collection_edit_reestimates_resources_before_acceptance(tmp_path, monkeypatch):
+    source, resources = _files(
+        tmp_path,
+        config={**_CONFIG, "hidden_size": 4096, "num_attention_heads": 32, "intermediate_size": 8192},
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(
+        monkeypatch,
+        [
+            "edit",
+            "max_num_tokens",
+            "4096",
+            "edit",
+            "runtime_context_length",
+            "8192",
+            "edit",
+            "max_prefill_cudagraph_size",
+            "512",
+            "accept",
+        ],
+    )
+    assert cli.main(_args(output, source, resources, max_num_tokens=16384) + ["--interactive"]) == 0
+    request = SupportRequest.from_yaml(output)
+    profile = request.profile_deployment()
+    assert request.search.context_length == 8192
+    assert request.collection.max_num_tokens == profile.resources.max_num_tokens == 4096
+    assert request.collection.max_prefill_cudagraph_size == 512
+    assert profile.resources.memory_source == "pending"
+    assert json.loads(profile.resources.provenance)["fields"]["activations_bytes"]["value"] == 2 * 4096 * 4096 * 11
+    assert request.scheduler_limits() == {"max_batched_tokens": 4096, "max_sequences": 256}
+    assert not any("Input tokens" in prompt or "Concurrent requests" in prompt for prompt in prompts)
+    command = fpm_cli_args(request, output_dir=tmp_path / "plan", plan_only=True)
+    for option, expected in (
+        ("--fpm-max-model-len", "8192"),
+        ("--fpm-max-num-batched-tokens", "4096"),
+        ("--fpm-max-num-seqs", "256"),
+        ("--fpm-max-prefill-cudagraph-size", "512"),
+    ):
+        assert command[command.index(option) + 1] == expected
+
+
+def test_conflicting_resource_and_collection_bounds_fail_before_saving(tmp_path):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    with pytest.raises(SystemExit):
+        cli.main(_args(output, source, resources, max_num_tokens=8192))
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "options,policy,limit",
+    [
+        ({}, "runtime", None),
+        ({"prefill_cudagraph_policy": "runtime"}, "runtime", None),
+        ({"max_prefill_cudagraph_size": 512}, "explicit", 512),
+        ({"prefill_cudagraph_policy": "explicit"}, "explicit", 2048),
+        ({"prefill_cudagraph_policy": "explicit", "max_prefill_cudagraph_size": 1024}, "explicit", 1024),
+    ],
+)
+def test_new_runtime_policy_is_saved_and_preserved_in_collection_preview(tmp_path, options, policy, limit):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources, **options)) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.collection.prefill_cudagraph_policy == policy
+    assert request.collection.gpu_memory_utilization == 0.9
+    assert request.collection_settings()["max_prefill_cudagraph_size"] == limit
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+    command = json.loads((root / "commands.json").read_text())["fpm_plan_local"]
+    assert command[command.index("--fpm-prefill-cudagraph-policy") + 1] == policy
+    assert command[command.index("--fpm-gpu-memory-utilization") + 1] == "0.9"
+    if policy == "runtime":
+        assert "--fpm-max-prefill-cudagraph-size" not in command
+        assert "deferred" in request.collection_settings()["sources"]["max_prefill_cudagraph_size"]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"prefill_cudagraph_policy": "runtime", "max_prefill_cudagraph_size": 512},
+        {"gpu_memory_utilization": "nan"},
+        {"gpu_memory_utilization": "inf"},
+        {"gpu_memory_utilization": 0},
+        {"gpu_memory_utilization": -0.1},
+        {"gpu_memory_utilization": 1.1},
+    ],
+)
+def test_invalid_runtime_settings_leave_request_unchanged(tmp_path, options):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    output.write_text("original request\n")
+    with pytest.raises(SystemExit):
+        cli.main(_args(output, source, resources, **options) + ["--overwrite"])
+    assert output.read_text() == "original request\n"
+
+
+def test_review_reset_to_runtime_clears_capture_override_and_saves_edited_memory(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    _terminal(
+        monkeypatch,
+        [
+            "edit",
+            "prefill_cudagraph_policy",
+            "invalid",
+            "runtime",
+            "edit",
+            "gpu_memory_utilization",
+            "nan",
+            "1.1",
+            "0.75",
+            "accept",
+        ],
+    )
+    assert cli.main(_args(output, source, resources, max_prefill_cudagraph_size=1024) + ["--interactive"]) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.collection.prefill_cudagraph_policy == "runtime"
+    assert request.collection.max_prefill_cudagraph_size is None
+    assert request.collection.gpu_memory_utilization == 0.75
+    command = fpm_cli_args(request, output_dir=tmp_path / "collection", plan_only=True)
+    assert "--fpm-max-prefill-cudagraph-size" not in command
+    assert command[command.index("--fpm-gpu-memory-utilization") + 1] == "0.75"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_memory_fraction_survives_plan_compilation_and_replay_validation(tmp_path, grouped):
+    from aisim.compiler import prediction_to_replay_spec
+    from aisim.support.validation import _prediction_config
+
+    overrides = dict(_OVERRIDES)
+    if grouped:
+        overrides.pop("kv_bytes_per_token")
+        overrides.pop("cache_layout")
+        overrides["cache_block_sizes"] = {"sliding_attention": 16}
+    source, resources = _files(
+        tmp_path, config={**_CONFIG, **({"sliding_window": 128} if grouped else {})}, overrides=overrides
+    )
+    output = tmp_path / "request.yaml"
+    fraction = 0.73
+    assert cli.main(_args(output, source, resources, model=str(tmp_path), gpu_memory_utilization=fraction)) == 0
+    request = SupportRequest.from_yaml(output)
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+    plan = json.loads((root / "support-plan.json").read_text())
+    budget = plan["resources"]
+    assert budget["total_kv_size_bytes"] == int(budget["total_gpu_capacity_bytes"] * fraction) - sum(
+        budget["memory_breakdown"].values()
+    )
+    prediction = CorePredictionConfig.from_yaml(root / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(root / "recommend/pilot.yaml")
+    replay = CorePredictionConfig.model_validate(_prediction_config(request, root, tmp_path / "trace.jsonl"))
+    for config in (prediction, recommendation, replay):
+        assert config.engine.workers.aggregated.kv_cache.capacity.memory_fraction == fraction
+        if grouped:
+            assert not config.engine.workers.aggregated.kv_cache.prefix_caching
+        # Without runtime probe evidence, the configs set no block size, so replay keeps the vLLM default.
+        assert config.engine.workers.aggregated.kv_cache.block_size is None
+        # Host RAM controls are independent of the simulated GPU budget.
+        assert config.execution.resources.available_memory_fraction == 0.9
+    for config in (prediction, replay):
+        spec = prediction_to_replay_spec(config)
+        args = spec.backend_deployment.agg_engine_args
+        assert args["gpu_memory_utilization"] == fraction
+        assert args["block_size"] == 64
+
+
+def test_communication_override_is_retained_with_collection_compatibility_guidance(tmp_path, monkeypatch, capsys):
+    source, resources = _files(tmp_path, overrides={**_OVERRIDES, "comm_quant_mode": "int8"})
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+    deployment = SupportRequest.from_yaml(output).profile_deployment()
+    assert deployment.comm_quant_mode == "int8"
+    source = json.loads(deployment.resources.provenance)["fields"]["comm_quant_mode"]["source"]
+    assert "user override" in source
+    assert "collector supports half" in source
+    assert "new collection will reject a mismatched identity" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "route,limits",
+    [
+        (route, limits)
+        for route in ("identifier", "profile", "config")
+        for limits in ({"max_num_tokens": 128, "max_batch_size": 256}, {"max_num_tokens": 128})
+    ]
+    + [("profile", {}), ("config", {})],
+)
+def test_invalid_resolved_scheduler_cannot_be_saved_or_planned(tmp_path, capsys, route, limits):
+    source, resources = _files(tmp_path, overrides={**_OVERRIDES, "max_num_tokens": 8192, "max_batch_size": 256})
+    baseline = tmp_path / "baseline.yaml"
+    assert cli.main(_args(baseline, source, resources)) == 0
+    payload = yaml.safe_load(baseline.read_text())
+    profile = payload["fpm_profile"]
+    output = tmp_path / "invalid.yaml"
+    if route == "config":
+        resources.write_text(yaml.safe_dump({**_OVERRIDES, "max_num_tokens": 128, "max_batch_size": 256}))
+        command = _args(output, source, resources, **limits)
+    else:
+        command = _args(output, source, None, model=_CONFIG["_name_or_path"], model_kind="dense", **limits)
+        command.remove(str(source))
+        command.remove("--model-config")
+        if route == "identifier":
+            command.extend(["--context-length", "4096"])
+        if route == "profile":
+            if not limits:
+                profile["deployments"][0]["resources"]["max_num_tokens"] = 128
+            profile_path = tmp_path / "profile.json"
+            profile_path.write_text(json.dumps(profile))
+            command.extend(["--fpm-profile", str(profile_path)])
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(command)
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "max_num_tokens" in message and "max_batch_size" in message
+    assert not output.exists()
+
+    payload["collection"] = limits
+    if route == "identifier":
+        payload.pop("fpm_profile")
+    elif not limits:
+        payload["fpm_profile"]["deployments"][0]["resources"]["max_num_tokens"] = 128
+    request_path = tmp_path / "invalid-saved.yaml"
+    request_path.write_text(yaml.safe_dump(payload))
+    original = request_path.read_bytes()
+    plan = tmp_path / "invalid-plan"
+    with pytest.raises(SystemExit) as error:
+        cli.main(["onboard", "plan", "--config", str(request_path), "--output-dir", str(plan)])
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "max_num_tokens" in message and "max_batch_size" in message
+    assert request_path.read_bytes() == original
+    assert not plan.exists()
+
+
+@pytest.mark.parametrize("suggest_parallel", [False, True])
+def test_config_small_token_budget_uses_reviewed_sequence_bound(tmp_path, capsys, suggest_parallel):
+    overrides = {**_OVERRIDES, "max_num_tokens": 128}
+    if suggest_parallel:
+        # Automatic topology selection requires shared inputs rather than rank-local byte overrides.
+        overrides = {key: value for key, value in overrides.items() if not key.endswith("_bytes")}
+        overrides.pop("kv_bytes_per_token")
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    command = _args(output, source, resources, max_num_tokens=128, tensor_parallel=None if suggest_parallel else 1)
+    if suggest_parallel:
+        command.append("--suggest-parallel")
+
+    assert cli.main(command) == 0
+
+    if suggest_parallel:
+        assert json.loads(capsys.readouterr().out)["default"] is not None
+        assert not output.exists()
+    else:
+        request = SupportRequest.from_yaml(output)
+        assert request.scheduler_limits() == {"max_batched_tokens": 128, "max_sequences": 8}
+        root = tmp_path / "plan"
+        assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+        command = fpm_cli_args(request, output_dir=root, plan_only=True)
+        assert command[command.index("--fpm-max-num-batched-tokens") + 1] == "128"
+        assert command[command.index("--fpm-max-num-seqs") + 1] == "8"
+
+
+def test_guided_config_intake_needs_no_validation_lengths_concurrency_or_slas(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["accept"])
+    omitted = dict.fromkeys(("input_tokens", "output_tokens", "concurrency", "ttft_ms", "tpot_ms"))
+    assert cli.main(_args(output, source, resources, **omitted) + ["--interactive"]) == 0
+    assert prompts == ["Review action (accept/edit/cancel): "]
+    saved = SupportRequest.from_yaml(output)
+    assert saved.workload.concurrency == 1
+    assert saved.scheduler_limits()["max_sequences"] == 8
+
+
+def test_grouped_review_collects_runtime_blocks_then_edits_pages_before_save(tmp_path, monkeypatch, capsys):
+    config = {**_CONFIG, "sliding_window": 128, "layer_types": ["full_attention", "sliding_attention"]}
+    overrides = {key: value for key, value in _OVERRIDES.items() if key not in {"kv_bytes_per_token", "cache_layout"}}
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_bytes(source.read_bytes())
+    output = tmp_path / "new" / "request.yaml"
+    edited_groups = [
+        {
+            "name": "full_attention",
+            "kind": "attention",
+            "num_layers": 1,
+            "block_size_tokens": 16,
+            "page_size_bytes": 8192,
+        },
+        {
+            "name": "sliding_attention",
+            "kind": "attention",
+            "num_layers": 1,
+            "block_size_tokens": 8,
+            "page_size_bytes": 2048,
+            "sliding_window": 128,
+        },
+    ]
+    answers = iter(
+        [
+            '{"full_attention": 16}',
+            '{"sliding_attention": 8}',
+            "edit",
+            "cache_groups",
+            json.dumps(edited_groups),
+            "accept",
+        ]
+    )
+    prompts = []
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def answer(prompt):
+        assert not output.parent.exists(), "grouped profile was saved before acceptance"
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr(builtins, "input", answer)
+    assert cli.main(_args(output, source, resources, model=str(checkpoint)) + ["--interactive"]) == 0
+    saved = SupportRequest.from_yaml(output)
+    cache = saved.profile_deployment().resources
+    assert cache.cache_layout == "grouped"
+    assert cache.kv_bytes_per_token is None
+    assert cache.cache_groups[0].page_size_bytes == 8192
+    assert cache.cache_groups[1].sliding_window == 128
+    provenance = json.loads(cache.provenance)["fields"]
+    assert provenance["cache_block_sizes"]["value"] == {"full_attention": 16, "sliding_attention": 8}
+    assert "user override" in provenance["cache_groups"]["source"]
+    assert "config geometry reference" in provenance["cache_groups"]["source"]
+    assert sum(prompt.startswith("cache_block_sizes") for prompt in prompts) == 2
+    assert "minimum packed tensor estimates" in capsys.readouterr().out
+    source.unlink()
+    resources.unlink()
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    prediction = CorePredictionConfig.from_yaml(plan / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(plan / "recommend/pilot.yaml")
+    assert prediction.engine.fpm_profile == recommendation.engine.fpm_profile == saved.fpm_profile
+    assert not prediction.engine.workers.aggregated.kv_cache.prefix_caching
+    assert not recommendation.engine.workers.aggregated.kv_cache.prefix_caching
+    planned = json.loads((plan / "support-plan.json").read_text())
+    assert planned["resources"]["total_kv_size_tokens"] is None
+    assert planned["resources"]["request_peak_cache_bytes"] > 0
+
+
+def test_grouped_automatic_intake_defers_rank_resources_until_after_topology(tmp_path, monkeypatch):
+    source, resources = _files(
+        tmp_path,
+        config={**_CONFIG, "sliding_window": 128},
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["1", '{"sliding_attention": 16}', "accept"])
+    assert cli.main(_args(output, source, resources, tensor_parallel=None) + ["--interactive"]) == 0
+    assert prompts[0].startswith("Choose topology")
+    assert prompts[1].startswith("cache_block_sizes")
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.cache_layout == "grouped"
+
+
+# Collection observes pending memory on the vLLM versions of support/plan.py MEMORY_OBSERVATION_VERSIONS, also for a
+# grouped cache of full and sliding attention, whose specs the memory reader of the collection accepts. A draft whose
+# cache geometry is pending the runtime probe stops with the probe guidance before this review.
+_PENDING_MEMORY_LINES = {
+    "0.27.0": [
+        "  Memory is observed during initialized vLLM 0.27.0 collection.",
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
+    ],
+    "0.33.0": [
+        "  Memory is observed during initialized vLLM 0.33.0 collection.",
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
+    ],
+    "0.28.0": [
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+    ],
+}
+
+
+@pytest.mark.parametrize("version", list(_PENDING_MEMORY_LINES))
+def test_grouped_review_states_where_pending_memory_is_observed(tmp_path, monkeypatch, capsys, version):
+    source, resources = _files(
+        tmp_path,
+        config={**_CONFIG, "sliding_window": 128},
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    _terminal(monkeypatch, ['{"sliding_attention": 16}', "accept"])
+    args = _args(tmp_path / "request.yaml", source, resources, framework_version=version) + ["--interactive"]
+    assert cli.main(args) == 0
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1].splitlines()
+    assert "  Grouped pages retain full history or the declared window, with separate convolution state." in review
+    assert not [line for line in review if "State groups" in line]
+    assert "  Memory source: pending." in review
+    memory_lines = {line for lines in _PENDING_MEMORY_LINES.values() for line in lines}
+    assert [line for line in review if line in memory_lines] == _PENDING_MEMORY_LINES[version]
+
+
+def test_grouped_review_names_state_groups_only_when_the_draft_holds_one(tmp_path, monkeypatch, capsys):
+    # Without a layer count in the config, a complete cache_groups override resolves the grouped geometry, so a
+    # declared state group reaches the review.
+    config = {key: value for key, value in _CONFIG.items() if key != "num_hidden_layers"}
+    page = {"block_size_tokens": 16, "page_size_bytes": 4096}
+    groups = [
+        {"name": "full", "kind": "attention", "num_layers": 1, **page},
+        {"name": "kda", "kind": "state", "num_layers": 1, "blocks_per_request": 1, **page},
+    ]
+    overrides = {"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"}
+    source, resources = _files(tmp_path, config=config, overrides={**overrides, "cache_groups": groups})
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(tmp_path / "request.yaml", source, resources) + ["--interactive"]) == 0
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1].splitlines()
+    grouped = review.index(
+        "  Grouped pages retain full history or the declared window, with separate convolution state."
+    )
+    assert review[grouped + 1] == "  State groups hold a fixed block count per request."
+
+
+def _files(tmp_path, *, config=None, overrides=None, suffix="yaml"):
+    source = tmp_path / "config.json"
+    source.write_text(json.dumps(_CONFIG if config is None else config))
+    resource = tmp_path / f"resources.{suffix}"
+    values = _OVERRIDES if overrides is None else overrides
+    resource.write_text(json.dumps(values) if suffix == "json" else yaml.safe_dump(values))
+    return source, resource
+
+
+def _multimodal_config(text=None):
+    return {
+        "_name_or_path": "example/multimodal-checkpoint",
+        "architectures": ["ExampleMultimodalForConditionalGeneration"],
+        "model_type": "example_multimodal",
+        "hidden_size": 4096,
+        "num_hidden_layers": 32,
+        "text_config": dict(_CONFIG if text is None else text),
+        "vision_config": {"hidden_size": 512, "num_hidden_layers": 8},
+        "audio_config": {"hidden_size": 256, "num_hidden_layers": 4},
+    }
+
+
+def _args(output: Path, source: Path, resource: Path | None = None, **changes) -> list[str]:
+    options = {**_IDENTITY, **_PILOT, **changes}
+    command = ["onboard", "init", "--model-config", str(source), "--output", str(output)]
+    if resource is not None:
+        command += ["--resource-overrides", str(resource)]
+    return command + [
+        part
+        for name, value in options.items()
+        if value is not None
+        for part in ("--" + name.replace("_", "-"), str(value))
+    ]
+
+
+def _terminal(monkeypatch, answers=()):
+    prompts = []
+    remaining = iter(answers)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def answer(prompt):
+        prompts.append(prompt)
+        try:
+            value = next(remaining)
+        except StopIteration:
+            pytest.fail(f"unexpected prompt: {prompt}")
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(builtins, "input", answer)
+    return prompts
+
+
+def test_help_documents_local_config_and_override_options(capsys):
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "init", "--help"])
+    assert result.value.code == 0
+    text = capsys.readouterr().out
+    assert "--model-config" in text
+    assert "--resource-overrides" in text
+
+
+@pytest.mark.parametrize("suffix", ["json", "yaml"])
+def test_scripted_config_embeds_complete_profile_and_sources(tmp_path, monkeypatch, capsys, suffix):
+    _terminal(monkeypatch)
+    source, resources = _files(tmp_path, suffix=suffix)
+    output = tmp_path / "request.yaml"
+
+    assert cli.main(_args(output, source, resources)) == 0
+
+    request = SupportRequest.from_yaml(output)
+    profile = request.fpm_profile
+    assert request.identity.model == _CONFIG["_name_or_path"]
+    assert request.identity.model_kind == "dense"
+    assert request.identity.model_revision == _IDENTITY["model_revision"]
+    assert profile.architecture == "LlamaForCausalLM"
+    assert profile.context_length == 32768
+    assert request.search.context_length == 32768
+    assert profile.num_experts == 0
+    assert profile.deployments[0].resources.weights_bytes == _OVERRIDES["weights_bytes"]
+    provenance = profile.provenance + profile.deployments[0].resources.provenance
+    assert hashlib.sha256(source.read_bytes()).hexdigest() in provenance
+    assert "weights_bytes" in provenance
+    assert "override" in provenance.lower()
+    assert _OVERRIDES["provenance"] in provenance
+    transcript = capsys.readouterr().out
+    assert "weights_bytes" in transcript
+    assert "source" in transcript.lower()
+    assert "estimate" in transcript.lower()
+
+
+def test_explicit_identity_and_pilot_context_override_config_hints(tmp_path, monkeypatch):
+    _terminal(monkeypatch)
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+
+    assert cli.main(_args(output, source, resources, model="deployment/model-alias", context_length=2048)) == 0
+
+    request = SupportRequest.from_yaml(output)
+    assert request.identity.model == request.fpm_profile.model == "deployment/model-alias"
+    assert request.search.context_length == 2048
+    assert request.fpm_profile.context_length == 32768
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+def test_guided_review_requires_explicit_accept_before_creating_output(tmp_path, monkeypatch, capsys, multimodal):
+    source, resources = _files(tmp_path, config=_multimodal_config() if multimodal else None)
+    output = tmp_path / "new" / "request.yaml"
+    prompts = []
+    answers = iter(["", "save", "accept"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def respond(prompt):
+        prompts.append(prompt)
+        assert not output.parent.exists(), "setup wrote output before explicit acceptance"
+        return next(answers)
+
+    monkeypatch.setattr(builtins, "input", respond)
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert prompts == ["Review action (accept/edit/cancel): "] * 3
+    transcript = capsys.readouterr().out
+    assert "Review FPM profile before saving:" in transcript
+    review = transcript.split("Review FPM profile before saving:", 1)[1]
+    assert "Text decoder only" in review
+    assert "encoders, projectors, preprocessing" in review
+    assert "full multimodal latency is not modeled" in review
+    assert "weights_bytes: 2147483648" in transcript
+    assert "source: user override" in transcript
+    assert "per rank" in transcript
+    assert "checkpoint-revision-123" in transcript
+    assert "h200_sxm" in transcript
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.weights_bytes == 2 * 1024**3
+
+
+def test_guided_review_edits_file_values_and_provenance_then_replays_saved_profile(tmp_path, monkeypatch, capsys):
+    source, resources = _files(tmp_path)
+    original_overrides = resources.read_bytes()
+    output = tmp_path / "request.yaml"
+    note = "Synthetic replacement bounds for CLI validation; not measured."
+    prompts = _terminal(
+        monkeypatch,
+        [
+            "edit",
+            "not_a_field",
+            "weights_bytes",
+            "many",
+            "0.1 B",
+            "-1",
+            "3 GiB",
+            "edit",
+            "weights_bytes",
+            "4 GiB",
+            "edit",
+            "kv_cache_dtype",
+            "auto",
+            "fp8",
+            "edit",
+            "max_num_tokens",
+            "16384",
+            "edit",
+            "provenance",
+            note,
+            "accept",
+        ],
+    )
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    request = SupportRequest.from_yaml(output)
+    deployment = request.profile_deployment()
+    assert deployment.resources.weights_bytes == 4 * 1024**3
+    assert deployment.kv_cache_dtype == "fp8"
+    assert deployment.resources.max_num_tokens == 16384
+    # Explicit bounds remain user declarations when their dependencies change.
+    assert deployment.resources.kv_bytes_per_token == _OVERRIDES["kv_bytes_per_token"]
+    assert deployment.resources.activations_bytes == _OVERRIDES["activations_bytes"]
+    provenance = json.loads(request.fpm_profile.provenance)["fields"]
+    assert provenance["weights_bytes"]["value"] == 4 * 1024**3
+    assert provenance["provenance"]["value"] == note
+    assert all("user override" in provenance[field]["source"] for field in ("weights_bytes", "kv_bytes_per_token"))
+    assert resources.read_bytes() == original_overrides
+    assert sum(prompt.startswith("weights_bytes") for prompt in prompts) == 5
+    transcript = capsys.readouterr().out
+    assert "Choose an editable field" in transcript
+    assert "whole number of bytes" in transcript
+    review = transcript.rsplit("Review FPM profile before saving:", 1)[1]
+    assert "weights_bytes: 4294967296" in review
+    assert "kv_cache_dtype: fp8" in review
+    assert note in review
+    assert _OVERRIDES["provenance"] not in review
+
+    source.unlink()
+    resources.unlink()
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    prediction = CorePredictionConfig.from_yaml(plan / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(plan / "recommend/pilot.yaml")
+    assert prediction.engine.fpm_profile == recommendation.engine.fpm_profile == request.fpm_profile
+    assert json.loads((plan / "fpm-model-profile.json").read_text()) == request.fpm_profile.model_dump(mode="json")
+
+
+def test_guided_review_recomputes_inferred_kv_and_activation_bounds(tmp_path, monkeypatch, capsys):
+    config = {
+        **_CONFIG,
+        "hidden_size": 4096,
+        "intermediate_size": 14336,
+        "num_hidden_layers": 32,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 8,
+        "vocab_size": 32000,
+    }
+    source, resources = _files(
+        tmp_path,
+        config=config,
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    output = tmp_path / "request.yaml"
+    _terminal(
+        monkeypatch,
+        ["edit", "kv_cache_dtype", "fp8", "edit", "max_num_tokens", "4096", "edit", "max_batch_size", "8", "accept"],
+    )
+
+    assert cli.main(_args(output, source, resources, tensor_parallel=4, concurrency=4) + ["--interactive"]) == 0
+
+    request = SupportRequest.from_yaml(output)
+    deployment = request.profile_deployment()
+    assert deployment.parallel_tuple == (4, 1, 1, 1, 1, 1)
+    assert deployment.resources.kv_bytes_per_token == 16384  # 2 K/V * 32 layers * 2 local heads * 128 * 1 byte
+    assert deployment.resources.activations_bytes is None
+    assert json.loads(deployment.resources.provenance)["fields"]["activations_bytes"]["value"] == 167772160
+    assert deployment.resources.max_num_tokens == 4096
+    assert deployment.resources.max_batch_size == 8
+    provenance = json.loads(request.fpm_profile.provenance)["fields"]
+    assert "exact linear tensor geometry" in provenance["kv_bytes_per_token"]["source"]
+    assert "estimate:" in provenance["activations_bytes"]["source"]
+    assert "max_num_tokens=4096" in provenance["activations_bytes"]["source"]
+    assert "max_batch_size=8" in provenance["activations_bytes"]["source"]
+    transcript = capsys.readouterr().out
+    assert "kv_bytes_per_token: 32768" in transcript
+    assert "activations_bytes: 335544320" in transcript
+    review = transcript.rsplit("Review FPM profile before saving:", 1)[1]
+    assert "kv_bytes_per_token: 16384" in review
+    assert "activations_bytes: 167772160" in review
+
+
+@pytest.mark.parametrize(
+    "field,value,error",
+    [
+        ("weights_bytes", str(2**53), "total non-KV resource bytes"),
+        ("architecture", "UnknownForCausalLM", "conflicts with the source config"),
+        ("num_experts", "4", "conflicts with the source config"),
+        ("context_length", "65536", "exceeds the source config context limit"),
+        ("context_length", "8192", "search.context_length exceeds"),
+    ],
+)
+def test_guided_review_rejects_inconsistent_edits_and_retains_complete_prior_request(
+    tmp_path, monkeypatch, capsys, field, value, error
+):
+    source, resources = _files(tmp_path)
+    baseline = tmp_path / "baseline.yaml"
+    assert cli.main(_args(baseline, source, resources)) == 0
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["edit", field, value, "accept"])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert SupportRequest.from_yaml(output) == SupportRequest.from_yaml(baseline)
+    transcript = capsys.readouterr().out
+    assert "Edit rejected:" in transcript
+    assert error in transcript
+    assert "Previous profile values retained" in transcript
+
+
+def test_guided_review_keeps_unavailable_activation_memory_pending(tmp_path, monkeypatch, capsys):
+    source, resources = _files(
+        tmp_path, overrides={name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    )
+    output = tmp_path / "new" / "request.yaml"
+    prompts = []
+    answers = iter(["edit", "fmha_quant_mode", "fp8", "accept"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def respond(prompt):
+        assert not output.parent.exists(), "staged dependency must not write a partial request"
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr(builtins, "input", respond)
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert len(prompts) == 4
+    assert not any(prompt.startswith("activations_bytes") for prompt in prompts)
+    assert prompts[-1] == "Review action (accept/edit/cancel): "
+    deployment = SupportRequest.from_yaml(output).profile_deployment()
+    assert deployment.fmha_quant_mode == "fp8"
+    assert deployment.resources.activations_bytes is None
+    assert deployment.resources.memory_source == "pending"
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1]
+    assert "fmha_quant_mode: fp8" in review
+    assert "No activation or non-KV byte estimate is required" in review
+
+
+_SYNCHRONOUS_POLICY = (
+    "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
+    "This is a collection policy, not the default for arbitrary vLLM serving."
+)
+_NATIVE_TIMING_POLICY = (
+    "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."
+)
+# The pending-memory prerequisite that support plans saved before vLLM 0.32.0 support carry.
+_SAVED_PENDING_MEMORY_DETAIL = (
+    "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+    "initialization for supported vLLM 0.27.0 layouts; other versions can collect timings but leave memory "
+    "unresolved. No activation or non-KV byte declaration is required. Run onboard finalize after successful "
+    "collection, then review the resolved profile."
+)
+# The pending-memory prerequisites saved for the versions that gained memory observation. They must never change.
+_OBSERVED_PENDING_MEMORY_DETAILS = {
+    "0.32.0": (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        "initialization for supported vLLM 0.32.0 layouts. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    ),
+    "0.33.0": (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        "initialization for supported vLLM 0.33.0 layouts. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    ),
+}
+
+
+def _pending_support_plan(tmp_path, version):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources, framework_version=version)) == 0
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.memory_source == "pending"
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    return plan
+
+
+@pytest.mark.parametrize(
+    ("version", "policy", "detail"),
+    [
+        ("0.32.0", _SYNCHRONOUS_POLICY, _OBSERVED_PENDING_MEMORY_DETAILS["0.32.0"]),
+        ("0.31.0", _NATIVE_TIMING_POLICY, _SAVED_PENDING_MEMORY_DETAIL),
+    ],
+    ids=["0.32.0", "0.31.0"],
+)
+def test_pending_profile_plan_states_whether_the_runtime_version_observes_memory(tmp_path, version, policy, detail):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == policy
+    assert saved["prerequisites"][0]["status"] == "runtime_memory_pending"
+    assert saved["prerequisites"][0]["detail"] == detail
+
+
+@pytest.mark.parametrize(
+    ("version", "policy"),
+    [("0.27.0", _SYNCHRONOUS_POLICY), ("0.28.0", _NATIVE_TIMING_POLICY)],
+    ids=["0.27.0", "0.28.0"],
+)
+def test_pending_plan_saved_before_vllm_032_support_still_passes_check_plan(tmp_path, version, policy):
+    plan = _pending_support_plan(tmp_path, version)
+    path = plan / "support-plan.json"
+    saved = json.loads(path.read_text())
+    # Write the two texts as the code before vLLM 0.32.0 support saved them; check_plan compares every byte.
+    saved["fpm"]["scheduling_policy"] = policy
+    saved["prerequisites"][0]["detail"] = _SAVED_PENDING_MEMORY_DETAIL
+    path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n")
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+@pytest.mark.parametrize("version", sorted(_OBSERVED_PENDING_MEMORY_DETAILS))
+def test_pending_plan_saved_with_its_observed_version_text_passes_check_plan(tmp_path, version):
+    plan = _pending_support_plan(tmp_path, version)
+    path = plan / "support-plan.json"
+    saved = json.loads(path.read_text())
+    saved["fpm"]["scheduling_policy"] = _SYNCHRONOUS_POLICY
+    saved["prerequisites"][0]["detail"] = _OBSERVED_PENDING_MEMORY_DETAILS[version]
+    path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n")
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+def _patch_release_detail(version, audited):
+    return (
+        "Identity, precision, topology and cache geometry are declared. Runtime memory is collected during worker "
+        f"initialization for vLLM {version} layouts if the vLLM files that the observers read match audited vLLM "
+        f"{audited}. Otherwise memory stays unresolved. No activation or non-KV byte declaration is required. "
+        "Run onboard finalize after successful collection, then review the resolved profile."
+    )
+
+
+@pytest.mark.parametrize(("version", "audited"), [("0.33.1", "0.33.0"), ("0.32.2", "0.32.0")])
+def test_patch_release_plan_names_its_version_and_the_audited_release(tmp_path, version, audited):
+    plan = _pending_support_plan(tmp_path, version)
+    saved = json.loads((plan / "support-plan.json").read_text())
+    detail = saved["prerequisites"][0]["detail"]
+    assert saved["fpm"]["scheduling_policy"] == _SYNCHRONOUS_POLICY
+    assert detail == _patch_release_detail(version, audited)
+    assert re.findall(r"\d+\.\d+\.\d+", detail) == [version, audited]
+    check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+def test_saved_pre_patch_support_plan_is_refused(tmp_path, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "aisim.support.plan.audited_memory_release",
+            lambda version: version if version in MEMORY_OBSERVATION_VERSIONS else None,
+        )
+        plan = _pending_support_plan(tmp_path, "0.33.1")
+        saved = json.loads((plan / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == _NATIVE_TIMING_POLICY
+    assert saved["prerequisites"][0]["detail"] == _SAVED_PENDING_MEMORY_DETAIL
+    with pytest.raises(ValueError, match="was modified; choose a new output directory"):
+        check_plan(SupportRequest.from_yaml(plan / "request.yaml"), plan)
+
+
+@pytest.mark.parametrize("version", ["0.27.1", "0.33.1rc0"])
+def test_refused_patch_versions_keep_the_saved_texts(tmp_path, version):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    assert saved["fpm"]["scheduling_policy"] == _NATIVE_TIMING_POLICY
+    assert saved["prerequisites"][0]["detail"] == _SAVED_PENDING_MEMORY_DETAIL
+
+
+@pytest.mark.parametrize("version", [version for version in MEMORY_OBSERVATION_VERSIONS if version != "0.27.0"])
+def test_observed_version_prerequisite_names_only_its_own_version(tmp_path, version):
+    saved = json.loads((_pending_support_plan(tmp_path, version) / "support-plan.json").read_text())
+    # Naming only its own version keeps the saved text the same when another version is added.
+    assert re.findall(r"\d+\.\d+\.\d+", saved["prerequisites"][0]["detail"]) == [version]
+
+
+def _guided_review_transcript(tmp_path, monkeypatch, capsys, version):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(output, source, resources, framework_version=version) + ["--interactive"]) == 0
+    return capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize("version", ["0.32.0", "0.33.0"])
+def test_guided_review_states_that_supported_versions_observe_memory(tmp_path, monkeypatch, capsys, version):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, version)
+    assert f"  Memory is observed during initialized vLLM {version} collection." in lines
+    assert (
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking." in lines
+    )
+    assert not any("this version can collect timings only" in line for line in lines)
+
+
+@pytest.mark.parametrize(("version", "audited"), [("0.33.1", "0.33.0"), ("0.32.2", "0.32.0")])
+def test_guided_review_names_the_audited_release_for_a_patch_release(tmp_path, monkeypatch, capsys, version, audited):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, version)
+    assert (
+        f"  Memory is observed during initialized vLLM {version} collection if the vLLM files that the observers read "
+        f"match audited vLLM {audited}." in lines
+    )
+    assert (
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking." in lines
+    )
+    assert not any("this version can collect timings only" in line for line in lines)
+
+
+def test_guided_review_refuses_a_pre_release(tmp_path, monkeypatch, capsys):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.33.1rc0")
+    assert (
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+        in lines
+    )
+
+
+def test_guided_review_states_that_an_unsupported_version_collects_timings_only(tmp_path, monkeypatch, capsys):
+    lines = _guided_review_transcript(tmp_path, monkeypatch, capsys, "0.31.0")
+    assert (
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+        in lines
+    )
+    assert not any("Memory is observed during initialized vLLM" in line for line in lines)
+    assert not any(line.startswith("  Collection policy:") for line in lines)
+
+
+def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(tmp_path, monkeypatch, capsys):
+    overrides = {name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    overrides["weights_bytes"] = (
+        2**53 - 2 * 1024**3 - overrides["runtime_overhead_bytes"] - overrides["comm_overhead_bytes"]
+    )
+    source, resources = _files(tmp_path, overrides=overrides)
+    baseline = tmp_path / "baseline.yaml"
+    assert cli.main(_args(baseline, source, resources)) == 0
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["edit", "activations_bytes", "3 GiB", "accept"])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert SupportRequest.from_yaml(output) == SupportRequest.from_yaml(baseline)
+    assert "total non-KV resource bytes" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "answers",
+    [["cancel"], ["edit", "weights_bytes", "3 GiB", "cancel"]],
+    ids=["review", "after-edit"],
+)
+def test_guided_review_explicit_cancel_leaves_output_untouched(tmp_path, monkeypatch, existing, answers):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "new" / "request.yaml"
+    if existing:
+        output.parent.mkdir()
+        output.write_text("preserve previous request\n")
+    _terminal(monkeypatch, answers)
+
+    assert cli.main(_args(output, source, resources) + ["--interactive", "--overwrite"]) == 130
+
+    if existing:
+        assert output.read_text() == "preserve previous request\n"
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert not output.parent.exists()
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, EOFError])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "answers",
+    [[], ["edit"], ["edit", "weights_bytes"], ["edit", "fmha_quant_mode", "fp8"]],
+    ids=["review", "field", "value", "dependency"],
+)
+def test_guided_review_interruption_leaves_output_untouched(tmp_path, monkeypatch, interruption, existing, answers):
+    source, resources = _files(
+        tmp_path, overrides={name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
+    )
+    output = tmp_path / "new" / "request.yaml"
+    if existing:
+        output.parent.mkdir()
+        output.write_text("preserve previous request\n")
+    _terminal(monkeypatch, [*answers, interruption()])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive", "--overwrite"]) == 130
+
+    if existing:
+        assert output.read_text() == "preserve previous request\n"
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert not output.parent.exists()
+
+
+def test_scripted_identity_failure_lists_all_missing_identity_without_input(tmp_path, monkeypatch, capsys):
+    _terminal(monkeypatch)
+    source, _ = _files(tmp_path)
+    output = tmp_path / "new" / "request.yaml"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "init", "--model-config", str(source), "--output", str(output)])
+
+    assert result.value.code == 2
+    errors = capsys.readouterr().err
+    for option in ("--model-revision", "--gpu", "--interconnect"):
+        assert option in errors
+    assert "--framework-version" not in errors
+    assert "--resource-overrides" in errors
+    assert "identity" in errors.lower()
+    assert not output.parent.exists()
+
+
+def test_scripted_profile_failure_lists_every_unresolved_field_without_input(tmp_path, monkeypatch, capsys):
+    _terminal(monkeypatch)
+    # A config that names no architecture leaves every field, cache geometry included, to the user.
+    unknown = {"_name_or_path": "example/unknown"}
+    source, _ = _files(tmp_path, config=unknown)
+    output = tmp_path / "new" / "request.yaml"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(output, source, model_kind="dense", context_length=4096))
+
+    assert result.value.code == 2
+    errors = capsys.readouterr().err
+    for field in (
+        "architecture",
+        "context_length",
+        "num_experts",
+        "kv_bytes_per_token",
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "kv_cache_dtype",
+    ):
+        assert field in errors
+    assert "--resource-overrides" in errors
+    assert "JSON" in errors and "YAML" in errors
+    assert not output.parent.exists()
+
+
+def test_guided_config_asks_only_unresolved_inputs_and_recovers_invalid_answers(tmp_path, monkeypatch, capsys):
+    overrides = {key: value for key, value in _OVERRIDES.items() if key != "fmha_quant_mode"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["invalid-precision", "bfloat16", "accept"])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert len(prompts) == 3
+    assert all("fmha_quant_mode" in prompt for prompt in prompts[:-1])
+    assert SupportRequest.from_yaml(output).fpm_profile.deployments[0].fmha_quant_mode == "bfloat16"
+    assert "invalid-precision" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("option", ["model_revision", "framework_version"])
+@pytest.mark.parametrize("missing_precision", [False, True])
+def test_guided_final_profile_identity_correction_preserves_resource_answers(
+    tmp_path, monkeypatch, option, missing_precision
+):
+    overrides = {key: value for key, value in _OVERRIDES.items() if not missing_precision or key != "fmha_quant_mode"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    answers = (["bfloat16"] if missing_precision else []) + [_IDENTITY[option], "accept"]
+    prompts = _terminal(monkeypatch, answers)
+
+    assert cli.main(_args(output, source, resources, **{option: "unknown"}) + ["--interactive"]) == 0
+
+    assert len(prompts) == len(answers)
+    if missing_precision:
+        assert "fmha_quant_mode" in prompts[0]
+    assert ("Pinned model revision" if option == "model_revision" else "Backend data version label") in prompts[-2]
+    request = SupportRequest.from_yaml(output)
+    assert getattr(request.identity, option) == _IDENTITY[option]
+    assert request.profile_deployment().fmha_quant_mode == "bfloat16"
+    assert request.profile_deployment().resources.weights_bytes == _OVERRIDES["weights_bytes"]
+
+
+@pytest.mark.parametrize("missing_precision", [False, True])
+def test_guided_composite_resource_error_does_not_repeat_unrelated_precision_prompt(
+    tmp_path, monkeypatch, capsys, missing_precision
+):
+    overrides = {
+        key: value
+        for key, value in _OVERRIDES.items()
+        if key != "activations_bytes" and (not missing_precision or key != "fmha_quant_mode")
+    }
+    overrides["weights_bytes"] = 2**53 - overrides["runtime_overhead_bytes"] - overrides["comm_overhead_bytes"]
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "new" / "request.yaml"
+    prompts = _terminal(monkeypatch, ["bfloat16"] if missing_precision else [])
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(output, source, resources) + ["--interactive"])
+
+    assert result.value.code == 2
+    assert "total non-KV resource bytes must not exceed 2**53" in capsys.readouterr().err
+    assert len(prompts) == int(missing_precision)
+    if missing_precision:
+        assert "fmha_quant_mode" in prompts[0]
+    assert not output.parent.exists()
+
+
+def test_scripted_late_dense_architecture_rejects_moe_config_without_output(tmp_path, monkeypatch, capsys):
+    _terminal(monkeypatch)
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    config["num_experts"] = 4
+    source, resources = _files(tmp_path, config=config, overrides={**_OVERRIDES, "architecture": "LlamaForCausalLM"})
+    output = tmp_path / "new" / "request.yaml"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(output, source, resources))
+
+    assert result.value.code == 2
+    assert "dense architecture" in capsys.readouterr().err
+    assert not output.parent.exists()
+
+
+@pytest.mark.parametrize("field", ["num_experts_per_tok", "first_k_dense_replace"])
+def test_real_cli_accepts_optional_null_moe_metadata_with_late_expert_count(tmp_path, field):
+    config = {**_CONFIG, "architectures": ["MixtralForCausalLM"], "model_type": "mixtral", field: None}
+    source, resources = _files(tmp_path, config=config, overrides={**_OVERRIDES, "num_experts": 4})
+    output = tmp_path / "request.yaml"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "aisim", *_args(output, source, resources)],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    request = SupportRequest.from_yaml(output)
+    assert request.identity.model_kind == "moe"
+    assert request.fpm_profile.num_experts == 4
+    assert request.profile_deployment().resources.weights_bytes == _OVERRIDES["weights_bytes"]
+
+
+def test_real_cli_multimodal_intake_preserves_text_scope_and_original_source(tmp_path):
+    source, resources = _files(tmp_path, config=_multimodal_config())
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    output = tmp_path / "request.yaml"
+    result = subprocess.run(
+        [sys.executable, "-m", "aisim", *_args(output, source, resources)],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Text decoder only" in result.stdout
+    assert "encoders, projectors, preprocessing" in result.stdout
+    assert "full multimodal latency is not modeled" in result.stdout
+    assert "Review action" not in result.stdout
+    request = SupportRequest.from_yaml(output)
+    assert request.identity.model == "example/multimodal-checkpoint"
+    assert request.fpm_profile.architecture == "LlamaForCausalLM"
+    provenance = json.loads(request.fpm_profile.provenance)
+    assert provenance["config_sha256"] == source_hash
+    assert "Text decoder only" in provenance["config_notes"]["modeling_scope"]
+    assert "text_config" in provenance["config_notes"]["decoder_config"]
+    assert provenance["config_notes"]["hidden_size"] == "config hidden_size=128"
+
+
+def test_real_cli_unknown_multimodal_decoder_is_pending_the_runtime_probe_without_writing(tmp_path):
+    text = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    text["num_experts"] = 0
+    source, _ = _files(tmp_path, config=_multimodal_config(text))
+    output = tmp_path / "new" / "request.yaml"
+    result = subprocess.run(
+        [sys.executable, "-m", "aisim", *_args(output, source)],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "Text decoder only" in result.stdout
+    # The wrapper names an architecture intake does not recognize, so the runtime probe measures the geometry.
+    assert "Cache geometry: pending runtime probe" in result.stderr
+    assert "unrecognized architecture ExampleMultimodalForConditionalGeneration" in result.stderr
+    # User-owned inputs are still listed, and cache geometry is never asked for. A per-token size is optional:
+    # import checks it against the probe.
+    assert "fmha_quant_mode" in result.stderr and "--resource-overrides" in result.stderr
+    assert "cache_layout" not in result.stderr and "  kv_bytes_per_token: " not in result.stderr
+    assert (
+        "If you keep kv_bytes_per_token in the configuration's resource_overrides in the checkpoint, "
+        "onboard import-observations checks it" in result.stderr
+    )
+    assert "unsupported encoder, multimodal" not in result.stderr
+    assert not output.parent.exists()
+
+
+def test_bundled_modelopt_string_cache_config_creates_complete_request(tmp_path, monkeypatch):
+    _terminal(monkeypatch)
+    config_path = (
+        Path(__file__).parents[2] / "src/aisim_core/model_configs/Qwen--Qwen3-32B-FP8-Static-PerTensor_config.json"
+    )
+    source, resources = _files(
+        tmp_path,
+        config=json.loads(config_path.read_text()),
+        overrides={"weights_bytes": 40 * 1024**3, "fmha_quant_mode": "bfloat16", "comm_quant_mode": "half"},
+    )
+    output = tmp_path / "request.yaml"
+
+    assert cli.main(_args(output, source, resources, model="review/qwen3-config")) == 0
+
+    profile = SupportRequest.from_yaml(output).fpm_profile
+    assert profile.architecture == "Qwen3ForCausalLM"
+    assert profile.num_experts == 0
+    deployment = profile.deployments[0]
+    assert deployment.gemm_quant_mode == "fp8_static"
+    assert deployment.moe_quant_mode == deployment.kv_cache_dtype == "fp8"
+    assert deployment.fmha_quant_mode == "bfloat16"
+    assert deployment.resources.kv_bytes_per_token == 2 * 64 * 8 * 128
+
+
+def test_guided_missing_identity_is_asked_before_profile_fields(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["checkpoint-revision-123", "0.25.1", "h200_sxm", "nvswitch", "accept"])
+
+    assert cli.main(_args(output, source, resources, **dict.fromkeys(_IDENTITY)) + ["--interactive"]) == 0
+
+    assert len(prompts) == 5
+    assert "Pinned model revision" in prompts[0]
+    assert not any("Model name" in prompt or "Model kind" in prompt for prompt in prompts)
+
+
+def test_guided_unknown_model_metadata_bounds_pilot_before_ordinary_prompts(tmp_path, monkeypatch):
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    del config["max_position_embeddings"]
+    # The override places a full-attention decoder; its context limit and expert count stay unknown.
+    source, resources = _files(tmp_path, config=config, overrides={**_OVERRIDES, "architecture": "LlamaForCausalLM"})
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["invalid", "2048", "-1", "0", "accept"])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert len(prompts) == 5
+    assert all("context_length" in prompt for prompt in prompts[:2])
+    assert all("num_experts" in prompt for prompt in prompts[2:-1])
+    request = SupportRequest.from_yaml(output)
+    assert request.search.context_length == request.fpm_profile.context_length == 2048
+    assert request.identity.model_kind == "dense"
+
+
+@pytest.mark.parametrize(
+    "changes,answers",
+    [
+        ({"model_kind": "moe"}, ["dense"]),
+        ({"context_length": 65536}, ["8192"]),
+        ({"tensor_parallel": 8}, ["4"]),
+        ({"model_revision": "unknown"}, ["checkpoint-revision-123"]),
+    ],
+)
+def test_guided_setup_can_correct_request_conflicts_with_config_metadata(tmp_path, monkeypatch, changes, answers):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, [*answers, "accept"])
+
+    assert cli.main(_args(output, source, resources, **changes) + ["--interactive"]) == 0
+
+    assert len(prompts) == len(answers) + 1
+    request = SupportRequest.from_yaml(output)
+    assert request.identity.model_kind == "dense"
+    assert request.identity.model_revision == "checkpoint-revision-123"
+    assert request.search.context_length <= request.fpm_profile.context_length
+    assert request.search.tensor_parallel <= 4
+
+
+def test_guided_precision_answers_resolve_supported_memory_without_redundant_prompts(tmp_path, monkeypatch):
+    source, _ = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    prompts = []
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    answers = {"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"}
+
+    def respond(prompt):
+        prompts.append(prompt)
+        if prompt == "Review action (accept/edit/cancel): ":
+            return "accept"
+        name = prompt.split(" ")[0]
+        assert name in answers, f"unexpected prompt for a derived input: {prompt}"
+        return answers[name]
+
+    monkeypatch.setattr(builtins, "input", respond)
+
+    assert cli.main(_args(output, source) + ["--interactive"]) == 0
+
+    assert len(prompts) == 3
+    resources = SupportRequest.from_yaml(output).profile_deployment().resources
+    assert resources.kv_bytes_per_token == 512
+    assert resources.max_num_tokens == 8192
+    assert resources.max_batch_size == 256
+
+
+def test_guided_memory_accepts_exact_units_and_reprompts_invalid_quantities(tmp_path, monkeypatch, capsys):
+    config = {**_CONFIG, "num_local_experts": 0}
+    overrides = {key: value for key, value in _OVERRIDES.items() if key != "weights_bytes"}
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["edit", "weights_bytes", "many", "0.1 B", "-1", "2 GiB", "accept"])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+
+    assert len(prompts) == 7
+    assert all("weights_bytes" in prompt and "per rank" in prompt for prompt in prompts[2:-1])
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.weights_bytes == 2 * 1024**3
+    assert "whole number of bytes" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, EOFError])
+@pytest.mark.parametrize("existing", [False, True])
+def test_resource_prompt_cancellation_writes_no_partial_request(tmp_path, monkeypatch, interruption, existing):
+    overrides = {key: value for key, value in _OVERRIDES.items() if key != "fmha_quant_mode"}
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "new" / "request.yaml"
+    if existing:
+        output.parent.mkdir()
+        output.write_text("preserve previous request\n")
+    _terminal(monkeypatch, [interruption()])
+
+    assert cli.main(_args(output, source, resources) + ["--interactive", "--overwrite"]) == 130
+
+    if existing:
+        assert output.read_text() == "preserve previous request\n"
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert not output.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"weights_bytes": -1},
+        {"weights_bytes": True},
+        {"weights_bytes": 1.5},
+        {"weights_bytes": "2 GiB"},
+        {"fmha_quant_mode": "auto"},
+        {"not_a_profile_field": 1},
+        {"resources": {"weights_bytes": 1}},
+        {"max_num_tokens": 0},
+        {"cache_layout": "recurrent"},
+    ],
+)
+def test_invalid_overrides_fail_before_prompts_or_output(tmp_path, monkeypatch, overrides):
+    _terminal(monkeypatch)
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "new" / "request.yaml"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(output, source, resources) + ["--interactive"])
+
+    assert result.value.code == 2
+    assert not output.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "contents", ['{"weights_bytes": 1, "weights_bytes": 2}', "weights_bytes: 1\nweights_bytes: 2\n"]
+)
+def test_duplicate_override_fields_are_rejected_instead_of_discarded(tmp_path, monkeypatch, capsys, contents):
+    _terminal(monkeypatch)
+    source, resources = _files(tmp_path)
+    resources.write_text(contents)
+    output = tmp_path / "new" / "request.yaml"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(output, source, resources) + ["--interactive"])
+
+    assert result.value.code == 2
+    assert "duplicate resource override" in capsys.readouterr().err
+    assert not output.parent.exists()
+
+
+def test_config_interactive_requires_a_terminal_without_reading_input(tmp_path, monkeypatch, capsys):
+    _terminal(monkeypatch)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(output, source, resources) + ["--interactive"])
+
+    assert result.value.code == 2
+    assert "requires a terminal" in capsys.readouterr().err
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("contents", ["{broken", "[]", "model_type: llama\n"])
+def test_model_config_requires_a_local_json_mapping(tmp_path, monkeypatch, contents):
+    _terminal(monkeypatch)
+    source = tmp_path / "config.json"
+    source.write_text(contents)
+    output = tmp_path / "new" / "request.yaml"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(output, source) + ["--interactive"])
+
+    assert result.value.code == 2
+    assert not output.parent.exists()
+
+
+@pytest.mark.parametrize("cache_type", [[], {}, True, 8, 1.5])
+@pytest.mark.parametrize("existing", [False, True])
+def test_real_cli_rejects_malformed_cache_type_without_writing_request(tmp_path, cache_type, existing):
+    config = {**_CONFIG, "quantization_config": {"kv_cache_scheme": {"num_bits": 8, "type": cache_type}}}
+    source, resources = _files(tmp_path, config=config)
+    output = tmp_path / "new" / "request.yaml"
+    if existing:
+        output.parent.mkdir()
+        output.write_text("preserve previous request\n")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "aisim", *_args(output, source, resources), "--overwrite"],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "quantization_config.kv_cache_scheme.type" in result.stderr
+    assert "Traceback" not in result.stderr
+    if existing:
+        assert output.read_text() == "preserve previous request\n"
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert not output.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "options,expected",
+    [
+        (["--resource-overrides", "missing.yaml"], "requires --model-config"),
+        (["--model-config", "missing.json", "--fpm-profile", "missing.yaml"], "not allowed"),
+    ],
+)
+def test_config_route_option_relationships_are_rejected_before_reading_files(
+    tmp_path, monkeypatch, capsys, options, expected
+):
+    _terminal(monkeypatch)
+    output = tmp_path / "new" / "request.yaml"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "init", *options, "--output", str(output), "--interactive"])
+
+    assert result.value.code == 2
+    assert expected in capsys.readouterr().err
+    assert not output.parent.exists()
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+@pytest.mark.parametrize("interactive", [False, True])
+@pytest.mark.parametrize(
+    "tp,dp,moe_tp,moe_ep,preset",
+    [(4, 1, 4, 1, "pure_tp"), (1, 8, 1, 8, "dep"), (8, 1, 1, 8, "tep")],
+)
+def test_config_init_to_plan_replay_preserves_full_topology_without_source_files(
+    tmp_path, monkeypatch, capsys, tp, dp, moe_tp, moe_ep, preset, multimodal, interactive
+):
+    # An MLA-family decoder keeps explicit cache accounting, so the typed resources complete its profile.
+    # An unrecognized architecture would instead leave the cache geometry to the runtime probe.
+    config = {
+        **_CONFIG,
+        "architectures": ["DeepseekV3ForCausalLM"],
+        "model_type": "deepseek_v3",
+        "num_local_experts": 8,
+    }
+    if multimodal:
+        config = _multimodal_config(config)
+    source, resources = _files(tmp_path, config=config)
+    output = tmp_path / "request.yaml"
+    real_import = builtins.__import__
+
+    def no_model_or_download_import(name, *args, **kwargs):
+        assert not name.startswith(("collector", "huggingface_hub", "transformers")), name
+        assert ".sdk.models" not in name, name
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_model_or_download_import)
+    prompts = _terminal(monkeypatch, ["accept"] if interactive else [])
+    assert (
+        cli.main(
+            _args(
+                output,
+                source,
+                resources,
+                tensor_parallel=tp,
+                attention_data_parallel=dp,
+                moe_tensor_parallel=moe_tp,
+                moe_expert_parallel=moe_ep,
+            )
+            + (["--interactive"] if interactive else [])
+        )
+        == 0
+    )
+    source.unlink()
+    resources.unlink()
+    request = SupportRequest.from_yaml(output)
+    assert prompts == (["Review action (accept/edit/cancel): "] if interactive else [])
+    assert "Collection GPUs required: " + str(tp * dp) in capsys.readouterr().out
+    assert not {"gpu_count", "node_count", "gpus_per_node"} & request.identity.model_dump().keys()
+    assert "max_candidates" not in request.search.model_dump()
+    assert "Text decoder only" in json.loads(request.fpm_profile.provenance)["config_notes"]["modeling_scope"]
+    assert request.parallel_preset == preset
+    assert request.profile_deployment().parallel_tuple == (tp, 1, dp, moe_tp, moe_ep, 1)
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    saved_plan = json.loads((plan / "support-plan.json").read_text())
+    assert saved_plan["fpm"]["collection_gpus_required"] == tp * dp
+    command = saved_plan["fpm"]["plan_command"]
+    assert command[command.index("--fpm-gpu-counts") + 1] == str(tp * dp)
+    assert command[command.index("--fpm-parallel-presets") + 1] == preset
+    assert SupportRequest.from_yaml(plan / "request.yaml") == request
+    prediction = CorePredictionConfig.from_yaml(plan / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(plan / "recommend/pilot.yaml")
+    assert recommendation.optimization.constraints.max_candidate_gpus == tp * dp
+    assert len(recommendation.engine.workers.aggregated.parallelism.preset) == 1
+    assert recommendation.engine.workers.aggregated.parallelism.preset[0].replicas == 1
+    assert prediction.engine.fpm_profile == recommendation.engine.fpm_profile == request.fpm_profile
+    for generated, path in (
+        (prediction, plan / "predict/pilot.yaml"),
+        (recommendation, plan / "recommend/pilot.yaml"),
+    ):
+        assert generated.engine.systems_paths == [str(plan / "systems")]
+        timing = generated.engine.workers.aggregated.timing
+        assert timing.estimation_mode == "fpm_interpolation"
+        assert timing.fallback_policy == "deny"
+        assert timing.estimator_config["fpm_interpolation"]["method"] == "direct"
+        saved_engine = yaml.safe_load(path.read_text())["engine"]
+        assert saved_engine["systems_paths"] == generated.engine.systems_paths
+        assert "systems_path" not in saved_engine
+        assert saved_engine["fpm_profile"] == request.fpm_profile.model_dump(mode="json")
+        saved_timing = saved_engine["workers"]["aggregated"]["timing"]
+        assert saved_timing == {
+            "type": "default",
+            "estimation_mode": "fpm_interpolation",
+            "fallback_policy": "deny",
+            "estimator_config": {"fpm_interpolation": {"method": "direct"}},
+        }
+    assert prediction.engine.workers.aggregated.parallelism.tensor == tp
+    assert prediction.engine.workers.aggregated.parallelism.attention_data == dp
+    assert prediction.engine.workers.aggregated.parallelism.moe_tensor == moe_tp
+    assert prediction.engine.workers.aggregated.parallelism.moe_expert == moe_ep
+    assert json.loads((plan / "fpm-model-profile.json").read_text()) == request.fpm_profile.model_dump(mode="json")
+
+
+# Issue #475: the packaged GLM-5.3-Flash config mixes linear-attention and sparse-attention layers, so config.json
+# cannot establish its cache geometry. Intake reports it as pending the runtime probe instead of asking for bytes.
+_GLM = Path(__file__).parents[2] / "src/aisim_core/model_configs/zai-org--GLM-5.3-Flash_config.json"
+_GLM_IDENTITY = [
+    "onboard",
+    "init",
+    "--model",
+    "zai-org/GLM-5.3-Flash",
+    "--model-revision",
+    "91b69215804f2d2036a8867f6ce44848e278dcda",
+    "--gpu",
+    "b300_sxm",
+    "--interconnect",
+    "nvswitch",
+    "--worker-type",
+    "aggregated",
+]
+_GLM_LIMITS = [
+    "--context-length",
+    "1048576",
+    "--max-num-tokens",
+    "8192",
+    "--max-batch-size",
+    "256",
+    "--gpu-memory-utilization",
+    "0.92",
+]
+_ISSUE_ARGS = [*_GLM_IDENTITY, "--tensor-parallel", "4", *_GLM_LIMITS]
+# Automatic topology: --suggest-parallel and automatic selection reject explicit topology flags.
+_AUTOMATIC_ARGS = [*_GLM_IDENTITY, *_GLM_LIMITS]
+# Illustrative precision choices for the test only, not a claim about GLM's runtime precision.
+_GLM_PRECISION = {"fmha_quant_mode": "fp8", "kv_cache_dtype": "fp8"}
+_GEOMETRY_KEYS = ("kv_bytes_per_token", "cache_groups", "cache_block_sizes")
+# The runtime probe needs all five precision values in the checkpoint, also those that Profile inputs does not show.
+_PRECISION_STEP = (
+    "the five precision values (gemm_quant_mode, moe_quant_mode, fmha_quant_mode, comm_quant_mode and kv_cache_dtype)"
+)
+
+
+def _glm_precision(tmp_path):
+    path = tmp_path / "precision.yaml"
+    path.write_text(yaml.safe_dump(_GLM_PRECISION))
+    return ["--resource-overrides", str(path)]
+
+
+def _stops_with_guidance(command, capsys, *, import_limit=True):
+    """Run init to its nonzero exit and return its (stdout, stderr).
+
+    ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop says
+    which vLLM version observation import maps state cache groups for.
+    """
+    with pytest.raises(SystemExit) as result:
+        cli.main(command)
+    assert result.value.code == 2
+    captured = capsys.readouterr()
+    assert "Cache geometry: pending runtime probe" in captured.err
+    assert "model config did not produce a complete FPM profile" not in captured.err
+    limit = (
+        "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from vLLM "
+        "0.33.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, as "
+        "unsupported runtime cache specs (guide: "
+        "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
+    )
+    assert (limit in captured.err) is import_limit
+    return captured.out, captured.err
+
+
+def test_issue_475_exact_command_lists_user_owned_inputs_and_pending_geometry(tmp_path, capsys):
+    out = tmp_path / "onboard-original.yaml"
+    stdout, stderr = _stops_with_guidance([*_ISSUE_ARGS, "--model-config", str(_GLM), "--output", str(out)], capsys)
+    text = stdout + stderr
+    assert not out.exists()
+    assert "pending runtime probe" in text and "fmha_quant_mode" in text and "kv_cache_dtype" in text
+    # The original failure is gone, and no geometry is asked of the user.
+    assert "head_dim must be" not in text and "unsupported mixed" not in text and "kv_bytes_per_token" not in text
+    # The unresolved precision is part of the error itself, not only of the stdout transcript.
+    assert "fmha_quant_mode" in stderr and "kv_cache_dtype" in stderr
+    assert "onboard probe-runtime" in stderr
+    # Profile inputs shows only the three resolved precision values; the next step names all five.
+    assert _PRECISION_STEP in stderr
+
+
+def test_issue_475_command_with_precision_stops_with_probe_guidance(tmp_path, capsys):
+    out = tmp_path / "onboard-original.yaml"
+    command = [*_ISSUE_ARGS, "--model-config", str(_GLM), *_glm_precision(tmp_path), "--output", str(out)]
+    stdout, stderr = _stops_with_guidance(command, capsys)
+    assert not out.exists()
+    # Everything config.json resolves is still printed, with its source; the config is the issue's exact bytes.
+    assert "Glm5NextForConditionalGeneration" in stdout
+    assert "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f" in stdout
+    assert "Profile inputs" in stdout and "(source:" in stdout
+    # The reasons, the next step and the guide anchor.
+    assert "linear_attention x34" in stderr and "onboard probe-runtime" in stderr
+    assert "onboard import-observations" in stderr and "onboarding checkpoint" in stderr
+    assert "implementation.md#cache-geometry-pending-the-runtime-probe" in stderr
+    assert stderr.count("run onboard probe-runtime") == 1
+    # The probe needs all five precision values. With the precision supplied, Profile inputs shows each of them.
+    assert _PRECISION_STEP in stderr
+    inputs = stdout.split("Profile inputs", 1)[1]
+    for name in ("gemm_quant_mode", "moe_quant_mode", "fmha_quant_mode", "comm_quant_mode", "kv_cache_dtype"):
+        assert f"\n  {name}: " in inputs, name
+    # No cache geometry override was given, so there is nothing for the import to check.
+    assert "cache geometry override" not in stderr
+    # No user-owned input is left, and geometry is never a user input.
+    assert "fmha_quant_mode: resolve" not in stderr and "Unresolved profile fields" not in stderr
+    assert "--resource-overrides" not in stderr
+    assert not [key for key in _GEOMETRY_KEYS if key in stderr]
+
+
+def test_runtime_resolved_suggestions_still_print(tmp_path, capsys):
+    out = tmp_path / "request.yaml"
+    command = [*_AUTOMATIC_ARGS, "--model-config", str(_GLM), *_glm_precision(tmp_path), "--output", str(out)]
+    assert cli.main([*command, "--suggest-parallel"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["candidates"] and report["default"] is None
+    for candidate in report["candidates"]:
+        assert "cache_geometry" in candidate["pending_runtime"]
+        assert "onboard probe-runtime" in candidate["pending_runtime"]["cache_geometry"]
+        reasons = " ".join(candidate["reasons"])
+        assert "pending the runtime probe" in reasons and "geometry checks passed" not in reasons
+    # The shared assumptions must not claim a cache-fit check that the candidate reasons say was not made.
+    assumptions = " ".join(report["assumptions"])
+    assert "Cache fit is not assessed until onboard probe-runtime measures the cache geometry." in assumptions
+    assert "full search.context_length request" not in assumptions
+    assert not out.exists()
+
+
+def test_ordinary_suggestions_report_no_pending_runtime(tmp_path, capsys):
+    overrides = {key: value for key, value in _OVERRIDES.items() if not key.endswith("_bytes")}
+    overrides.pop("kv_bytes_per_token")
+    source, resources = _files(tmp_path, overrides=overrides)
+    command = _args(tmp_path / "request.yaml", source, resources, tensor_parallel=None) + ["--suggest-parallel"]
+    assert cli.main(command) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["candidates"]
+    assert all(candidate["pending_runtime"] == {} for candidate in report["candidates"])
+    assert not any("pending the runtime probe" in " ".join(candidate["reasons"]) for candidate in report["candidates"])
+
+
+def test_runtime_resolved_automatic_topology_stops_with_probe_guidance(tmp_path, capsys):
+    out = tmp_path / "request.yaml"
+    command = [*_AUTOMATIC_ARGS, "--model-config", str(_GLM), *_glm_precision(tmp_path), "--output", str(out)]
+    stdout, stderr = _stops_with_guidance(command, capsys)
+    assert not out.exists()
+    # What init resolved is printed first, with its sources, as on the explicit-topology route.
+    assert "Profile inputs" in stdout and "kv_cache_dtype: fp8 (source: user override" in stdout
+    # This preview has no request, so its default scheduler limits must not pass as the user's bounds.
+    assert "initial vLLM collection policy" not in stdout
+    assert "onboard probe-runtime" in stderr and "explicit topology" in stderr
+    # Geometry is not an input, so no --resource-overrides advice, and no default topology claims a fit.
+    assert "--resource-overrides" not in stderr and "No fully assessed topology default" not in stderr
+    assert not [key for key in _GEOMETRY_KEYS if key in stderr]
+    # The shortlist remains available as starting points for the explicit topology, and claims no geometry check.
+    assert "Suggested worker topologies" in stderr and "--tensor-parallel" in stderr
+    assert "pending the runtime probe" in stderr and "geometry checks passed" not in stderr
+    assert "record one of the starting points above, or your own" in stderr
+    assert "Selected" not in stdout
+
+
+def test_runtime_resolved_automatic_topology_lists_each_missing_input_once(tmp_path, capsys):
+    command = [*_AUTOMATIC_ARGS, "--model-config", str(_GLM), "--output", str(tmp_path / "request.yaml")]
+    _, stderr = _stops_with_guidance(command, capsys)
+    # The guidance lists the unresolved precision once; the shortlist does not repeat it for each candidate.
+    assert stderr.count("resolve attention precision from the pinned runtime") == 1
+    assert stderr.count("resolve KV-cache dtype from explicit checkpoint metadata") == 1
+    assert "Missing" not in stderr and stderr.count("run onboard probe-runtime") == 1
+
+
+def test_runtime_resolved_guidance_without_a_usable_starting_point(tmp_path, monkeypatch, capsys):
+    from aisim.support import config_profile, topology
+
+    # The packaged per-rank reservation alone exceeds this GPU's budget, so the shortlist rejects every candidate.
+    spec = {
+        "gpu": {"mem_capacity": 1024**3},
+        "node": {"num_gpus_per_node": 8, "intra_node_bw": 1000, "inter_node_bw": 100},
+        "misc": {"other_mem": 2 * 1024**3},
+    }
+    hardware = tmp_path / "hardware.yaml"
+    hardware.write_text(yaml.safe_dump(spec))
+    monkeypatch.setattr(topology, "packaged_hardware_path", lambda system: hardware)
+    monkeypatch.setattr(config_profile, "packaged_hardware_path", lambda system: hardware)
+    command = [
+        *_AUTOMATIC_ARGS,
+        "--model-config",
+        str(_GLM),
+        *_glm_precision(tmp_path),
+        "--output",
+        str(tmp_path / "x"),
+    ]
+    _, stderr = _stops_with_guidance(command, capsys)
+    assert "No eligible topology remains" in stderr
+    assert "No usable starting point exists" in stderr and "record your own" in stderr
+    assert "record one of the starting points above" not in stderr
+
+
+@pytest.mark.parametrize("parallel_configs", [False, True])
+def test_runtime_resolved_output_dir_writes_nothing(tmp_path, capsys, parallel_configs):
+    root = tmp_path / "onboarding"
+    if parallel_configs:
+        entries = tmp_path / "parallel.yaml"
+        entries.write_text(yaml.safe_dump([{"tensor_parallel": 4}, {"tensor_parallel": 8}]))
+        command = [*_AUTOMATIC_ARGS, "--parallel-configs", str(entries)]
+    else:
+        command = list(_ISSUE_ARGS)
+    command += ["--model-config", str(_GLM), *_glm_precision(tmp_path), "--output-dir", str(root)]
+    _, stderr = _stops_with_guidance(command, capsys)
+    assert "onboard probe-runtime" in stderr
+    # No output root, no staging directory beside it and no request files anywhere.
+    assert not root.exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == (
+        ["parallel.yaml", "precision.yaml"] if parallel_configs else ["precision.yaml"]
+    )
+
+
+@pytest.mark.parametrize("explicit_topology", [True, False])
+def test_runtime_resolved_interactive_never_prompts_for_geometry(tmp_path, monkeypatch, capsys, explicit_topology):
+    out = tmp_path / "request.yaml"
+    # Only the two user-owned precision facts are asked: no geometry, and no topology choice that cannot be saved.
+    prompts = _terminal(monkeypatch, ["fp8", "fp8"])
+    command = [*(_ISSUE_ARGS if explicit_topology else _AUTOMATIC_ARGS), "--model-config", str(_GLM)]
+    _, stderr = _stops_with_guidance([*command, "--interactive", "--output", str(out)], capsys)
+    assert [prompt.split(" ", 1)[0] for prompt in prompts] == ["fmha_quant_mode", "kv_cache_dtype"]
+    assert not [prompt for prompt in prompts if "cache_layout" in prompt or "kv_bytes_per_token" in prompt]
+    assert "onboard probe-runtime" in stderr and "fmha_quant_mode: resolve" not in stderr
+    assert explicit_topology or "explicit topology" in stderr
+    assert not out.exists()
+
+
+def test_runtime_resolved_interactive_stops_before_the_memory_review(tmp_path, monkeypatch, capsys):
+    # vLLM 0.33.0 has a bundled probe instrumentation, and the draft still stops with the probe guidance before the
+    # review that states where pending memory is observed.
+    _terminal(monkeypatch)
+    out = tmp_path / "request.yaml"
+    command = [*_ISSUE_ARGS, "--framework-version", "0.33.0", "--model-config", str(_GLM), *_glm_precision(tmp_path)]
+    stdout, stderr = _stops_with_guidance([*command, "--interactive", "--output", str(out)], capsys)
+    assert "Review FPM profile before saving:" not in stdout + stderr
+    assert "Memory is observed" not in stdout + stderr
+    assert not out.exists()
+
+
+def test_issue_475_typed_geometry_is_a_claim_the_import_checks(tmp_path, capsys):
+    out = tmp_path / "onboard-original.yaml"
+    typed = tmp_path / "typed.yaml"
+    typed.write_text(yaml.safe_dump({**_GLM_PRECISION, "cache_layout": "linear", "kv_bytes_per_token": 6000}))
+    command = [*_ISSUE_ARGS, "--model-config", str(_GLM), "--resource-overrides", str(typed), "--output", str(out)]
+    stdout, stderr = _stops_with_guidance(command, capsys)
+    assert "onboard import-observations checks each cache geometry override against the probe's measurement" in stderr
+    # The profile inputs echo the user's own typed values; the guidance itself never asks for geometry.
+    assert "kv_bytes_per_token: 6000 (source: user override; onboard import-observations checks it" in stdout
+    assert not [key for key in _GEOMETRY_KEYS if key in stderr]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["typed.yaml"]
+
+
+@pytest.mark.parametrize(
+    "fields,reason,import_limit",
+    [
+        # A recurrent-state marker: the probe reports state cache groups, which import cannot take yet.
+        ({"ssm_state_size": 16}, "recurrent-state field ssm_state_size", True),
+        # Only a sparse-attention layer outside a DSA decoder: the probe can report a group that import cannot take.
+        (
+            {"layer_types": ["full_attention", "deepseek_sparse_attention"]},
+            "layer_types deepseek_sparse_attention x1",
+            True,
+        ),
+        # Only an unrecognized architecture: the probe reports attention cache groups, which import takes.
+        (
+            {"architectures": ["MiMoForCausalLM"], "model_type": "mimo"},
+            "unrecognized architecture MiMoForCausalLM",
+            False,
+        ),
+    ],
+)
+def test_import_limit_warning_needs_a_layout_marker(tmp_path, capsys, fields, reason, import_limit):
+    overrides = {key: value for key, value in _OVERRIDES.items() if key not in ("cache_layout", "kv_bytes_per_token")}
+    overrides["num_experts"] = 0  # MiMoForCausalLM is not a known dense architecture.
+    source, resources = _files(tmp_path, config={**_CONFIG, **fields}, overrides=overrides)
+    _, stderr = _stops_with_guidance(
+        _args(tmp_path / "request.yaml", source, resources), capsys, import_limit=import_limit
+    )
+    # The stop names the one reason, so the case has no other marker.
+    assert f"not derived from config.json ({reason}):" in stderr
+    # Without a marker or a declared window, the probe reports attention groups, so a matching per-token size
+    # gives a linear profile.
+    linear = (
+        "If you keep kv_bytes_per_token in the configuration's resource_overrides in the checkpoint, "
+        "onboard import-observations checks it, and when it matches, import writes a linear profile."
+    )
+    assert (linear in stderr) is not import_limit
+
+
+def _mimo(**fields):
+    return {**_CONFIG, "architectures": ["MiMoForCausalLM"], "model_type": "mimo", **fields}
+
+
+# A text config that names no decoder, so the wrapper's unrecognized architecture classifies it.
+_UNNAMED_TEXT = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+
+
+@pytest.mark.parametrize(
+    "config,sentence",
+    [
+        # Chunked attention, which intake does not read, in the text config of a wrapper, as in Llama 4.
+        (_multimodal_config({**_UNNAMED_TEXT, "attention_chunk_size": 8192}), False),
+        # Sliding-window declarations that intake cannot derive cache groups from.
+        (_mimo(sliding_window=4096, sliding_window_pattern=6), False),
+        (_mimo(sliding_window=128, hybrid_layer_pattern=[0, 1]), False),
+        (_mimo(use_sliding_window=True), False),
+        (_mimo(local_layer_ids=[0]), False),
+        (_mimo(layer_types=["sliding_attention", "full_attention"]), False),
+        # use_sliding_window=false turns the window off, as in the packaged MiMo-7B config.
+        (_mimo(sliding_window=32768, use_sliding_window=False, max_window_layers=2), True),
+        (_mimo(), True),
+    ],
+    ids=[
+        "chunked-attention",
+        "window-schedule",
+        "hybrid-layer-pattern",
+        "window-flag-without-size",
+        "local-layers-without-size",
+        "sliding-layer-types-without-size",
+        "window-turned-off",
+        "no-window",
+    ],
+)
+def test_linear_claim_sentence_needs_a_config_without_a_window(tmp_path, capsys, config, sentence):
+    overrides = {key: value for key, value in _OVERRIDES.items() if key not in ("cache_layout", "kv_bytes_per_token")}
+    overrides["num_experts"] = 0  # Neither architecture is a known dense architecture.
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    _, stderr = _stops_with_guidance(_args(tmp_path / "request.yaml", source, resources), capsys, import_limit=False)
+    # A declared window can make the probe report a windowed group, which no per-token size matches.
+    assert (
+        "If you keep kv_bytes_per_token in the configuration's resource_overrides in the checkpoint, "
+        "onboard import-observations checks it" in stderr
+    ) is sentence
+
+
+def test_packaged_mimo_v2_flash_config_is_pending_without_the_linear_claim_sentence(tmp_path, capsys):
+    config_path = Path(__file__).parents[2] / "src/aisim_core/model_configs/XiaomiMiMo--MiMo-V2-Flash_config.json"
+    overrides = {key: value for key, value in _OVERRIDES.items() if key not in ("cache_layout", "kv_bytes_per_token")}
+    source, resources = _files(tmp_path, config=json.loads(config_path.read_text()), overrides=overrides)
+    # The config has no _name_or_path, so the command names the model.
+    command = _args(tmp_path / "request.yaml", source, resources, model="XiaomiMiMo/MiMo-V2-Flash")
+    _, stderr = _stops_with_guidance(command, capsys, import_limit=False)
+    assert "not derived from config.json (unrecognized architecture MiMoV2FlashForCausalLM):" in stderr
+    # The config declares windowed attention, so the probe can report a windowed group, which no per-token size
+    # matches. The stop does not invite a kv_bytes_per_token claim.
+    assert "kv_bytes_per_token" not in stderr
+    # Nothing was written beside the test's own inputs.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["config.json", "resources.yaml"]
+
+
+def test_automatic_topology_with_one_candidate_names_the_candidate(tmp_path, capsys):
+    source, _ = _files(tmp_path)
+    # The declared interconnect 'none' limits automatic choices to one GPU, so one candidate remains.
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(tmp_path / "request.yaml", source, tensor_parallel=None, interconnect="none"))
+    assert result.value.code == 2
+    stderr = capsys.readouterr().err
+    assert stderr.count("needs_inputs") == 1
+    assert "The candidate is missing fmha_quant_mode: resolve attention precision" in stderr
+    assert "Every candidate" not in stderr
+
+
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "MambaForCausalLM"])
+def test_printed_cache_layout_note_follows_an_architecture_override(tmp_path, capsys, architecture):
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    overrides = {**_OVERRIDES, "architecture": architecture, "num_experts": 0}
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    if architecture == "MambaForCausalLM":
+        stdout, _ = _stops_with_guidance(_args(output, source, resources), capsys)
+        note = "cache layout pending the runtime probe (recurrent architecture MambaForCausalLM)"
+        assert f"Config cache_layout: {note}" in stdout
+    else:
+        assert cli.main(_args(output, source, resources)) == 0
+        assert "Config cache_layout" not in capsys.readouterr().out
+        provenance = json.loads(SupportRequest.from_yaml(output).fpm_profile.provenance)
+        assert "cache_layout" not in provenance["config_notes"]
+
+
+def test_guided_architecture_answer_prints_the_matching_cache_layout_note(tmp_path, monkeypatch, capsys):
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    source, resources = _files(tmp_path, config=config)
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["MiMoForCausalLM", "0"])
+    # The only reason is the unrecognized architecture, so the stop has no import-limit warning.
+    stdout, _ = _stops_with_guidance(_args(output, source, resources) + ["--interactive"], capsys, import_limit=False)
+    assert [prompt.split(":", 1)[0].split(" ", 1)[0] for prompt in prompts] == ["architecture", "num_experts"]
+    # The note is printed after the answer, so it describes the classification the answer produced.
+    note = "cache layout pending the runtime probe (unrecognized architecture MiMoForCausalLM)"
+    assert f"Config cache_layout: {note}" in stdout
+    assert not output.exists()
+
+
+def test_guided_review_edit_that_leaves_geometry_pending_is_rejected(tmp_path, monkeypatch, capsys):
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    overrides = {**_OVERRIDES, "architecture": "LlamaForCausalLM", "num_experts": 0}
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["edit", "architecture", "MiMoForCausalLM", "accept"])
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+    stdout = capsys.readouterr().out
+    assert "Edit rejected: Cache geometry: pending runtime probe, so init cannot save this profile" in stdout
+    assert "unrecognized architecture MiMoForCausalLM" in stdout
+    assert "model config did not produce a complete FPM profile" not in stdout
+    assert SupportRequest.from_yaml(output).fpm_profile.architecture == "LlamaForCausalLM"
+
+
+def test_automatic_topology_lists_inputs_every_candidate_needs_once(tmp_path, capsys):
+    source, _ = _files(tmp_path)
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(tmp_path / "request.yaml", source, tensor_parallel=None))
+    assert result.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "No fully assessed topology default" in stderr and stderr.count("needs_inputs") == 2
+    assert stderr.count("Every candidate is missing fmha_quant_mode: resolve attention precision") == 1
+    assert stderr.count("resolve attention precision from the pinned runtime") == 1

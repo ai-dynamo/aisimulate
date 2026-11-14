@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render an AIConfigurator diff against AISimulate's stable mirror paths."""
+"""Render an AIConfigurator diff against AISim's stable mirror paths."""
 
 from __future__ import annotations
 
