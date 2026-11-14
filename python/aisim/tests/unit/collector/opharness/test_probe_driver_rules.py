@@ -253,8 +253,7 @@ def test_the_marlin_rescue_of_nvfp4_deepseek_v4_holds_on_sm90_only(pd):
 
 
 def test_customization_list_scopes_each_entry(pd):
-    """A list of entries applies each on its own SMs: DeepSeek-V4's page size holds on
-    every SM, its fp8_ds_mla KV only on Hopper (rc2 takes it off Hopper only at 256)."""
+    """A list of entries applies each on its own SMs: one entry for every SM, one for sm90."""
     entries = [
         {"args": ["--generator-set", "params.agg.tokens_per_block=128"], "fact": "f"},
         {"args": ["--generator-set", "params.agg.kv_cache_dtype=fp8_ds_mla"], "fact": "f", "sms": ["sm90"]},

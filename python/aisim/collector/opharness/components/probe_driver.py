@@ -175,8 +175,7 @@ def _cea(v, sm: str):
     sms: [sm120, ...]} — ``sms`` (optional) limits the customization to those
     SMs (an entry keyed (repo, fw) used to ride along to every SM; sm120 needs
     bf16 KV for NVFP4 MLA checkpoints, which sm90/sm100 must not inherit). A list of
-    such dicts applies each entry on its own SMs (DeepSeek-V4's page size holds on every
-    SM, its fp8_ds_mla KV only on Hopper)."""
+    such dicts applies each entry on its own SMs."""
     if not v:
         return []
     if isinstance(v, dict):

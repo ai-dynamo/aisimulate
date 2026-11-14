@@ -66,15 +66,15 @@ def test_shard_plans_parse_as_pipeline_plans(gates, tmp_path):
 
 
 def test_a_gate_runs_at_the_release_its_op_is_collected_with(gates):
-    """vLLM families pinned apart from the 0.30.0 default (gemm, moe, attention, mla, ... at
-    0.32.0) would be traced in the default image and graded against default-release serving
-    records if a gate ran at the default. Each (backend, release) is its own job; an also case
-    shares its gate's release."""
+    """vLLM gemm/moe/kda/attention are pinned to 0.31.0 next to the 0.30.0 default: their gates
+    were traced in the default image and graded against default-release serving records. Each
+    (backend, release) is its own job; an also case shares its gate's release."""
     plans = gates.shard_plans("sm90", "vllm")
     gemm_release = gates.op_version("vllm", "gemm")
+    assert gemm_release != gates.op_version("vllm", "dsa_context_module")  # true while the families differ
     assert set(plans) == {("vllm", gates.gate_version(g)) for g in gates.gates_in_scope("vllm", "sm90")}
     gemm = {s["name"] for s in plans[("vllm", gemm_release)]["shards"]}
-    assert "gemm_fp8block_DeepSeek-V3.2" in gemm
+    assert "gemm_fp8block_DeepSeek-V3.2" in gemm and "dsa_ctx_bf16_DeepSeek-V3.2" not in gemm
     for g in gates.load()["gates"]:
         assert {gates.op_version(g["backend"], op) for op in gates._ops(g)} == {gates.gate_version(g)}, g["gate"]
     # the pipeline runs a shard plan on the default image unless told otherwise: every release
