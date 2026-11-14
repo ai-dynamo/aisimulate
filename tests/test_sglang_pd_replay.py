@@ -258,7 +258,7 @@ def test_native_token_balance_refreshes_generated_kv_and_terminal_load():
     rows = _native(
         _token_balanced_public(),
         [
-            _request("long-output", [1], output=300),
+            _request("long-output", [1], output=400),
             _request("long-prompt", list(range(100)), at=125.0, output=200),
             # After 150 ms rank 0 holds more generated KV than rank 1.
             _request("after-growth", [2], at=150.0),
