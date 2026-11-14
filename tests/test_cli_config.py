@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -1860,6 +1861,59 @@ def test_sglang_decode_radix_cache_is_off_by_default_and_lowers_when_enabled() -
     enabled = decode_engine_args({"kv_cache": {"decode_radix_cache": True}})
     assert enabled["enable_prefix_caching"] is True
     assert enabled["sglang"] == {"disaggregation_decode_enable_radix_cache": True}
+
+
+def test_sglang_swa_prefix_tails_follow_the_deepseek_v4_architecture(tmp_path) -> None:
+    from aisim.compiler import _deployment, _swa_prefix_tails
+
+    def engine(model="deepseek-ai/DeepSeek-V4-Flash", backend="sglang", **kv_cache):
+        prefill = {"kv_cache": kv_cache, "scheduler": {"max_sequences": 8}}
+        return CorePredictionConfig.model_validate(
+            {"engine": _disaggregated_engine(backend, {}, prefill, model=model)}
+        ).engine
+
+    def tails(role="prefill", **kwargs):
+        config = engine(**kwargs)
+        return _swa_prefix_tails(config, getattr(config.workers, role), role)
+
+    assert tails() == 32
+    assert tails(role="decode") is None
+    assert tails(model="example/model") is None
+    assert tails(model="example/model", swa_prefix_tails=100) == 100
+    assert tails(swa_prefix_tails=None) is None
+    assert tails(prefix_caching=False) is None
+    assert tails(backend="vllm") is None
+    with pytest.raises(ValueError, match="only for backend=sglang"):
+        tails(backend="vllm", swa_prefix_tails=100)
+
+    # A local config is read only for its architecture, so a model without a performance model works.
+    def local(name, architectures):
+        path = tmp_path / name
+        path.mkdir()
+        (path / "config.json").write_text(json.dumps({"architectures": architectures}))
+        return str(path)
+
+    assert tails(model=local("custom", ["CustomForCausalLM"])) is None
+    assert tails(model=local("v4", ["DeepseekV4ForCausalLM"])) == 32
+    with pytest.raises(ValueError, match="architectures must be a list of strings"):
+        tails(model=local("malformed", "DeepseekV4ForCausalLM"))
+    # A local directory without a readable config leaves `auto` off.
+    (tmp_path / "empty").mkdir()
+    assert tails(model=str(tmp_path / "empty")) is None
+    # A corrupt config is reported instead of silently replaying unrestricted prefix reuse.
+    corrupt = tmp_path / "corrupt"
+    corrupt.mkdir()
+    (corrupt / "config.json").write_text('{"architectures":["DeepseekV4ForCausalLM"')
+    with pytest.raises(ValueError, match="config is not valid JSON") as raised:
+        tails(model=str(corrupt))
+    assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+    (corrupt / "config.json").write_text('["DeepseekV4ForCausalLM"]')
+    with pytest.raises(ValueError, match="config must be a JSON object"):
+        tails(model=str(corrupt))
+
+    spec = _deployment(engine(model="example/model", swa_prefix_tails=100), workload={})
+    assert spec.prefill_engine_args["sglang"]["swa_prefix_tails"] == 100
+    assert "sglang" not in spec.decode_engine_args
 
 
 @pytest.mark.parametrize(

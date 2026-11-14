@@ -6,11 +6,11 @@ use aisim_core::engine::{
 };
 use aisim_core::replay::loadgen::{SessionTrace, Trace, TurnTrace, WorkloadDriver};
 use aisim_core::replay::{
-    CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayArtifactHostOffloadEvent,
-    ReplayArtifactHostOffloadEventData, ReplayArtifactKvEventVisibility, ReplayArtifacts,
-    ReplayCaptureOptions, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayReport,
-    ReplayRequest, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, RoundRobinComposition,
-    WorkerPoolSpec,
+    CURRENT_REPLAY_SPEC_VERSION, LoadBalanceMethod, ProviderSpec, ReplayAdapters,
+    ReplayArtifactHostOffloadEvent, ReplayArtifactHostOffloadEventData,
+    ReplayArtifactKvEventVisibility, ReplayArtifacts, ReplayCaptureOptions, ReplayDeterminism,
+    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRuntimeInput,
+    ReplaySpec, ReplayTopology, Replayer, RoundRobinComposition, WorkerPoolSpec,
 };
 
 fn spec(backend: Backend, workers: usize, dp_size: u32) -> ReplaySpec {
@@ -542,5 +542,25 @@ fn prepared_store_artifact_maps_hashes_to_request_local_block_indices() {
             (artifacts.requests[0].request_id, 0),
             (artifacts.requests[1].request_id, 1),
         ]
+    );
+}
+
+#[test]
+fn round_robin_composition_sets_its_placement_through_the_public_api() {
+    // Struct-update literals keep compiling as the composition gains fields.
+    let composition = RoundRobinComposition {
+        load_balance_method: LoadBalanceMethod::TotalTokens,
+        ..RoundRobinComposition::default()
+    };
+    assert!(!composition.session_affinity);
+    assert_eq!(
+        RoundRobinComposition::default().load_balance_method,
+        LoadBalanceMethod::RoundRobin
+    );
+    let configured: RoundRobinComposition =
+        serde_json::from_value(serde_json::json!({"load_balance_method": "total_tokens"})).unwrap();
+    assert_eq!(
+        configured.load_balance_method,
+        LoadBalanceMethod::TotalTokens
     );
 }

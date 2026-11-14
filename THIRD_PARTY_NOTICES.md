@@ -35,6 +35,47 @@ license is at the pinned repository's `LICENSE`, and the full license is
 included here as `LICENSE`. Modified for AISim's private FIFO transfer lane
 and discrete-event acknowledgements. No serving implementation is vendored.
 
+## SGLang v0.5.22 data-parallel token budgets
+
+Token-budget selection and snapshot refresh in repository-root
+`crates/core/src/replay/core/{mod.rs,round_robin.rs}`,
+`crates/core/src/replay/{disagg.rs,replayer.rs}`,
+`crates/core/src/replay/components/engine.rs`,
+`crates/core/src/engine/scheduler/rank.rs`,
+`crates/core/src/engine/scheduler/sglang/{core.rs,tests.rs}`,
+`tests/test_sglang_pd_replay.py`, and the descriptions in
+`docs/replay/engine/workers.md` and `docs/adapters/native-composition.md`
+are modified behavioral adaptations of SGLang v0.5.22 at commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Original paths: `python/sglang/srt/managers/data_parallel_controller.py` and
+`python/sglang/srt/managers/scheduler_components/{load_inquirer.py,pool_stats_observer.py}`.
+Copyright 2023-2024 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for deterministic virtual time and
+settled-pass snapshots instead of shared-memory reads. No serving code is vendored.
+
+## SGLang v0.5.21 sliding-window prefix reuse
+
+The sliding-window (SWA) prefix marks, page grid, and pool bound in repository-root
+`crates/core/src/engine/cache/radix_cache.rs`, their sizing in
+`crates/core/src/engine/kv_manager/{sglang_backend.rs,sglang_backend/hicache.rs}`,
+the finish boundary in `crates/core/src/engine/scheduler/sglang/{decode.rs,tests.rs}`,
+the lowering in `python/aisim/src/aisim/compiler.py`, the descriptions in
+`docs/replay/engine/kv-cache.md`, `tests/test_sglang_pd_replay.py`, and their
+regression tests are modified
+behavioral adaptations of
+`python/sglang/srt/mem_cache/unified_cache/components/swa.py` in SGLang
+v0.5.21 at commit `e00930c5489053f26d86b179cee0d087f846acbb`:
+https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
+
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's page-hash radix cache,
+least-recently-used page bound, and synthetic replay outputs. No serving
+implementation is vendored.
+
 ## SGLang v0.5.22 cache-salt namespaces
 
 The cache-salt behavior in repository-root

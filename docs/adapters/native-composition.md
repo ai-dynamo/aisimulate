@@ -38,7 +38,9 @@ into stable user APIs. Public input/report contracts are in the
 `Replayer::new` accepts
 `adapters.placement.config: {"session_affinity": true}` for aggregated and disaggregated workers.
 The field defaults to `false`. Each session stays on its first selected
-scheduler. New sessions and requests without sessions use round-robin placement.
+scheduler. New sessions and requests without sessions use round-robin placement,
+or the least-loaded scheduler on a disaggregated decode pool with
+`load_balance_method: total_tokens`.
 Disaggregated replay keeps separate pins for the prefill and decode pools.
 Each pool can use different worker counts and attention-DP sizes. Draining or
 removing a worker clears only the pins in its pool.
@@ -46,12 +48,13 @@ removing a worker clears only the pins in its pool.
 A conflicting explicit attention-DP rank returns an error. Pins last for the
 replay, with no TTL or KV-based initial placement. This native descriptor is
 not a prediction-YAML field.
-For custom Rust composition, use `RoundRobinComposition::default()` or set its
-`session_affinity` field.
+For custom Rust composition, use `RoundRobinComposition::default()` and set its
+`session_affinity` and `load_balance_method` fields.
 
 | Field in `adapters.placement.config` | Default | Behavior |
 | --- | --- | --- |
 | `session_affinity` | `false` | Pin each session to its first worker and attention-DP rank. Applies independently to each `round_robin` pool. |
+| `load_balance_method` | `round_robin` | `total_tokens` places each unpinned decode-pool request on the scheduler with the smallest token budget, as SGLang `--load-balance-method total_tokens`: prompt-only dispatch increments, refreshed from settled scheduler loads at most once per 20 ms; ties use request count then scheduler order. Disaggregated decode only; aggregated replay rejects it. |
 
 [`PlacementPolicy<Request>`](../../crates/core/src/replay/core/mod.rs) supplies:
 

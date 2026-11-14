@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Modified behavioral adaptation of SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+// SWA prefix reuse adapts v0.5.21 (e00930c5489053f26d86b179cee0d087f846acbb); see THIRD_PARTY_NOTICES.md.
 
 use super::{KvPageId, LocalBlockHash, NodeId, RadixCache, compute_next_seq_hash};
 use crate::engine::host_offload::{
@@ -42,6 +43,7 @@ pub(super) struct HiCache {
     backups: FxHashMap<TransferId, NodeId>,
     loads: FxHashMap<TransferId, (NodeId, usize)>,
     write_policy: SglangHiCacheWritePolicy,
+    host_blocks: usize,
     pass_load_end_ms: f64,
 }
 
@@ -72,7 +74,23 @@ impl HiCache {
             backups: FxHashMap::default(),
             loads: FxHashMap::default(),
             write_policy: config.write_policy,
+            host_blocks: config.num_host_blocks,
             pass_load_end_ms: 0.0,
+        }
+    }
+
+    /// SWA pages that stay valid given `device_pages` of device SWA room. SGLang sizes the
+    /// host SWA pool as it does the host full-KV pool, `device_blocks` being the device one.
+    /// A write-through host copy duplicates a device page and a write-back one replaces it.
+    /// Selective write-through backs a node up only after repeated hits, so most SWA pages
+    /// have no host copy and the device pool alone bounds them.
+    pub(super) fn swa_pages(&self, device_pages: usize, device_blocks: usize) -> usize {
+        let host_pages = (device_pages as u128 * self.host_blocks as u128
+            / device_blocks.max(1) as u128) as usize;
+        match self.write_policy {
+            SglangHiCacheWritePolicy::WriteThrough => device_pages.max(host_pages),
+            SglangHiCacheWritePolicy::WriteThroughSelective => device_pages,
+            SglangHiCacheWritePolicy::WriteBack => device_pages.saturating_add(host_pages),
         }
     }
 

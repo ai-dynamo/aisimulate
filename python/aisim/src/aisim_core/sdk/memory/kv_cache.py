@@ -628,6 +628,8 @@ class NaiveKVCacheEstimator:
         moe_tp_size: int = 1,
     ):
         self.geometry = geometry
+        # HF ``architectures[0]`` when built from a config; callers route model-specific layouts by it.
+        self.architecture: str | None = None
         self.dtype_bytes = int(dtype_bytes)
         self.tp_size = int(tp_size)
         self.pp_size = int(pp_size)
@@ -685,7 +687,7 @@ class NaiveKVCacheEstimator:
             parsed = _parse_hf_config_json(hf_config)  # supported arch -> normalized parse
         except Exception:
             parsed = None  # unsupported arch (the fallback's target) -> raw-key read
-        return cls(
+        estimator = cls(
             cls._geometry(hf_config, parsed),
             dtype_bytes=cls._dtype_bytes(hf_config),
             tp_size=tp_size,
@@ -693,6 +695,11 @@ class NaiveKVCacheEstimator:
             moe_ep_size=moe_ep_size,
             moe_tp_size=moe_tp_size,
         )
+        architectures = hf_config.get("architectures") or []
+        if not isinstance(architectures, list) or not all(isinstance(name, str) for name in architectures):
+            raise ValueError(f"HF config architectures must be a list of strings, got {architectures!r}")
+        estimator.architecture = next(iter(architectures), None)
+        return estimator
 
     # ----------------------------- config -> geometry ----------------------------- #
 

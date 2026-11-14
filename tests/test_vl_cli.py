@@ -78,6 +78,17 @@ def test_native_vl_lowering_targets_the_host_aware_sglang_rank(cache_mib):
     assert spec.workload["isl"] == 128  # placeholders are laid out by the workload driver
 
 
+def test_host_aware_rank_rounds_an_unaligned_chunk_to_whole_pages():
+    raw = _prediction()
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker["scheduler"]["max_batched_tokens"] = 2049
+    worker["kv_cache"]["block_size"] = 16
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    args = spec.backend_deployment.agg_engine_args
+    assert args["sglang"]["host_loop"] is True
+    assert args["sglang"]["chunked_prefill_size"] == 2048
+
+
 @pytest.mark.parametrize("cache_mib", [0, 100])
 def test_native_vl_memory_detail_matches_schema(tmp_path, capsys, cache_mib):
     from jsonschema import Draft202012Validator
@@ -187,6 +198,14 @@ def test_native_vl_predict_reports_ttft_milestones(tmp_path, capsys):
             < record["prefill_complete_ms"]
             <= record["first_token_ms"]
         )
+
+
+def test_host_aware_rank_keeps_the_swa_prefix_tail_bound():
+    raw = _prediction()
+    raw["engine"]["workers"]["aggregated"]["kv_cache"]["swa_prefix_tails"] = 100
+    args = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment.agg_engine_args
+    assert args["sglang"]["host_loop"] is True
+    assert args["sglang"]["swa_prefix_tails"] == 100
 
 
 def test_images_encode_on_the_language_worker_without_a_host_loop():

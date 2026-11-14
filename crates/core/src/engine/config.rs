@@ -389,6 +389,13 @@ pub struct SglangConfig {
     /// Extra request rows for in-transfer PD decode requests. Unset uses
     /// twice the requested batch size for explicit limits at or below 32.
     pub disaggregation_decode_extra_slots: Option<usize>,
+    /// DeepSeek-V4 sliding-window prefix reuse: how many cached sequence tails the SWA pool has
+    /// room for (SGLang `swa_prefix_tails`, one window and one page of SWA KV each). A prefix
+    /// hit then ends on a page whose SWA KV is still cached: before a prefill chunk end, a
+    /// prompt end, or a fork point an earlier request recomputed. Unset reuses cached KV up to
+    /// any page, as for full attention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swa_prefix_tails: Option<usize>,
 }
 
 const fn default_reserved_decode_tokens() -> usize {
@@ -413,6 +420,7 @@ impl Default for SglangConfig {
             disaggregation_decode_enable_radix_cache: false,
             num_reserved_decode_tokens: default_reserved_decode_tokens(),
             disaggregation_decode_extra_slots: None,
+            swa_prefix_tails: None,
         }
     }
 }
@@ -1501,6 +1509,22 @@ impl EngineConfig {
             !self.sglang.host_loop || self.worker_type != WorkerType::Decode,
             "sglang.host_loop is not modeled on a decode rank; the decode rank runs the text P/D decode loop"
         );
+        ensure!(
+            self.sglang.swa_prefix_tails.is_none() || self.backend == Backend::Sglang,
+            "sglang.swa_prefix_tails is supported only for backend=sglang"
+        );
+        ensure!(
+            self.sglang.swa_prefix_tails != Some(0),
+            "sglang.swa_prefix_tails must be positive"
+        );
+        // SWA reuse is tracked on SGLang's 256-token pages, each a whole number of KV blocks.
+        let swa_page = crate::engine::kv_manager::sglang_backend::SWA_PAGE_TOKENS;
+        ensure!(
+            self.sglang.swa_prefix_tails.is_none()
+                || (self.block_size > 0 && swa_page.is_multiple_of(self.block_size)),
+            "sglang.swa_prefix_tails requires block_size to divide the {swa_page}-token SWA page, got {}",
+            self.block_size
+        );
         if self.sglang.disaggregation_decode_enable_radix_cache {
             ensure!(
                 self.backend == Backend::Sglang,
@@ -1810,6 +1834,23 @@ mod tests {
             pipeline_layout: Default::default(),
             comm_overhead_factor: 1.0,
             routing_location: crate::AfdRoutingLocation::A,
+        }
+    }
+
+    #[test]
+    fn swa_prefix_tails_require_a_block_size_dividing_the_swa_page() {
+        let config = |block_size| {
+            let mut config = EngineConfig::for_backend(Backend::Sglang);
+            config.block_size = block_size;
+            config.sglang.swa_prefix_tails = Some(8);
+            config
+        };
+        for block_size in [1, 64, 256] {
+            config(block_size).validate().expect("divides the SWA page");
+        }
+        for block_size in [96, 512] {
+            let error = config(block_size).validate().unwrap_err().to_string();
+            assert!(error.contains("256-token SWA page"), "{error}");
         }
     }
 

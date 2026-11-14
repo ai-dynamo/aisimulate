@@ -280,6 +280,14 @@ impl SglangCore {
                     .expect("HiCache has KV byte geometry");
             kv_manager.enable_hicache(hicache, block_bytes);
         }
+        if enable_prefix_caching
+            && let Some(tails) = args
+                .sglang
+                .as_ref()
+                .and_then(|sglang| sglang.swa_prefix_tails)
+        {
+            kv_manager.enable_swa_prefix(tails);
+        }
 
         Self {
             config,
@@ -1050,6 +1058,30 @@ impl SglangCore {
     #[cfg(test)]
     pub(crate) fn num_requests(&self) -> usize {
         self.waiting.len() + self.prebuilt_ready.len() + self.running.len()
+    }
+
+    /// SGLang load-inquirer budget for disaggregated decode. Allocated
+    /// transfer/waiting rows already occupy KV; count only unallocated queues again.
+    pub(crate) fn decode_load(&self) -> (usize, usize) {
+        let cache = self.kv_manager.cache();
+        let used = cache.total_tokens() - cache.available_tokens() - cache.evictable_size;
+        let pending = self
+            .pending_destinations
+            .payloads()
+            .map(|r| r.prompt_len())
+            .sum::<usize>();
+        let retracted = self
+            .waiting
+            .iter()
+            .filter(|r| r.retracted)
+            .map(|r| r.current_sequence_len())
+            .sum::<usize>();
+        let requests = self.running.len()
+            + self.waiting.len()
+            + self.prebuilt_ready.len()
+            + self.pending_destinations.len()
+            + self.destination_holds.len();
+        (used + pending + retracted, requests)
     }
 
     pub(crate) fn mocker_metrics(&self) -> MockerMetrics {

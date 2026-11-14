@@ -4,6 +4,7 @@
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
 // Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 // HiCache residency adapts SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
+// SWA prefix reuse adapts v0.5.21 (e00930c5489053f26d86b179cee0d087f846acbb); see THIRD_PARTY_NOTICES.md.
 
 //! Radix-tree KV cache for SGLang engine simulation.
 //!
@@ -209,6 +210,7 @@ pub struct RadixCache {
     evictable_leaves: BTreeSet<(Instant, NodeId)>,
     belady: Option<BeladyLeaves>,
     hicache: Option<HostNodes>,
+    swa: Option<SwaBoundaries>,
     /// Total token count in evictable nodes.
     pub evictable_size: usize,
     /// Total token count in protected (locked) nodes.
@@ -223,6 +225,21 @@ struct BeladyLeaves {
     candidates: BTreeSet<(Reverse<usize>, Instant, NodeId)>,
     by_hash: FxHashMap<SequenceHash, BTreeSet<NodeId>>,
     indexed: FxHashMap<NodeId, (SequenceHash, usize)>,
+}
+
+/// DeepSeek-V4 sliding-window prefix reuse, after SGLang v0.5.21
+/// `mem_cache/unified_cache/components/swa.py`. A running request frees its SWA KV behind the
+/// window, so a cached sequence carries SWA only on the pages before the points where it was
+/// inserted, and `create_match_validator` cuts a match back to the last page boundary whose
+/// preceding SWA page is cached. Each marked node ends at such a boundary. At most `max_pages`
+/// marks stay, least recently used first.
+struct SwaBoundaries {
+    /// One SWA page, in cache pages.
+    page_span: usize,
+    max_pages: usize,
+    clock: u64,
+    lru: BTreeSet<(u64, NodeId)>,
+    stamps: FxHashMap<NodeId, u64>,
 }
 
 /// Leave the suffix in `edge` and return a compact prefix.
@@ -257,8 +274,169 @@ impl RadixCache {
             evictable_leaves: BTreeSet::new(),
             belady: None,
             hicache: None,
+            swa: None,
             evictable_size: 0,
             protected_size: 0,
+        }
+    }
+
+    /// Track DeepSeek-V4 SWA reuse on SWA pages of `page_span` cache pages, keeping at most
+    /// `max_pages` of them.
+    pub(crate) fn enable_swa_prefix(&mut self, max_pages: usize, page_span: usize) {
+        assert!(
+            max_pages > 0 && page_span > 0,
+            "SWA page count and span must be positive"
+        );
+        assert_eq!(
+            self.nodes.len(),
+            1,
+            "enable SWA before populating the cache"
+        );
+        self.swa = Some(SwaBoundaries {
+            page_span,
+            max_pages,
+            clock: 0,
+            lru: BTreeSet::new(),
+            stamps: FxHashMap::default(),
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn swa_max_pages(&self) -> usize {
+        self.swa.as_ref().map_or(0, |swa| swa.max_pages)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn swa_window_count(&self) -> usize {
+        self.swa.as_ref().map_or(0, |swa| swa.stamps.len())
+    }
+
+    /// One SWA page in cache pages; 1 without SWA tracking.
+    pub(crate) fn swa_page_span(&self) -> usize {
+        self.swa.as_ref().map_or(1, |swa| swa.page_span)
+    }
+
+    fn is_swa_boundary(&self, id: NodeId) -> bool {
+        self.swa
+            .as_ref()
+            .is_some_and(|swa| swa.stamps.contains_key(&id))
+    }
+
+    /// Pages of a `matched_pages` full-KV match that SWA reuse keeps: up to the deepest fully
+    /// matched node that ends on a cached SWA page. Without SWA tracking, all of them.
+    pub(crate) fn swa_reusable_pages(
+        &self,
+        page_keys: &[LocalBlockHash],
+        matched_pages: usize,
+    ) -> usize {
+        if self.swa.is_none() {
+            return matched_pages;
+        }
+        let (mut current, mut depth, mut reusable) = (self.root, 0, 0);
+        while depth < matched_pages {
+            let Some(&child) = self.nodes[current].children.get(&page_keys[depth]) else {
+                break;
+            };
+            let end = depth + self.nodes[child].key.len();
+            if end > matched_pages {
+                break;
+            }
+            depth = end;
+            current = child;
+            if self.is_swa_boundary(child) {
+                reusable = depth;
+            }
+        }
+        reusable
+    }
+
+    /// Record an insert of cached `page_keys` whose forward ended at `end_tokens` (SGLang
+    /// `cache_unfinished_req`). The request frees its SWA KV below the page holding
+    /// `end_tokens - 1 - page`, so the last whole SWA page before the end stays cached, and the
+    /// one before it too when the end is page-aligned. Ignores an uncached path.
+    pub(crate) fn mark_swa_window(&mut self, page_keys: &[LocalBlockHash], end_tokens: usize) {
+        let Some(span) = self.swa.as_ref().map(|swa| swa.page_span) else {
+            return;
+        };
+        let page_tokens = span * self.page_size;
+        let end = (end_tokens / page_tokens * span).min(page_keys.len() / span * span);
+        if end_tokens % page_tokens == 0 && end > span {
+            self.mark_swa_boundary(&page_keys[..end - span]);
+        }
+        self.mark_swa_boundary(&page_keys[..end]);
+    }
+
+    /// Mark the end of cached `page_keys`, splitting the edge there if needed.
+    fn mark_swa_boundary(&mut self, page_keys: &[LocalBlockHash]) {
+        if page_keys.is_empty() {
+            return;
+        }
+        let (mut current, mut depth) = (self.root, 0);
+        while depth < page_keys.len() {
+            let Some(&child) = self.nodes[current].children.get(&page_keys[depth]) else {
+                return;
+            };
+            let common = Self::key_match(&self.nodes[child].key, &page_keys[depth..]);
+            depth += common;
+            current = if common < self.nodes[child].key.len() {
+                if depth < page_keys.len() {
+                    return;
+                }
+                self.split_node(child, common)
+            } else {
+                child
+            };
+        }
+        let swa = self.swa.as_mut().expect("SWA tracking is enabled");
+        swa.clock += 1;
+        if let Some(previous) = swa.stamps.insert(current, swa.clock) {
+            swa.lru.remove(&(previous, current));
+        }
+        swa.lru.insert((swa.clock, current));
+        while swa.lru.len() > swa.max_pages {
+            let (_, oldest) = swa.lru.pop_first().expect("over-capacity LRU is non-empty");
+            swa.stamps.remove(&oldest);
+        }
+    }
+
+    /// Refresh the recency of the SWA page a match ended on and of the page before it
+    /// (SGLang `refresh_lru` walks one window and one page up from the match end).
+    pub(crate) fn touch_swa_boundary(&mut self, id: NodeId) {
+        let Some(span) = self.swa.as_ref().map(|swa| swa.page_span) else {
+            return;
+        };
+        let (mut above, mut pages) = (id, 0);
+        while pages < span {
+            let node = &self.nodes[above];
+            let Some(parent) = node.parent else {
+                break;
+            };
+            pages += node.key.len();
+            above = parent;
+        }
+        if pages == span {
+            self.restamp_swa_boundary(above);
+        }
+        self.restamp_swa_boundary(id);
+    }
+
+    fn restamp_swa_boundary(&mut self, id: NodeId) {
+        let swa = self.swa.as_mut().expect("SWA tracking is enabled");
+        let Some(previous) = swa.stamps.get(&id).copied() else {
+            return;
+        };
+        swa.lru.remove(&(previous, id));
+        swa.clock += 1;
+        swa.stamps.insert(id, swa.clock);
+        swa.lru.insert((swa.clock, id));
+    }
+
+    /// The node's end moved or the node left the tree, so its window is gone.
+    fn forget_swa_boundary(&mut self, id: NodeId) {
+        if let Some(swa) = &mut self.swa
+            && let Some(stamp) = swa.stamps.remove(&id)
+        {
+            swa.lru.remove(&(stamp, id));
         }
     }
 
@@ -804,8 +982,10 @@ impl RadixCache {
         let mut key_offset = 0;
 
         while key_offset < page_keys.len() {
+            // Extending a window's tail in place would move its end off the window.
             let can_extend_leaf = current != self.root
                 && self.hicache.is_none()
+                && !self.is_swa_boundary(current)
                 && self.nodes[current].children.is_empty()
                 && (self.nodes[current].lock_ref == 0
                     || (allow_locked_tail_extension
@@ -1137,6 +1317,7 @@ impl RadixCache {
 
                 self.evictable_size -= eviction_len;
                 evicted += eviction_len;
+                self.forget_swa_boundary(victim_id);
                 self.insert_evictable_leaf(victim_id);
                 continue;
             }
@@ -1145,6 +1326,7 @@ impl RadixCache {
                 .nodes
                 .remove(victim_id)
                 .expect("evictable leaf disappeared before removal");
+            self.forget_swa_boundary(victim_id);
             let tokens = victim_node.key.len() * self.page_size;
             let parent_id = victim_node.parent;
 
@@ -1204,6 +1386,94 @@ mod tests {
                 .collect(),
         )
         .unwrap()
+    }
+
+    fn swa_reusable(cache: &RadixCache, tokens: &[u32]) -> usize {
+        cache.swa_reusable_pages(&cache.page_hashes(tokens), cache.prefix_match_len(tokens))
+    }
+
+    /// Insert `tokens` as one forward that ended `past_end` tokens after them.
+    fn insert_with_window(cache: &mut RadixCache, tokens: &[u32], past_end: usize) -> Vec<usize> {
+        let pages = cache.page_pool.allocate(tokens.len()).unwrap();
+        cache.insert(tokens, &pages);
+        let keys = cache.page_hashes(tokens);
+        cache.mark_swa_window(&keys, tokens.len() + past_end);
+        pages
+    }
+
+    #[test]
+    fn swa_reuse_ends_on_a_cached_swa_page() {
+        // One-token cache pages, two-token SWA pages.
+        let mut cache = RadixCache::new(32, 1);
+        cache.enable_swa_prefix(8, 2);
+        insert_with_window(&mut cache, &[1, 2, 3, 4, 5, 6, 7], 0);
+
+        assert_eq!(
+            swa_reusable(&cache, &[1, 2, 3, 4, 5, 6, 7, 8]),
+            6,
+            "an unaligned end keeps the last whole SWA page"
+        );
+        assert_eq!(
+            swa_reusable(&cache, &[1, 2, 3, 4, 9]),
+            0,
+            "a fork inside the sequence finds no SWA page"
+        );
+        // A recomputed fork point is a page-aligned insert end: it keeps two SWA pages.
+        let fork = cache.page_hashes(&[1, 2, 3, 4]);
+        cache.mark_swa_window(&fork, 4);
+        assert_eq!(swa_reusable(&cache, &[1, 2, 3, 4, 9]), 4);
+        assert_eq!(swa_reusable(&cache, &[1, 2, 3, 9]), 2);
+        assert_eq!(
+            swa_reusable(&cache, &[1, 2, 3, 4, 5, 6, 7, 8]),
+            6,
+            "splitting the edge keeps the later SWA page"
+        );
+    }
+
+    #[test]
+    fn swa_pages_beyond_the_cap_drop_least_recent_first() {
+        let mut cache = RadixCache::new(32, 1);
+        cache.enable_swa_prefix(3, 2);
+        insert_with_window(&mut cache, &[1, 2, 3, 4], 0);
+        insert_with_window(&mut cache, &[5, 6], 1);
+        // Reuse refreshes the SWA page the match ended on and the one before it.
+        let (_, reused) = cache.match_prefix(&[1, 2, 3, 4]);
+        cache.touch_swa_boundary(reused);
+        insert_with_window(&mut cache, &[7, 8], 1);
+
+        assert_eq!(swa_reusable(&cache, &[1, 2, 3, 4, 9]), 4);
+        assert_eq!(swa_reusable(&cache, &[1, 2, 9]), 2);
+        assert_eq!(swa_reusable(&cache, &[5, 6, 9]), 0);
+        assert_eq!(swa_reusable(&cache, &[7, 8, 9]), 2);
+    }
+
+    #[test]
+    fn swa_page_leaves_with_its_tail_and_survives_tail_growth() {
+        let mut cache = RadixCache::new(4, 1);
+        cache.enable_swa_prefix(4, 2);
+        insert_with_window(&mut cache, &[1, 2], 1);
+        cache.evict(1);
+        assert_eq!(cache.prefix_match_len(&[1, 2]), 1);
+        assert_eq!(
+            swa_reusable(&cache, &[1, 2]),
+            0,
+            "trimming moved the tail off the SWA page"
+        );
+
+        let mut cache = RadixCache::new(4, 1);
+        cache.enable_swa_prefix(4, 2);
+        let mut pages = insert_with_window(&mut cache, &[1, 2], 1);
+        let (_, node) = cache.match_prefix(&[1, 2]);
+        cache.inc_lock_ref(node);
+        pages.extend(cache.page_pool.allocate(1).unwrap());
+        cache.insert_from_node(node, 2, &[1, 2, 3], &pages);
+        cache.dec_lock_ref(node);
+        assert_eq!(cache.prefix_match_len(&[1, 2, 3]), 3);
+        assert_eq!(
+            swa_reusable(&cache, &[1, 2, 3]),
+            2,
+            "growth past an SWA page keeps it"
+        );
     }
 
     #[test]

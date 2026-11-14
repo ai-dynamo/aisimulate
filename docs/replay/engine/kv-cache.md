@@ -44,6 +44,7 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 |---|---|---|---|
 | `block_size` | vLLM `64`, SGLang `1`, TensorRT-LLM `32` | Searchable; fixed by default | Tokens per block. vLLM and TensorRT-LLM require at least 2. |
 | `prefix_caching` | `true` | fixed | Keep completed prompt blocks for reuse by later requests. |
+| `swa_prefix_tails` | `auto` | fixed | SGLang only. Sequence tails per attention-DP rank that keep their DeepSeek-V4 sliding-window KV; `null` turns it off. `auto` uses four per running request for a DeepSeek-V4 checkpoint and is off for other models. See [DeepSeek-V4 SWA prefix reuse](#deepseek-v4-swa-prefix-reuse). |
 | `decode_radix_cache` | `false` | fixed | SGLang `decode` only. Enables the decode worker's radix cache (`--disaggregation-decode-enable-radix-cache`); requires `prefix_caching: true` and no speculative decoding. See [SGLang decode radix cache](#sglang-decode-radix-cache). |
 | `bytes_per_token` | `auto` | fixed | KV bytes per token on one TP shard. `auto` derives it from the model, KV precision and this role's parallelism. |
 | `capacity.type` | `default` | fixed | `default` sizes G1 from GPU memory; `fixed` uses `blocks` or `bytes`. |
@@ -169,6 +170,60 @@ a salted prompt should use `ReplayRequestHashes::from_tokens_with_cache_salt`.
 This is a simulator contract pinned to SGLang v0.5.22. AISim does not check
 the installed serving runtime's support for `cache_salt` or the decode radix
 flag; verify both capabilities when deploying an older SGLang version.
+
+<a id="deepseek-v4-swa-prefix-reuse"></a>
+
+## DeepSeek-V4 SWA prefix reuse
+
+DeepSeek-V4 layers keep a sliding window of KV next to their compressed KV.
+SGLang serves these models with 256-token KV pages and frees a running
+request's SWA pages as the request moves past them, so a cached sequence holds
+SWA KV only on the pages just before the points where it was inserted into the
+radix cache. A prefix hit must end on a page whose SWA KV is cached
+(`create_match_validator` in SGLang v0.5.21
+`mem_cache/unified_cache/components/swa.py`). A request that forks elsewhere
+inside another cached sequence, such as a subagent's first turn, therefore
+recomputes from the last such page even though full KV covers more.
+
+`kv_cache.swa_prefix_tails` turns this on for SGLang `aggregated` and `prefill`
+workers. Replay keeps the SWA pages SGLang leaves cached:
+
+- Each prefill chunk end and the prompt end is an insert. An insert that ends
+  on a page boundary keeps the two SWA pages before it; any other insert keeps
+  the last whole page before it.
+- A request whose hit was cut back inserts at its fork point once it has
+  recomputed that far, in place of that chunk's end, so the next request
+  forking there reuses it (`finalize_match_result_in_tree_core`).
+- Replay's generated output tokens differ from the next prompt in a trace, so a
+  continuation diverges where the previous output began instead of matching
+  through it to the tail. A finished request therefore keeps its SWA page
+  before the end of its prompt.
+
+A hit refreshes the SWA page it ended on and the one before it. The SWA pool
+holds one window and one page (384 tokens) per `swa_prefix_tails`, per
+attention-DP rank; beyond that, the least recently used SWA page is dropped.
+Evicting a sequence's tail also drops its SWA pages. With HiCache, an SWA page
+stays valid while its node is host-resident, and the host SWA pool adds room:
+it is sized from the device SWA pool by the ratio of `hicache.num_host_blocks`
+to device KV blocks. Under `write_through` the host copy duplicates the device
+page, so the larger of the two pools bounds the cached SWA pages; under
+`write_back` the two pools add up. `write_through_selective` copies a node to
+the host only after repeated hits, so the device pool alone bounds the cached
+SWA pages.
+
+`auto` sizes the pool as SGLang's `cap` mode does: four tails per running
+request (`max_sequences`). It applies to a checkpoint whose bundled or local
+config has architecture `DeepseekV4ForCausalLM` or `DeepseekV41ForCausalLM`.
+Set a number to match a server that sized its SWA pool another way (for
+`swa_full_tokens_ratio`, the pool's tokens beyond 384 per running request,
+divided by 384), or `null` to match full KV at any page. These are modeling
+assumptions: SWA pages are tracked on replay's page grid rounded up to 256
+tokens, a chunk end's partial page is not tracked, and the pool shares no
+capacity with full KV.
+A decode worker's radix cache matches full KV as before. Native engine
+configurations set the resolved count as `sglang.swa_prefix_tails` (a positive
+integer, SGLang only; unset turns it off). It requires a `block_size` that
+divides the 256-token SWA page.
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>

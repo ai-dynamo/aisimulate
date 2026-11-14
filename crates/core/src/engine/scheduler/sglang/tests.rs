@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
 // Cache-salt behavior follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
+// SWA prefix reuse adapts v0.5.21 (e00930c5489053f26d86b179cee0d087f846acbb); see THIRD_PARTY_NOTICES.md.
 
 // Admission and ratio lifecycle follow SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
@@ -1584,6 +1585,86 @@ fn destination_rejects_prompt_at_or_above_max_model_len(#[values(8, 9)] prompt_l
 }
 
 #[test]
+fn dsv4_swa_reuse_ends_on_a_cached_swa_page_and_learns_the_fork() {
+    // DeepSeek-V4 on SGLang keeps a cached sequence's SWA KV only on the 256-token pages
+    // before each insert end: two pages at a page-aligned end, one otherwise. A request forking
+    // elsewhere recomputes from the last such page; its recompute inserts at the fork point,
+    // so the next request forking there reuses it.
+    let reused = |swa_prefix_tails| {
+        let mut args = test_args(64, 64, 4096);
+        args.sglang.as_mut().unwrap().swa_prefix_tails = swa_prefix_tails;
+        let mut core = SglangCore::new(args);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let mut now = 0.0;
+        let mut fork = |tail: std::ops::Range<u32>, prefix: u32| {
+            let mut tokens = (0..prefix).collect::<Vec<_>>();
+            tokens.extend(tail);
+            core.receive(direct_request(tokens, 0));
+            let pass = core.execute_pass(&mut collector, now);
+            now = pass.end_ms;
+            assert!(core.is_empty());
+            pass.admissions[0].reused_input_tokens
+        };
+        [
+            fork(0..0, 1024),
+            fork(10_000..10_064, 1024),
+            fork(20_000..20_064, 768),
+            fork(30_000..30_128, 448),
+            fork(40_000..40_064, 448),
+            fork(50_000..50_064, 192),
+        ]
+    };
+    assert_eq!(reused(Some(8)), [0, 1024, 768, 0, 256, 0]);
+    assert_eq!(
+        reused(None),
+        [0, 1024, 768, 448, 448, 192],
+        "full attention reuses any cached page"
+    );
+}
+
+#[test]
+fn dsv4_swa_continuation_after_generated_output_reuses_the_prompt() {
+    // Replay's generated tokens are not the next prompt's, so the next turn diverges where
+    // the previous output began; the SWA page replay keeps before the prompt end lets it
+    // reuse the prompt up to that page, as SGLang reuses it through the real output.
+    let mut args = test_args(64, 64, 4096);
+    args.sglang.as_mut().unwrap().swa_prefix_tails = Some(8);
+    let mut core = SglangCore::new(args);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    core.receive(direct_request((0..600).collect(), 6));
+    let mut now = 0.0;
+    while !core.is_empty() {
+        now = core.execute_pass(&mut collector, now).end_ms;
+    }
+    core.receive(direct_request((0..600).chain(5000..5128).collect(), 0));
+    let pass = core.execute_pass(&mut collector, now);
+    assert_eq!(pass.admissions[0].reused_input_tokens, 512);
+}
+
+#[test]
+fn dsv4_swa_continuation_reuses_an_exact_output_through_its_tail() {
+    // A request replaying its exact output tokens ends in the same sequence the next turn
+    // carries, so the continuation reaches the SWA page at the tail of the output.
+    let mut args = test_args(64, 64, 4096);
+    args.sglang.as_mut().unwrap().swa_prefix_tails = Some(8);
+    let mut core = SglangCore::new(args);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let output: Vec<u32> = (6000..6169).collect();
+    core.receive(DirectRequest {
+        output_token_ids: Some(output.clone()),
+        ..direct_request((0..600).collect(), output.len())
+    });
+    let mut now = 0.0;
+    while !core.is_empty() {
+        now = core.execute_pass(&mut collector, now).end_ms;
+    }
+    let next = (0..600).chain(output).chain(7000..7100).collect();
+    core.receive(direct_request(next, 0));
+    let pass = core.execute_pass(&mut collector, now);
+    assert_eq!(pass.admissions[0].reused_input_tokens, 768);
+}
+
+#[test]
 fn belady_retires_whole_prompt_once_on_first_chunk_and_includes_full_hits() {
     let tokens = (0..8).collect::<Vec<_>>();
     let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
@@ -2713,6 +2794,7 @@ mod destination_lifecycle {
         let mut core = SglangCore::new(args);
         let held_handoff = HandoffId::from(Uuid::from_u128(33_001));
         let held_uuid = Uuid::from_u128(33_002);
+        assert_eq!(core.decode_load(), (0, 0));
         let held = core
             .apply_command_effects(
                 SchedulerCommand::ReserveDestination {
@@ -2724,6 +2806,7 @@ mod destination_lifecycle {
             .unwrap();
         assert_eq!(held.lifecycle_events.len(), 1);
         assert_eq!(core.mocker_metrics().waiting_requests, 1);
+        assert_eq!(core.decode_load(), (4, 1), "allocated transfers count once");
         let held_snapshot = execute(&mut core, 0.0).fpm.unwrap();
         assert_eq!(held_snapshot.num_queued_decode, 1);
         assert_eq!(held_snapshot.sum_queued_decode_kv_tokens, 4);
@@ -2741,6 +2824,7 @@ mod destination_lifecycle {
             .unwrap();
         assert!(pending.lifecycle_events.is_empty());
         assert_eq!(core.mocker_metrics().waiting_requests, 2);
+        assert_eq!(core.decode_load(), (28, 2), "unallocated prompts add load");
         let mixed_snapshot = execute(&mut core, 0.0).fpm.unwrap();
         assert_eq!(mixed_snapshot.num_queued_decode, 2);
         assert_eq!(mixed_snapshot.sum_queued_decode_kv_tokens, 28);
@@ -2754,6 +2838,11 @@ mod destination_lifecycle {
             SchedulerCommandResult::Applied
         );
         assert_eq!(core.mocker_metrics().waiting_requests, 1);
+        assert_eq!(
+            core.decode_load(),
+            (4, 1),
+            "cancellation clears queued load"
+        );
 
         core.receive(request(Uuid::from_u128(33_005), vec![3; 4], 2));
         let blocker = execute(&mut core, 1.0);
@@ -2777,6 +2866,11 @@ mod destination_lifecycle {
         assert_eq!(completed.num_queued_decode, 0);
         assert_eq!(completed.sum_queued_decode_kv_tokens, 0);
         assert_eq!(core.mocker_metrics().waiting_requests, 0);
+        assert_eq!(
+            core.decode_load(),
+            (0, 0),
+            "evictable cache is not active load"
+        );
     }
 
     #[test]

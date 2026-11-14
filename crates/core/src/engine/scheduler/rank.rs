@@ -88,6 +88,13 @@ impl SchedulerRank {
         self.core.set_host_offload_observer(observer);
     }
 
+    pub(crate) fn decode_load(&self) -> Option<(usize, usize)> {
+        match &self.core {
+            EngineCore::Sglang(core) => Some(core.decode_load()),
+            EngineCore::Vllm(_) => None,
+        }
+    }
+
     /// Per-rank G2 only. Shared G2 is observed through its deployment registry.
     pub(crate) fn per_rank_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
         match &self.core {
@@ -568,6 +575,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
                 .disaggregation_decode_enable_radix_cache,
             num_reserved_decode_tokens: Some(config.sglang.num_reserved_decode_tokens),
             disaggregation_decode_extra_slots: config.sglang.disaggregation_decode_extra_slots,
+            swa_prefix_tails: config.sglang.swa_prefix_tails,
             frontend: config.frontend.clone(),
         }),
         emit_kv_events: config.emit_kv_events,

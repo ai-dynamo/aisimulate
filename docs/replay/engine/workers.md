@@ -52,10 +52,11 @@ engine:
 | `workers.<role>.parallelism.moe_expert` | `1` | Searched | MoE expert parallelism. Repartitions the worker's GPUs and does not add GPUs. |
 | `workers.<role>.parallelism.prefill_context` | Unset (1) | predict only | Prefill context parallelism (vLLM `-pcp`, SGLang `--attn-cp-size`). Adds GPUs. |
 | `workers.<role>.parallelism.decode_context` | Unset (1) | predict only | Decode context parallelism (vLLM `-dcp`, SGLang `--dcp-size`). Must divide `tensor`; adds no GPUs. |
-| `workers.<role>.scheduler.max_batched_tokens` | `8192` | Prefill and aggregated: `{choices: [8192, 16384, 32768]}`; decode: fixed | Positive. Token budget for one scheduler pass on one attention-DP rank. See [SGLang note](#batch-limits). |
+| `workers.<role>.scheduler.max_batched_tokens` | `8192` | Prefill and aggregated: `{choices: [8192, 16384, 32768]}`; decode: fixed | Positive. Token budget for one scheduler pass: per attention-DP rank on vLLM, the worker's launch value on SGLang. See [SGLang note](#batch-limits). |
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
+| `workers.decode.scheduler.load_balance_method` | `round_robin` | predict only | SGLang PD decode only (`--load-balance-method`). `total_tokens` places a request on the attention-DP rank with the smallest scheduler token budget; `round_robin` takes ranks in turn. |
 | `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts or MTP + G2 | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts or MTP + G2. See [vLLM async scheduling](#vllm-async-scheduling). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
@@ -156,8 +157,18 @@ keep pricing each rank's own prefill and decode, so the pass ends with the
 slowest rank's own time.
 
 On the `engine` stack, requests are placed round-robin across workers and then
-across the ranks of each worker. A trace request that names a `dp_rank` keeps
-that rank. Worker counts are fixed for the whole run. The
+across the ranks of each worker by default. With
+`workers.decode.scheduler.load_balance_method: total_tokens`, an unpinned
+disaggregated decode request instead goes to the rank with the smallest token
+budget, breaking ties by running plus waiting request count and then rank order.
+Each dispatch charges only its prompt length. Before dispatch, at most once per
+20 ms of virtual time, replay replaces these speculative budgets with fresh
+scheduler snapshots: KV tokens in use (excluding evictable cache) plus tokens
+in unallocated queues. Allocated decode transfers are counted once. Termination
+is reflected by the next fresh snapshot, rather than subtracting the original
+prompt from a budget that may now include generated KV. Snapshots are taken at
+visible decode-pass completions, at most once per rank per 20 ms plus terminal
+passes; this models SGLang's load reporting without shared-memory polling. A trace request that names a `dp_rank` keeps that rank. Worker counts are fixed for the whole run. The
 [Dynamo stack](../dynamo.md) replaces placement with the KV Router and can scale
 worker counts with the Planner; `startup_seconds` then delays each added worker.
 
@@ -167,17 +178,19 @@ worker counts with the Planner; `startup_seconds` then delays each added worker.
 
 ### Batch limits
 
-`max_batched_tokens` and `max_sequences` are per attention-DP rank, matching
-how vLLM and SGLang apply them inside each DP engine. A prefill role defaults
+`max_sequences` is per attention-DP rank on both backends. `max_batched_tokens`
+is per attention-DP rank on vLLM and the worker's launch value on SGLang (see
+the note below). A prefill role defaults
 to `max_sequences: 1`, so each prefill rank runs one request at a time unless
 you raise it.
 
-> **SGLang note.** The SGLang scheduler currently takes its per-pass prefill
-> budget from SGLang's default `chunked_prefill_size` (8192 tokens, divided by
-> `attention_data`), not from `max_batched_tokens`. Changing
-> `max_batched_tokens` does not change SGLang replay results, except when
-> `host_loop` is enabled or images are encoded on the worker (without a
-> separate encoder pool). In those cases it is the worker's `chunked_prefill_size`.
+> **SGLang note.** On a disaggregated `prefill` or an `aggregated` worker,
+> `max_batched_tokens` is the worker's `chunked_prefill_size`
+> (`--chunked-prefill-size`), as SGLang launches it, rounded down to a
+> multiple of `block_size` (at least one block). With attention DP, SGLang
+> splits that launch value across the ranks, so each rank chunks at the
+> rounded value divided by `attention_data`. A decode worker keeps SGLang's
+> 8192-token default.
 
 With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a
@@ -448,7 +461,7 @@ P/D handoff order also differs by backend; see
 
 ## Limitations
 
-- Placement on the `engine` stack is round-robin and ignores cache overlap.
+- Placement on the `engine` stack is round-robin (or token-balanced on a decode pool with `total_tokens`) and ignores cache overlap.
 - Worker counts are fixed unless the Dynamo Planner scales them.
 - Attention-DP ranks are synchronized per pass. Rank-to-rank communication time
   is part of the forward-pass estimate, not a separately modeled event.

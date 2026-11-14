@@ -2658,6 +2658,21 @@ where
                 )
             }
             SimulationWorkerStage::Decode => {
+                // Read only settled state, before another eager pass can run. The
+                // policy throttles queue inspection and later refreshes on dispatch.
+                if self.decode_placement.needs_scheduler_load(
+                    payload.worker_idx,
+                    self.now_ms,
+                    payload.completed_requests > 0,
+                ) {
+                    let (tokens, requests) = self.decode_engine.decode_load(payload.worker_idx)?;
+                    self.decode_placement.observe_scheduler_load(
+                        payload.worker_idx,
+                        tokens,
+                        requests,
+                        self.now_ms,
+                    );
+                }
                 self.wake_deferred_actions(SimulationWorkerStage::Decode, payload.worker_idx);
                 if self.collect_fpm
                     && let Some(fpm) = payload.fpm

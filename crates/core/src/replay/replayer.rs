@@ -127,6 +127,21 @@ where
             .map_err(placement_boundary)
     }
 
+    fn needs_scheduler_load(&self, scheduler_id: usize, now_ms: f64, terminal: bool) -> bool {
+        self.0.needs_scheduler_load(scheduler_id, now_ms, terminal)
+    }
+
+    fn observe_scheduler_load(
+        &mut self,
+        scheduler_id: usize,
+        tokens: usize,
+        requests: usize,
+        now_ms: f64,
+    ) {
+        self.0
+            .observe_scheduler_load(scheduler_id, tokens, requests, now_ms);
+    }
+
     fn cancel_pending(&mut self, request_id: Uuid) -> bool {
         self.0.cancel_pending(request_id)
     }
@@ -269,6 +284,19 @@ pub enum ReplayRuntimeInput {
 #[serde(default, deny_unknown_fields)]
 pub struct RoundRobinComposition {
     pub session_affinity: bool,
+    /// How the disaggregated decode pool picks a request's attention-DP rank.
+    pub load_balance_method: LoadBalanceMethod,
+}
+
+/// SGLang `--load-balance-method` for the decode pool's attention-DP ranks.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadBalanceMethod {
+    /// Ranks in turn.
+    #[default]
+    RoundRobin,
+    /// The rank holding the fewest placed prompt tokens.
+    TotalTokens,
 }
 
 impl ReplayComposition for RoundRobinComposition {
@@ -298,6 +326,10 @@ impl ReplayComposition for RoundRobinComposition {
         dp_size: u32,
         topology: Vec<WorkerTopology>,
     ) -> AnyResult<Self::AggregatedPlacement> {
+        anyhow::ensure!(
+            self.load_balance_method == LoadBalanceMethod::RoundRobin,
+            "load_balance_method applies only to a disaggregated decode pool"
+        );
         Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)
             .with_session_affinity(self.session_affinity))
     }
@@ -313,7 +345,8 @@ impl ReplayComposition for RoundRobinComposition {
             PoolRoundRobinPlacement::new(prefill_topology)
                 .with_session_affinity(self.session_affinity),
             PoolRoundRobinPlacement::new(decode_topology)
-                .with_session_affinity(self.session_affinity),
+                .with_session_affinity(self.session_affinity)
+                .with_token_balance(self.load_balance_method == LoadBalanceMethod::TotalTokens),
         ))
     }
 }

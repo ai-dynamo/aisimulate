@@ -4079,6 +4079,7 @@ def test_simulation_dynamo_sglang_adapter_against_current_api(tmp_path, monkeypa
     assert "disaggregation_decode_enable_radix_cache: false," in adapter.read_text()
     assert "num_reserved_decode_tokens: SglangConfig::default().num_reserved_decode_tokens," in adapter.read_text()
     assert "disaggregation_decode_extra_slots: None," in adapter.read_text()
+    assert "swa_prefix_tails: None," in adapter.read_text()
     assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
 
 
