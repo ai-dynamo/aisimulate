@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Upgrade a collector runtime
 
-Run the package-relative commands below from `python/aisimulate/`.
+Run the package-relative commands below from `python/aisim/`.
 
 Use this playbook to move one AIC collector to one exact framework release and
 validate it on one GPU platform. Keep framework upgrades separate: finish and
@@ -13,7 +13,7 @@ review SGLang, TensorRT-LLM, or vLLM independently instead of combining all
 three in one change.
 
 The tracked agent workflow is
-[`aic-auto-collect`](../../../python/aisimulate/.claude/skills/aic-auto-collect/SKILL.md). This
+[`aic-auto-collect`](../../../python/aisim/.claude/skills/aic-auto-collect/SKILL.md). This
 document is the project source of truth; the skill turns it into an executable
 workflow.
 
@@ -34,7 +34,7 @@ Record these decisions before changing code:
 `collector/framework_manifest.yaml` is the source of truth for the stock
 framework pin and image. Each collector module pins exactly the release the
 manifest resolves for its op (the "Version contract" in
-`python/aisimulate/.claude/rules/collector/layer_permissions.md`). Treat stock and WideEP/special images
+`python/aisim/.claude/rules/collector/layer_permissions.md`). Treat stock and WideEP/special images
 as separate runtimes with separate evidence.
 
 Do not silently broaden the work to another framework, XPU, WideEP, host
@@ -256,7 +256,7 @@ For data delivery:
 2. finalize staging files to parquet only after checkpoint failures are
    resolved or explicitly accepted by the delivery contract;
 3. place data under
-   `src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/`,
+   `src/aisim_core/systems/data/<system>/<family>/<backend>/<version>/`,
    where `<family>` comes from `collector/op_backend_catalog.yaml`;
 4. regenerate kernel-source metadata when sources change;
 5. run parquet diff/review tools and loader tests;

@@ -6,8 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # AIC support matrix and model roster
 
 The generation roster for the published
-[Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
-is curated separately from the model configurations bundled with AISimulate.
+[Legacy AIC Support Matrix](https://ai-dynamo.org/aisim/support-matrix/)
+is curated separately from the model configurations bundled with AISim.
 
 A bundled model remains available for explicit SDK and CLI use even after it
 is retired from default matrix generation. This keeps historical workflows and
@@ -80,5 +80,5 @@ the default matrix:
   Nemotron-3 remains.
 
 The source of truth is `SupportMatrixHFModels` in
-`aisimulate_core.sdk.common`. `DefaultHFModels` remains the bundled config
+`aisim_core.sdk.common`. `DefaultHFModels` remains the bundled config
 inventory for compatibility and offline loading.

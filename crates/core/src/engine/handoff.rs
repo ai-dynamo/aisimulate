@@ -3,7 +3,7 @@
 
 //! Runtime-neutral identities and timing inputs for prefill-to-decode handoff.
 //!
-//! These value types are owned by the `aisimulate-core::engine` module because native
+//! These value types are owned by the `aisim-core::engine` module because native
 //! schedulers must retain them with their KV ownership state. Replay owns the
 //! handoff coordinator, ordering, and virtual transfer event.
 //!

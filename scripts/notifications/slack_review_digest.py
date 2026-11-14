@@ -151,7 +151,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    repository = os.environ.get("GITHUB_REPOSITORY", "ai-dynamo/aisimulate")
+    repository = os.environ.get("GITHUB_REPOSITORY", "ai-dynamo/aisim")
     token = os.environ["GH_TOKEN"]
     webhook = os.environ.get("SLACK_REVIEW_DIGEST_WEBHOOK_URL", "")
     if not args.dry_run and not webhook:

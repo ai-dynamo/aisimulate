@@ -11,27 +11,27 @@ when the Git command is invoked from a subdirectory. `origin/main` is the compar
 
 AIC stores perf tables as compressed parquet files. GitHub cannot render useful
 binary diffs for parquet by itself, so use the review helpers in
-`python/aisimulate/tools/perf_database`.
+`python/aisim/tools/perf_database`.
 
 For local diffs, install the textconv driver once per clone:
 
 ```bash
-git config diff.parquet.textconv 'uv run --project python/aisimulate python python/aisimulate/tools/perf_database/parquet_textconv.py'
+git config diff.parquet.textconv 'uv run --project python/aisim python python/aisim/tools/perf_database/parquet_textconv.py'
 ```
 
 After that, regular git commands show parquet files as CSV-like text:
 
 ```bash
-git diff origin/main...HEAD -- python/aisimulate/src/aisimulate_core/systems/data
+git diff origin/main...HEAD -- python/aisim/src/aisim_core/systems/data
 ```
 
 For PR review summaries, run:
 
 ```bash
-uv run --project python/aisimulate python python/aisimulate/tools/perf_database/parquet_diff.py \
+uv run --project python/aisim python python/aisim/tools/perf_database/parquet_diff.py \
   --base-ref origin/main \
   --head-ref HEAD \
-  --path-prefix python/aisimulate/src/aisimulate_core/systems/data \
+  --path-prefix python/aisim/src/aisim_core/systems/data \
   --output parquet-diff.md \
   --detail-dir parquet-diff-details
 ```

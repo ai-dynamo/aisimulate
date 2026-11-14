@@ -8,7 +8,7 @@ mod engine;
 mod tokenization;
 mod types;
 
-pub(crate) use admission::{AdmissionQueue, ReplayReadyArrival};
+pub(crate) use admission::{AdmissionQueue, DpRankLimits, ReplayReadyArrival};
 pub use admission::{NoReplayMetadata, ReplayAdmissionMetadata};
 pub use detokenization::DetokenizationLatency;
 pub(crate) use detokenization::{DetokenizationStage, PassReceipt};

@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Use the public `Sweeper` execution interface with an explicit runner factory.
 `SmartSearchConfig` is the SDK schema. Do not pass its YAML directly to
-`aisimulate recommend`, which accepts the [public CLI schema](../reference/configuration.md).
+`aisim recommend`, which accepts the [public CLI schema](../reference/configuration.md).
 
 ## Execute a built-in engine sweep
 
@@ -16,8 +16,8 @@ analytical encoder integration, with the [limits](../replay/engine/analytical.md
 described by Replay. Run from the repository root:
 
 ```python
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper import SmartSearchConfig, Sweeper
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper import SmartSearchConfig, Sweeper
 
 if __name__ == "__main__":
     config = SmartSearchConfig.from_yaml("examples/sweeper/epd.yaml")
@@ -57,6 +57,7 @@ search_space:
     fpm_regression:
       min_observations: 5
   systems_paths: [default]
+  # The six estimator fields above are deprecated; ais_perf_model replaces them.
 
 workload:
   isl: 1024
@@ -95,13 +96,14 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `deployment_mode` | `[disagg, agg]` | deployment branches to search |
 | `backend` | `[vllm]` | engine backends to search |
 | `backend_version` | `None` | exact version for one backend, or a per-backend version mapping; omitted backends resolve once to latest |
-| `database_mode` | `SILICON` | forward-pass estimator data-source policy; see [performance-model configuration](../perf-model/configuration.md) |
-| `transfer_policy` | `None` (all) | Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
-| `estimation_mode` | `auto` | search op-level, FPM interpolation, then regression; or select `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned` explicitly. Regression and learned roles are priced per iteration; see [engine replay timing](../perf-model/configuration.md#engine-replay-timing). |
-| `fallback_policy` | `deny` | constrain explicit estimator selection; auto always searches the full priority order |
-| `estimator_config` | `{}` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
-| `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
-| `role_estimator_controls` | `{}` | per-role (`agg`, `prefill`, `decode`) `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode` and `transfer_policy` overrides. `{"estimator_config": {"state_snapshot": {"path": ...}}}` times the role with a calibrated snapshot and pins the role's engine identity to it; see [snapshot roles](../perf-model/configuration.md#recommending-with-a-calibrated-snapshot) |
+| `ais_perf_model` | `None` | one perf-model config, or a list with one config per worker type; sets the estimator of each role and replaces the deprecated estimator fields below. See [Perf model](#ais-perf-model) |
+| `database_mode` | `SILICON` | Deprecated; use [`ais_perf_model`](#ais-perf-model). Forward-pass estimator data-source policy; see [performance-model configuration](../perf-model/configuration.md) |
+| `transfer_policy` | `None` (all) | Deprecated; use [`ais_perf_model`](#ais-perf-model). Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
+| `estimation_mode` | `auto` | Deprecated; use [`ais_perf_model`](#ais-perf-model). Search op-level, FPM interpolation, then regression; or select `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned` explicitly. Regression and learned roles are priced per iteration; see [engine replay timing](../perf-model/configuration.md#engine-replay-timing). |
+| `fallback_policy` | `deny` | Deprecated; use [`ais_perf_model`](#ais-perf-model). Constrain explicit estimator selection; auto always searches the full priority order |
+| `estimator_config` | `{}` (Core defaults) | Deprecated; use [`ais_perf_model`](#ais-perf-model). Runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
+| `systems_paths` | omitted | Deprecated; use [`ais_perf_model`](#ais-perf-model). Preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
+| `role_estimator_controls` | `{}` | Deprecated; use [`ais_perf_model`](#ais-perf-model). Per-role (`agg`, `prefill`, `decode`) `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode` and `transfer_policy` overrides. A role's `transfer_policy` may be `null`: it replaces the top-level `transfer_policy` for that role with every transfer kind. `{"estimator_config": {"state_snapshot": {"path": ...}}}` times the role with a calibrated snapshot and pins the role's engine identity to it; see [snapshot roles](../perf-model/configuration.md#recommending-with-a-calibrated-snapshot) |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |
@@ -111,13 +113,199 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
 
+<a id="ais-perf-model"></a>
+
+### Perf model
+
+`ais_perf_model` sets the perf model of each worker type in one place:
+
+```yaml
+search_space:
+  model_name: example/model
+  hardware_sku: h200_sxm
+  deployment_mode: [disagg]
+  ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      fallback_policy: deny
+      systems_paths: [./fpm-data, default]
+    - worker_type: decode
+      estimation_mode: op_level
+```
+
+One config without `worker_type` applies to every role:
+
+```yaml
+search_space:
+  ais_perf_model:
+    estimation_mode: op_level
+    fallback_policy: deny
+```
+
+- **Worker types.** They are `aggregated`, `prefill` and `decode`. The
+  `aggregated` worker type is the `agg` role. `deployment_mode: [agg]` uses
+  `aggregated`, and `[disagg]` uses `prefill` and `decode`. Both modes, or an
+  omitted `deployment_mode`, use all three. A list needs an entry for each of
+  these worker types and none for another.
+- **Estimator keys.** In this release the field is another spelling of the
+  estimator fields. A key that every entry gives with the same value becomes
+  the top-level field. Any other key becomes
+  `role_estimator_controls.<role>.<key>`. A state snapshot entry
+  (`from: {state_snapshot: {path: ...}}`) always uses
+  `role_estimator_controls`.
+- **Other keys.** `model`, `system` and `backend` are only checked: against
+  `model_name`, the hardware SKU of the role, and `backend` when it lists one
+  backend. A different value is an error. So is an entry that states `backend`
+  when the search lists several backends, and any other key that is not an
+  estimator key, such as `tp`.
+- **Dumps.** `model_dump()` leaves `ais_perf_model` out and shows the
+  estimator fields.
+- **Relative paths.** In a file read by `SmartSearchConfig.from_yaml` they
+  start at that file's folder. In Python data passed to `model_validate` they
+  start at the working directory. Symbolic links are followed the way the
+  system follows them; see
+  [Relative paths](../perf-model/configuration.md#relative-paths).
+- **Repeated keys.** A key written twice inside `ais_perf_model`, at any
+  depth, is an error in a file read by `SmartSearchConfig.from_yaml`:
+  `search_space.ais_perf_model in search.yaml: the key 'estimation_mode' is written twice (lines 7 and 8); write it once`.
+  So is `ais_perf_model` written twice in `search_space`, and `search_space`
+  written twice when one of them writes `ais_perf_model`; the error then
+  names `the key 'ais_perf_model'` or `the key 'search_space'`. Any other
+  repeated key in the file keeps its last value.
+- **Not supported in this release.** A search with `afd_roles`, an `encoder`
+  search, and a role with `<role>_timing_model` set reject the field and keep
+  the estimator fields. A dataset entry (`from: {dataset: ...}`) is rejected
+  too.
+
+The deprecated fields are `database_mode`, `transfer_policy`,
+`estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`,
+`systems_path`, `fpm_profile`, `role_estimator_controls`,
+`<role>_forward_model` and `<role>_fpm_parquet_path`. They work as before in
+this release. The next release removes them.
+
+- `SmartSearchConfig.from_yaml` gives one deprecation warning that lists the
+  old fields the file writes. A field that only repeats its default does not
+  count. `model_validate` does not warn.
+- `role_estimator_controls.<role>.transfer_policy` counts whenever the key is
+  written, also as `null`. A `null` there is a setting: it replaces the
+  top-level `transfer_policy` for that role with every transfer kind.
+- `aisim perf-model migrate search.yaml` shows the converted block and
+  writes nothing. Add `--output search.yaml` to convert the file in place;
+  comments and formatting of the file are not kept. See
+  [perf-model tools](../reference/cli.md#perf-model).
+- An old field next to `ais_perf_model` is an error, unless it holds the value
+  the entries produce. Such a field still gets the warning, which then says to
+  remove it.
+- `transfer_policy`, at the top level and in `role_estimator_controls`, is
+  compared by the transfer kinds it names, not by spelling. `[xshape]` next to
+  an entry with `xshape` is the same value. So is a preset name next to the
+  list of kinds it stands for. A text is read as a preset name, a kind name,
+  or several of them separated by commas, in any letter case. A list must hold
+  kind names, written exactly: `[balanced]` and `[XSHAPE]` are not lists of
+  kinds. A value that does not work on its own, and a list that holds anything
+  but kind names, is the same value only as a value written identically.
+- A `null` role `transfer_policy` names every kind. Next to the key it is an
+  error, unless the entries produce every kind for that role in
+  `role_estimator_controls`. An example is a `decode` entry with
+  `transfer_policy: aggressive` next to a `prefill` entry with another value.
+
+<a id="replacing-the-per-role-fpm-fields"></a>
+
+`<role>_forward_model` and `<role>_fpm_parquet_path` have other names in an
+entry. Write them in the entry for the worker type of the role; the `agg`
+role is the `aggregated` worker type.
+
+| Old field | In the entry for that worker type |
+|---|---|
+| `<role>_forward_model: op_level` | `estimation_mode: op_level` |
+| `<role>_forward_model: fpm` | `estimation_mode: fpm_interpolation` |
+| `<role>_fpm_parquet_path: P` | `estimator_config.fpm_interpolation.fpm_parquet_path: P` |
+
+This search times prefill from an external FPM parquet and decode with the
+op-level model. With the old fields:
+
+```yaml
+search_space:
+  model_name: example/model
+  hardware_sku: h200_sxm
+  deployment_mode: [disagg]
+  prefill_forward_model: fpm
+  prefill_fpm_parquet_path: /data/prefill.parquet
+  decode_forward_model: op_level
+```
+
+The same search with `ais_perf_model`:
+
+```yaml
+search_space:
+  model_name: example/model
+  hardware_sku: h200_sxm
+  deployment_mode: [disagg]
+  ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      estimator_config:
+        fpm_interpolation:
+          fpm_parquet_path: /data/prefill.parquet
+    - worker_type: decode
+      estimation_mode: op_level
+```
+
+A search file whose `search_space` is the first form gets the deprecation
+warning from `SmartSearchConfig.from_yaml`; with the second form it does not.
+`SearchSpace.model_validate` accepts the second `search_space` mapping, and
+the space then holds:
+
+```text
+role_estimator_controls = {'prefill': {'estimation_mode': 'fpm_interpolation', 'estimator_config': {'fpm_interpolation': {'fpm_parquet_path': '/data/prefill.parquet'}}}, 'decode': {'estimation_mode': 'op_level'}}
+prefill_forward_model = 'fpm'
+decode_forward_model = 'op_level'
+```
+
+`aisim perf-model migrate search.yaml` on the first form prints the same
+entries:
+
+```text
+new key search_space.ais_perf_model:
+  search_space:
+    ais_perf_model:
+    - worker_type: prefill
+      estimation_mode: fpm_interpolation
+      estimator_config:
+        fpm_interpolation:
+          fpm_parquet_path: /data/prefill.parquet
+    - worker_type: decode
+      estimation_mode: op_level
+
+removed fields:
+  search_space.prefill_forward_model
+  search_space.prefill_fpm_parquet_path
+  search_space.decode_forward_model
+
+notes:
+  search_space.prefill_forward_model: fpm written as estimation_mode: fpm_interpolation
+  search_space.prefill_fpm_parquet_path written as estimator_config.fpm_interpolation.fpm_parquet_path
+  search_space.decode_forward_model: op_level written as estimation_mode: op_level
+```
+
+An entry does not take the old names. `prefill_forward_model` or
+`prefill_fpm_parquet_path` inside the entry, and `role_estimator_controls`
+inside `ais_perf_model`, are errors:
+
+```text
+search_space.ais_perf_model entry for prefill: prefill_forward_model, prefill_fpm_parquet_path cannot be checked in a search config. The search space does not state them (the search chooses tp and similar values for each candidate). Drop these keys from the entry, or from the template file when 'from: <file>' brings them in.
+```
+
+The entry format and the full rules are in
+[Unified perf-model input](../perf-model/configuration.md#unified-perf-model-input).
+
 Sweeper accepts `fpm_learned` in both the global `estimation_mode` and
 `role_estimator_controls.<role>.estimation_mode`; each candidate constructs the
 learned model through the canonical constructor, which reads its source and
 rejects a role whose forest lacks a store the role needs. See the
 [learned configuration](../perf-model/fpm_ml/configuration.md).
 
-An explicit positive `context_length` is passed as AISimulate's internal
+An explicit positive `context_length` is passed as AISim's internal
 `max_model_len` for vLLM, TRT-LLM, and SGLang in both aggregated and
 prefill/decode deployments. Prompts at or above the limit are rejected, and
 generation stops when prompt plus output reaches the limit. A role-specific
@@ -132,6 +320,12 @@ or `fpm` for whole-forward timing from a collected FPM cell). Set `<role>_fpm_pa
 external parquet for that role (`agg`, `prefill`, or `decode`); the adjacent same-stem
 `.metadata.json` sidecar is required. The path requires default timing with `forward_model: fpm`
 and is preserved in deployment metadata, runtime arguments, and candidate YAML.
+`<role>_forward_model` and `<role>_fpm_parquet_path` are deprecated; use
+[`ais_perf_model`](#ais-perf-model). In the entry for the role's worker type,
+`<role>_forward_model: fpm` is `estimation_mode: fpm_interpolation`,
+`op_level` is `estimation_mode: op_level`, and `<role>_fpm_parquet_path` is
+`estimator_config.fpm_interpolation.fpm_parquet_path`; see the
+[example for one role](#replacing-the-per-role-fpm-fields).
 A one-item list pins a searched field.
 
 `prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either
@@ -161,8 +355,9 @@ prediction YAML, and native replay. Quantization overrides also participate in
 KV feasibility and capacity-cache identity. EPLB, slots, and MoE backend
 selection require an MoE model; nondefault MoE backends require SGLang.
 Collected FPM interpolation rejects EPLB, slot, and MoE-backend overrides that
-its cells cannot represent. Custom timing, AFD, and analytical encoder runs
-reject these model controls.
+its cells cannot represent. Custom timing and analytical encoder runs reject
+these model controls. AFD roles accept precision overrides, kernel selectors and
+MTP, while rejecting EPLB, redundant slots and nondefault `moe_backend`.
 
 `aic_nextn` is the compute-side MTP draft depth (0–5); zero disables MTP.
 For a positive depth, set `nextn_accepted`
@@ -176,7 +371,8 @@ omission preserves the backend default.
 It must fit the shortest generated input, including a configured random-length
 range. It creates shared tokens and does not prewarm the KV cache: the first
 request is cold, and subsequent reuse follows backend cache and block rules.
-Positive cached prefixes are unsupported for AFD and AFD+PD.
+Native AFD roles support cached prefixes in aggregated and disaggregated replay;
+prefill timing uses the actual uncached suffix and cached-prefix geometry.
 
 The model controls above and synthetic cached prefixes are supported by
 `--stack engine`. Optional runners, including Dynamo, must explicitly advertise
@@ -218,13 +414,14 @@ Every `Workload` field:
 | `trace_path` | `str \| None` | `None` | Path to a replay trace. Its presence selects the trace shape and **forbids** all synthetic fields. |
 | `trace_format` | `str` | `"mooncake"` | Replay-ready trace schema. A runner may validate supported formats. |
 | `weka_client` | `Literal["recorded", "agentx"] \| None` | `None` | [Weka client](../replay/workloads.md#weka-client) whose replay to follow; `None` selects `recorded`. Requires `source_type: trace`, `trace_path`, and `trace_format: weka`. |
+| `weka_chat_template` | `WekaChatTemplate \| None` | `None` | [Chat-template tokens](../replay/workloads.md#weka-chat-template) to add to replayed prompts: `request_tokens`, `user_tokens`, `assistant_tokens`, `tail_tokens` and `append_tail_tokens`, each a nonnegative integer, with `append_tail_tokens <= tail_tokens <= request_tokens`. `None` replays the trace's lengths. Requires `source_type: trace`, `trace_path`, and `trace_format: weka`. |
 | `arrival_speedup_ratio` | `float` | `1.0` | Scales the trace's inter-arrival times (open-loop trace only). `>1` speeds arrivals up. |
 | `agentic_lanes` | `int \| None` | `None` | Positive number of client play lanes for `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay; does not cap concurrent child requests. Requires `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`. |
 | `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`) and the optional import fields below. Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
 | `agentic_snapshot.initial_selections` | `list[AgenticSnapshotSelection] \| None` | `None` (unset) | Exact imported `{source_play_id, t_star_ms}` cuts in lane order, with exactly one selection per `agentic_lanes`. Requires `corpus_cursor`; source IDs must exist in the input corpus and finite cuts must lie within the selected play's request-start bounds in the loaded graph's clock (Weka: play-relative milliseconds). Cuts are not re-sampled. |
 | `agentic_snapshot.corpus_cursor` | `int \| None` | `None` (unset) | Unsigned 64-bit next sequential source draw, including skipped draws. Requires `initial_selections` and must be at least their count; it may exceed the lane count. |
-| `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs primers and ten warmup requests per lane before measured replay, preserving native cache state; see [warmup behavior](../replay/workloads.md#agentic-warmup). Failed preparation is retained as candidate evidence and excluded from ranking. |
-| `agentic_warmup_policy` | `Literal["repeated_prefixes", "live_trajectory_v1"]` | `"repeated_prefixes"` | The default preserves the saved frontier and is omitted from serialized workloads. `live_trajectory_v1` advances the dependency graph with ten additional one-token admissions per lane; it requires `agentic_warmup: true`, `agentic_profile`, and a runner advertising `supports_agentic_live_warmup`. See [warmup policies](../replay/agentic/warmup.md#live-trajectory-policy). |
+| `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs the preparation requests that `agentic_warmup_policy` selects before measured replay, preserving native cache state; see [warmup behavior](../replay/workloads.md#agentic-warmup). Failed preparation is retained as candidate evidence and excluded from ranking. |
+| `agentic_warmup_policy` | `Literal["repeated_prefixes", "live_trajectory_v1", "primers_only"]` | `"repeated_prefixes"` | The default preserves the saved frontier and is omitted from serialized workloads. `live_trajectory_v1` advances the dependency graph with ten additional one-token admissions per lane; it requires `agentic_warmup: true`, `agentic_profile`, and a runner advertising `supports_agentic_live_warmup`. `primers_only` sends only the primers; it requires `agentic_warmup: true` and a runner advertising `supports_agentic_primers_only`. See [live trajectory](../replay/agentic/warmup.md#live-trajectory-policy) and [primers-only](../replay/agentic/warmup.md#primers-only-policy) policies. |
 | `agentic_profile` | `AgenticProfileOptions \| None` | `None` (unset) | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `agentic_snapshot` and its agentic trace/lane controls; cannot be combined with `max_sim_time_ms`. Unset preserves finite replay. See [continuous profile](../replay/workloads.md#agentic-profile) for the complete configuration, results, and limits. |
 | `agentic_profile.duration_seconds` | `float` | `3600.0` when enabled | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. Stops new workload requests and replacement plays at the deadline. |
 | `agentic_profile.response_grace_seconds` | `float` | `30.0` when enabled | Nonnegative finite response window after admission closes; remaining client requests are then canceled. |
@@ -249,14 +446,16 @@ aggregated worker or 1P1D, or local G2 on several static aggregated workers, wit
 on every role. G3 remains unsupported;
 speculative decoding follows the narrower [engine SD constraints](../replay/engine/speculation.md).
 Warmup is optional: `repeated_prefixes` retains the saved snapshot frontier,
-while `live_trajectory_v1` advances it.
+`live_trajectory_v1` advances it, and `primers_only` sends only the primers.
 A completed lane takes a new turn-zero play from the shared corpus cursor, wrapping as necessary
 until the admission deadline. Seed-only sampling differs from the AgentX reference; import exact
 cuts for matched comparisons. The live warmup policy follows the pinned reference's accelerated
 request-count contract, not byte-exact HTTP prompt parity; see the
 [profile limits](../replay/workloads.md#agentic-profile). Injected runners must advertise
-`supports_agentic_profile`, plus `supports_agentic_live_warmup` for `live_trajectory_v1` and
-`supports_weka_client` for `weka_client: agentx`; unsupported runners fail validation.
+`supports_agentic_profile` for `agentic_profile`, `supports_agentic_live_warmup` for
+`live_trajectory_v1`, `supports_agentic_primers_only` for `primers_only`, `supports_weka_client`
+for `weka_client: agentx`, and `supports_weka_chat_template` for `weka_chat_template`; unsupported
+runners fail validation.
 
 ## Validation (`Workload._validate_workload`)
 

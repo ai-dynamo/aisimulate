@@ -59,7 +59,7 @@ def _row(
         "dynamo_ttft_ms": aisimulate_ttft,
         "dynamo_tpot_ms": aisimulate_tpot,
         "aisimulate_status": status,
-        "aisimulate_runner": "aisimulate.engine_replay",
+        "aisimulate_runner": "aisim.engine_replay",
     }
 
 
@@ -134,7 +134,7 @@ def _inputs() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
             "failed": 1,
             "method": "randomized_synthetic_engine_replay",
             "completed_at": "2026-08-26T01:00:00Z",
-            "runtime": {"packages": {"aisimulate": "0.12.0", "aisimulate-core": "0.12.0"}},
+            "runtime": {"packages": {"aisimulate": "0.12.0", "aisim-core": "0.12.0"}},
         },
     }
     coverage = {
@@ -206,8 +206,8 @@ def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
     run = {
         "status": "complete",
         "runtime": {
-            "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisimulate"},
-            "cli_entry_point": "aisimulate.legacy_cli.entrypoint:main",
+            "source_checkout": {**source, "repository": "https://github.com/ai-dynamo/aisim"},
+            "cli_entry_point": "aisim.legacy_cli.entrypoint:main",
         },
     }
     for document in (predictions, metadata, coverage):
@@ -229,7 +229,7 @@ def test_failed_baseline_does_not_remove_successful_replay_from_publication():
     original = _summary()
     assert summary["totals"]["rows"] == original["totals"]["rows"]
     assert summary["totals"]["aic"]["points"] == original["totals"]["aic"]["points"] - 1
-    assert summary["totals"]["aisimulate"]["points"] == original["totals"]["aisimulate"]["points"]
+    assert summary["totals"]["aisim"]["points"] == original["totals"]["aisim"]["points"]
 
 
 def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
@@ -253,9 +253,9 @@ def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
     assert totals["aic"]["points"] == 3
     assert totals["aic"]["ttft_mape_pct"] == pytest.approx(13.33)
     assert totals["aic"]["tpot_mape_pct"] == pytest.approx(13.33)
-    assert totals["aisimulate"]["points"] == 2
-    assert totals["aisimulate"]["coverage_pct"] == pytest.approx(66.67)
-    assert totals["aisimulate"]["status_counts"] == {
+    assert totals["aisim"]["points"] == 2
+    assert totals["aisim"]["coverage_pct"] == pytest.approx(66.67)
+    assert totals["aisim"]["status_counts"] == {
         "success": 2,
         "unsupported": 1,
         "failed": 0,
@@ -271,10 +271,10 @@ def test_summary_matches_existing_mape_and_shape_error_semantics() -> None:
     assert alpha["aic"]["tpot_mape_pct"] == pytest.approx(15.0)
     assert alpha["aic"]["ttft_shape_error_pct"] == pytest.approx(0.0)
     assert alpha["aic"]["tpot_shape_error_pct"] == pytest.approx(25.0)
-    assert alpha["aisimulate"]["ttft_mape_pct"] == pytest.approx(7.5)
-    assert alpha["aisimulate"]["tpot_mape_pct"] == pytest.approx(10.0)
-    assert alpha["aisimulate"]["ttft_shape_error_pct"] == pytest.approx(16.67)
-    assert alpha["aisimulate"]["tpot_shape_error_pct"] == pytest.approx(0.0)
+    assert alpha["aisim"]["ttft_mape_pct"] == pytest.approx(7.5)
+    assert alpha["aisim"]["tpot_mape_pct"] == pytest.approx(10.0)
+    assert alpha["aisim"]["ttft_shape_error_pct"] == pytest.approx(16.67)
+    assert alpha["aisim"]["tpot_shape_error_pct"] == pytest.approx(0.0)
 
 
 def test_hf_checkpoint_variants_are_separate_models_without_changing_totals():
@@ -304,8 +304,54 @@ def test_public_summary_omits_raw_measurements_and_internal_provenance() -> None
 
     assert "silicon_ttft_ms" not in serialized
     assert "silicon_workflow_run_id" not in serialized
-    assert "gitlab-master.nvidia.com" not in serialized
+    assert "gitlab" not in serialized.lower()
     assert "linear.app/nvidia" not in serialized
+
+
+@pytest.mark.parametrize("hostname", ["gitlab.internal.example.com", "GITLAB.EXAMPLE.COM"])
+def test_public_summary_rejects_gitlab_provenance(hostname):
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0]["hf_model_path"] = f"{hostname}/private-model"
+    with pytest.raises(OVERVIEW.SnapshotError, match="forbidden fragment"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+        )
+
+
+@pytest.mark.parametrize("hostname", ["gitlab.internal.example.com", "GITLAB.EXAMPLE.COM"])
+def test_prediction_error_redacts_complete_gitlab_hostname(hostname):
+    row = _inputs()[0]["rows"][0]
+    row.update(aisimulate_status="failed", aisimulate_error=f"source unavailable at {hostname}")
+    assert OVERVIEW._prediction_error(row) == "source unavailable at [redacted]"
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("missing GITLAB_REPOSITORY", "missing [redacted]_REPOSITORY"),
+        ("missing my_GiTlAb_token", "missing my_[redacted]_token"),
+        ("missing SILICON_WORKFLOW_RUN_ID", "missing [redacted]"),
+    ],
+)
+def test_public_summary_redacts_case_insensitive_error_fragments(message, expected):
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][2]["aisimulate_error"] = message
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+    )
+    topologies = [t for m in summary["models"] for w in m["workloads"] for g in w["gpus"] for t in g["topologies"]]
+    errors = [point["aisim_error"] for topology in topologies for point in topology["points"]]
+    assert expected in errors
+    serialized = json.dumps(summary).lower()
+    assert not any(fragment in serialized for fragment in OVERVIEW.FORBIDDEN_PUBLIC_FRAGMENTS)
 
 
 def test_prediction_errors_retain_details_without_local_provenance():
@@ -398,9 +444,9 @@ def test_checked_in_public_snapshot_is_consistent_and_internal_link_free() -> No
     assert summary["scope"]["multinode"] == "excluded"
     assert sum(model["rows"] for model in summary["models"]) == summary["totals"]["rows"]
 
-    statuses = summary["totals"]["aisimulate"]["status_counts"]
+    statuses = summary["totals"]["aisim"]["status_counts"]
     assert sum(statuses.values()) == summary["totals"]["rows"]
-    assert statuses["success"] == summary["totals"]["aisimulate"]["points"]
+    assert statuses["success"] == summary["totals"]["aisim"]["points"]
 
     for path in public_dir.iterdir():
         if path.is_file():
@@ -424,7 +470,7 @@ def test_public_page_has_no_e2e_gym_navigation_or_payload() -> None:
     assert 'fetch("./branches.json")' in script
 
 
-def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
+def test_public_page_prioritizes_aisim_over_aic_baseline() -> None:
     public_dir = ROOT / "pages" / "e2e-accuracy"
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
@@ -476,15 +522,15 @@ def test_drilldown_partitions_topologies_and_uses_one_measured_anchor() -> None:
     gpu = result["models"][0]["workloads"][0]["gpus"][0]
     topology = gpu["topologies"][0]
     assert topology["rows"] == 2
-    assert topology["aisimulate"]["status_counts"]["failed"] == 1
+    assert topology["aisim"]["status_counts"]["failed"] == 1
     first, second = topology["points"]
     assert first["measured"]["ttft_relative"] == 1
-    assert first["aisimulate"]["ttft_relative"] == 0.9
-    assert first["aisimulate"]["ttft_error_pct"] == 10
+    assert first["aisim"]["ttft_relative"] == 0.9
+    assert first["aisim"]["ttft_error_pct"] == 10
     assert second["measured"]["ttft_relative"] == 2
     assert second["aic"]["ttft_relative"] == 2.2
-    assert second["aisimulate"]["ttft_relative"] is None
-    assert second["aisimulate"]["ttft_error_pct"] is None
+    assert second["aisim"]["ttft_relative"] is None
+    assert second["aisim"]["ttft_error_pct"] is None
     assert "private-run" not in json.dumps(result)
     assert "secret" not in json.dumps(result)
     assert "silicon_ttft_ms" not in json.dumps(result)
@@ -520,9 +566,9 @@ def test_gym_chart_metrics_retain_units_and_missing_predictions() -> None:
     assert first["aic"]["output_per_gpu"] == 300
     assert first["aic"]["total_per_gpu"] is None
     assert first["aic"]["unavailable_metrics"]["total_per_gpu"] == "unsupported_by_predictor"
-    assert first["aisimulate"]["e2e_ms"] == 1300
-    assert first["aisimulate"]["output_per_gpu"] == 350
-    assert first["aisimulate"]["total_per_gpu"] == 710
+    assert first["aisim"]["e2e_ms"] == 1300
+    assert first["aisim"]["output_per_gpu"] == 350
+    assert first["aisim"]["total_per_gpu"] == 710
     assert second["aic"]["ttft_ms"] is None
     assert second["aic"]["output_per_gpu"] is None
     assert topology["aic"]["points"] == 1
@@ -560,9 +606,14 @@ def test_distinct_frameworks_and_parallelism_do_not_share_curves() -> None:
     assert all(len(item["points"]) == 1 for item in topologies)
 
 
+@pytest.mark.parametrize(
+    "repository", ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]
+)
 @pytest.mark.parametrize("branch", ["main", "release/a", "release/0.12.0", "release/0.13.0/rc1"])
-def test_branch_publication_records_evaluated_revision(branch: str) -> None:
+def test_branch_publication_records_evaluated_revision(branch: str, repository: str) -> None:
     predictions, metadata, coverage = _qualified_inputs(branch)
+    for document in (predictions, metadata, coverage):
+        document["aic_run"]["runtime"]["source_checkout"]["repository"] = repository
     result = OVERVIEW.build_summary(
         predictions,
         metadata,
@@ -573,7 +624,7 @@ def test_branch_publication_records_evaluated_revision(branch: str) -> None:
     )
     assert result["snapshot"]["evaluated_revision"] == {"branch": branch, "commit_sha": "d" * 40}
     assert result["snapshot"]["aic_source"] == {
-        "repository": "https://github.com/ai-dynamo/aisimulate",
+        "repository": repository,
         "branch": branch,
         "commit_sha": "d" * 40,
     }
@@ -709,7 +760,7 @@ def test_branch_publication_rejects_invalid_prediction_run_shape(prediction_run:
 def test_successful_replay_rejects_zero_latency() -> None:
     predictions, metadata, coverage = _inputs()
     predictions["rows"][0]["dynamo_ttft_ms"] = 0
-    with pytest.raises(OVERVIEW.SnapshotError, match="successful AISimulate latencies must be positive"):
+    with pytest.raises(OVERVIEW.SnapshotError, match="successful AISim latencies must be positive"):
         OVERVIEW.build_summary(
             predictions,
             metadata,
@@ -730,6 +781,7 @@ def test_page_explains_cli_migration_and_aic_deprecation() -> None:
 @pytest.mark.parametrize(
     "entry,api,adapter",
     [
+        ("aisim.legacy_cli.entrypoint:main", "aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
         ("aisimulate.legacy_cli.entrypoint:main", "aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
         ("aiconfigurator.main:main", "aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
     ],
@@ -810,14 +862,14 @@ def test_chart_export_keeps_predictors_distinct_and_absolute_units():
     assert all(type(t["is_multinode"]) is bool and t["total_gpus"] > 0 for t in topologies)
     points = [p for t in topologies for p in t["points"]]
     assert all(p["measured"]["ttft_ms"] > 0 for p in points)
-    assert any(p["aic"]["ttft_ms"] != p["aisimulate"]["ttft_ms"] for p in points if p["status"] == "success")
-    assert all(p["aisimulate"]["ttft_ms"] is None for p in points if p["status"] != "success")
+    assert any(p["aic"]["ttft_ms"] != p["aisim"]["ttft_ms"] for p in points if p["status"] == "success")
+    assert all(p["aisim"]["ttft_ms"] is None for p in points if p["status"] != "success")
     multinode = next(t for t in topologies if t["is_multinode"])
     assert multinode["total_gpus"] == 16
     for series, expected in (
         ("measured", (1200, 123, 300)),
         ("aic", (1300, 234, 500)),
-        ("aisimulate", (1400, 345, 700)),
+        ("aisim", (1400, 345, 700)),
     ):
         assert tuple(points[0][series][key] for key in ("e2e_ms", "output_per_gpu", "total_per_gpu")) == expected
         assert all(points[1][series][key] is None for key in ("e2e_ms", "output_per_gpu", "total_per_gpu"))
@@ -838,3 +890,55 @@ def test_recorded_integral_float_gpu_count_is_published_as_integer():
         for workload in model["workloads"]:
             for gpu in workload["gpus"]:
                 assert all(type(topology["total_gpus"]) is int for topology in gpu["topologies"])
+
+
+def _legacy_public_summary(summary):
+    # Legacy series are objects; package distribution identities are strings.
+    text = json.dumps(summary).replace('"aisim": {', '"aisimulate": {')
+    for suffix in ("completed_at", "method", "packages", "sot_sha256"):
+        text = text.replace(f'"aisim_{suffix}":', f'"aisimulate_{suffix}":')
+    legacy = json.loads(text)
+    legacy["schema_version"] = 1
+    return legacy
+
+
+def test_public_summary_v2_retains_results_and_provenance_when_reading_v1():
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+    from scripts.pages.build_pages_site import _accuracy_summary
+
+    summary = _summary()
+    assert summary["schema_version"] == 2
+    legacy = _legacy_public_summary(summary)
+    before = deepcopy(legacy)
+    assert normalize_summary(legacy) == summary
+    assert _accuracy_summary(json.dumps(legacy)) == _accuracy_summary(json.dumps(summary))
+    assert legacy == before
+    assert summary["snapshot"]["aisim_packages"] == {"aisimulate": "0.12.0", "aisim-core": "0.12.0"}
+    assert summary["snapshot"]["predictions_sha256"] == "c" * 64
+
+
+@pytest.mark.parametrize("version", [None, 0, 3, True, "2"])
+def test_public_summary_rejects_unknown_schema_versions(version):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    summary = _summary()
+    summary["schema_version"] = version
+    with pytest.raises(ValueError, match="unsupported accuracy summary schema"):
+        normalize_summary(summary)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("location", ["totals", "point", "snapshot"])
+def test_public_summary_rejects_mixed_or_mislabeled_field_names(legacy, location):
+    from scripts.e2e_accuracy.summary_contract import normalize_summary
+
+    summary = _legacy_public_summary(_summary()) if legacy else _summary()
+    wrong = "aisim" if legacy else "aisimulate"
+    if location == "snapshot":
+        summary["snapshot"][wrong + "_packages"] = {"aisim": "0.14.0"}
+    elif location == "totals":
+        summary["totals"][wrong] = {}
+    else:
+        summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]["points"][0][wrong] = {}
+    with pytest.raises(ValueError, match="unexpected field"):
+        normalize_summary(summary)

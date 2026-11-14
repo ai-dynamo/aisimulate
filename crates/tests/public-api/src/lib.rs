@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use aisimulate_core::{
+use aisim_core::{
     AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
     EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
@@ -127,7 +127,7 @@ pub fn online_forest_model(
     mut config: ForwardPassPerfModelConfig,
     checkpoint: &Path,
 ) -> Result<ForwardPassPerfModel, AicError> {
-    use aisimulate_core::{
+    use aisim_core::{
         FpmLearnedConfig, LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode,
     };
     config.estimation_mode = EstimationMode::FpmLearned;
@@ -152,7 +152,7 @@ pub fn calibrated_online_forest_model(
     mut config: ForwardPassPerfModelConfig,
     checkpoint: &Path,
 ) -> Result<ForwardPassPerfModel, AicError> {
-    use aisimulate_core::{LearnedAdaptation, SelectorConfig};
+    use aisim_core::{LearnedAdaptation, SelectorConfig};
     config.estimation_mode = EstimationMode::FpmLearned;
     let learned = &mut config.estimator_config.fpm_learned;
     learned.adaptation = LearnedAdaptation::CausalSelector;
@@ -192,7 +192,7 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aisimulate_core::{
+    use aisim_core::{
         ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION, ForwardPassMetrics,
         ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, TimingEvidenceSource,
         TimingEvidenceSummary, TimingOperationEvidence, TimingPhaseEvidence,
@@ -236,14 +236,103 @@ mod tests {
         // v25: SOL/direct interpolation selector combined with typed DCP.
         // v26: attention / MLA / DSA ops gained tail-appended decode-CP dcp_size.
         // v29: EngineSpec carries the optional vision section (SGLang VL host loop).
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 29);
+        // v30: append native AFD communication ops and source-ordered pool plan.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 30);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
 
+    #[test]
+    fn afd_public_pipeline_layouts_construct_replay_topology() {
+        use aisim_core::engine::{AfdAPoolConfig, AfdEngineConfig, AfdFPoolConfig};
+        use aisim_core::{AfdPipelineLayout, AfdRoutingLocation};
+
+        for layout in [AfdPipelineLayout::FourStage, AfdPipelineLayout::TwoStage] {
+            let topology = AfdEngineConfig {
+                routing_location: AfdRoutingLocation::A,
+                a_pool: AfdAPoolConfig {
+                    system: "h200_sxm".into(),
+                    a_tp_size: 2,
+                    n_a_nodes: 1,
+                    batch_size_per_a_replica: 4,
+                },
+                f_pool: AfdFPoolConfig {
+                    system: "gb200".into(),
+                    f_moe_ep_size: 4,
+                    n_f_nodes: 1,
+                },
+                gpus_per_node: 8,
+                f_gpus_per_node: Some(4),
+                num_microbatches: 2,
+                pipeline_layout: layout,
+                comm_overhead_factor: 1.0,
+            };
+            let restored: AfdEngineConfig =
+                serde_json::from_str(&serde_json::to_string(&topology).unwrap()).unwrap();
+            assert_eq!(restored, topology);
+            assert_eq!(restored.pipeline_layout, layout);
+            assert_eq!(restored.effective_f_gpus_per_node(), 4);
+        }
+    }
+
+    #[test]
+    fn afd_public_typed_plan_round_trips_in_engine_spec() {
+        use aisim_core::perfmodel::engine::spec::{EngineSpec, OpSpec};
+        use aisim_core::{AfdExecutionPlan, AfdLayerTemplate, AfdPhasePlan, AfdPoolRole};
+
+        // A synthetic one-op fixture exercises the public wire contract without
+        // loading performance data or claiming a real model's execution graph.
+        let op: OpSpec = serde_json::from_value(serde_json::json!({
+            "Elementwise": {"name": "synthetic", "scale_factor": 1.0, "bytes_per_token": 4.0}
+        }))
+        .unwrap();
+        let phase = AfdPhasePlan {
+            templates: vec![AfdLayerTemplate {
+                attention_kind: "global".into(),
+                routed: true,
+                ops: vec![0],
+                rank_ops: vec![],
+                work_scale: 1.0,
+            }],
+            prefix: vec![],
+            suffix: vec![],
+        };
+        for role in [AfdPoolRole::A, AfdPoolRole::F] {
+            let plan = AfdExecutionPlan {
+                role,
+                model: "synthetic/model".into(),
+                hidden_size: 8,
+                num_experts: 4,
+                topk: 1,
+                layers: vec![0],
+                shared_inter_size: 0,
+                context: phase.clone(),
+                generation: phase.clone(),
+            };
+            plan.validate(1, 1).unwrap();
+            let role_name = serde_json::to_value(role).unwrap();
+            let config = serde_json::from_value(serde_json::json!({
+                "schema_version": ENGINE_CONFIG_SCHEMA_VERSION,
+                "model_name": "synthetic/model", "system_name": "h200_sxm",
+                "backend": "sglang", "tp_size": 1, "pp_size": 1,
+                "extra": {"afd_pool_role": role_name}
+            }))
+            .unwrap();
+            let mut spec = EngineSpec::new(config, vec![op.clone()], vec![op.clone()]);
+            spec.afd_plan = Some(plan.clone());
+            let restored = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
+            assert_eq!(restored.schema_version, ENGINE_SPEC_SCHEMA_VERSION);
+            assert_eq!(restored.afd_plan, Some(plan));
+            assert_eq!(
+                restored.engine.extra["afd_pool_role"],
+                role_name.as_str().unwrap()
+            );
+        }
+    }
+
     struct LatencyOnlyProvider;
 
-    impl aisimulate_core::TimingModel for LatencyOnlyProvider {
+    impl aisim_core::TimingModel for LatencyOnlyProvider {
         fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
             Ok(1.0)
         }
@@ -254,7 +343,7 @@ mod tests {
 
     #[test]
     fn external_latency_only_provider_needs_no_energy_implementation() {
-        use aisimulate_core::TimingModel;
+        use aisim_core::TimingModel;
         assert_eq!(LatencyOnlyProvider.evidence_summary(), None);
         assert_eq!(
             LatencyOnlyProvider.predict_prefill_ms(1, 128, 0).unwrap(),
@@ -264,8 +353,8 @@ mod tests {
 
     #[test]
     fn phase_only_provider_keeps_per_rank_group_pricing() {
-        use aisimulate_core::TimingModel;
-        use aisimulate_core::engine::{IterationMs, RankWork};
+        use aisim_core::TimingModel;
+        use aisim_core::engine::{IterationMs, RankWork};
         let ranks = [RankWork::idle(0), RankWork::idle(1)];
         let iteration: Option<IterationMs> = LatencyOnlyProvider
             .predict_iteration_ms(&ranks)
@@ -290,7 +379,7 @@ mod tests {
     fn rank_operation_evidence_is_an_additive_field() {
         // Rank evidence serialized before the field existed still loads, and
         // whole-model FPM ranks keep their serialized schema.
-        let rank: aisimulate_core::FpmRankEstimate = serde_json::from_value(serde_json::json!({
+        let rank: aisim_core::FpmRankEstimate = serde_json::from_value(serde_json::json!({
             "rank": 0, "latency_ms": 1.0, "prefill_ms": 1.0, "decode_ms": null,
             "decode_baseline_ms": null, "marginal_decode_ms": null, "queries": [],
         }))
@@ -300,7 +389,7 @@ mod tests {
             .unwrap()
             .get("operations")
             .is_none());
-        let _ = aisimulate_core::FpmRankEstimate {
+        let _ = aisim_core::FpmRankEstimate {
             operations: Vec::new(),
             ..rank
         };
@@ -308,7 +397,7 @@ mod tests {
 
     #[test]
     fn power_statistics_require_validated_public_construction() {
-        use aisimulate_core::replay::TracePowerStats;
+        use aisim_core::replay::TracePowerStats;
 
         let available = TracePowerStats::new(Some(500.0), 0.9).unwrap();
         assert_eq!(available.power_w(), Some(500.0));
@@ -440,7 +529,7 @@ mod tests {
 
     #[test]
     fn learned_defaults_and_overrides_agree_across_public_deserializers() {
-        use aisimulate_core::LearnedAdaptation;
+        use aisim_core::LearnedAdaptation;
 
         for adaptation in [None, Some("online"), Some("causal_selector")] {
             for overrides in [false, true] {
@@ -698,7 +787,7 @@ mod tests {
 
     #[test]
     fn regression_rebuild_interval_is_public_and_preserved_by_canonical_reload() {
-        use aisimulate_core::RegressionFitConfig;
+        use aisim_core::RegressionFitConfig;
 
         assert_eq!(RegressionFitConfig::default().rebuild_interval, None);
         for interval in [Some(1), Some(17), Some(4096), None] {
@@ -713,7 +802,7 @@ mod tests {
                 rebuild_interval: interval,
                 ..RegressionFitConfig::default()
             };
-            use aisimulate_core::{
+            use aisim_core::{
                 LinearFitConfig, RegressionFeatureAxis, RegressionSamplingConfig,
                 RegressionUpdatePolicy,
             };
@@ -738,6 +827,8 @@ mod tests {
                     startup_observations: 10,
                 },
                 feature_set: None,
+                max_kv_splits: None,
+                max_cudagraph_capture_size: None,
             });
             let model = ForwardPassPerfModel::best_available(config).unwrap();
             let resolved = &model.provenance().unwrap().config;
@@ -758,7 +849,7 @@ mod tests {
 
     #[test]
     fn regression_fpm5_feature_set_is_public_and_fits_multi_rank_iterations() {
-        use aisimulate_core::{LinearFitConfig, RegressionFeatureSet, ScheduledRequestMetrics};
+        use aisim_core::{LinearFitConfig, RegressionFeatureSet, ScheduledRequestMetrics};
 
         let mut config = ForwardPassPerfModelConfig::new(
             "test/model",
@@ -809,7 +900,7 @@ mod tests {
 
     #[test]
     fn zero_regression_rebuild_interval_is_invalid_before_fallback() {
-        use aisimulate_core::ForwardPassFallbackPolicy;
+        use aisim_core::ForwardPassFallbackPolicy;
 
         for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
             let mut config = ForwardPassPerfModelConfig::new(
@@ -835,7 +926,7 @@ mod tests {
 
     #[test]
     fn legacy_regression_options_keep_rust_owned_fit_defaults() {
-        use aisimulate_core::ForwardPassPerfOptions;
+        use aisim_core::ForwardPassPerfOptions;
 
         let migrated = EstimatorConfig::from_legacy(ForwardPassPerfOptions::default()).unwrap();
         assert_eq!(migrated.fpm_regression.fit.rebuild_interval, None);
@@ -845,7 +936,7 @@ mod tests {
 
     #[test]
     fn spline_types_defaults_and_custom_policies_survive_canonical_reload() {
-        use aisimulate_core::{
+        use aisim_core::{
             ForwardPassSplineDiagnostics, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
         };
 
@@ -929,7 +1020,7 @@ mod tests {
 
     #[test]
     fn invalid_spline_controls_fail_before_auto_or_allowed_fallback() {
-        use aisimulate_core::{
+        use aisim_core::{
             ForwardPassFallbackPolicy, RegressionFitKind, SplineFitConfig, SplineSearchConfig,
         };
         for mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
@@ -979,7 +1070,7 @@ mod tests {
 
     #[test]
     fn agentic_snapshot_preparation_and_execution_are_public() {
-        use aisimulate_core::replay::loadgen::{
+        use aisim_core::replay::loadgen::{
             AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticGraphBuilder,
             AgenticHashIdScope, AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSnapshotOptions,
             AgenticSourceProvenance, PreparedAgenticSnapshots, WorkloadDriver,
@@ -1056,7 +1147,7 @@ mod tests {
         assert_eq!(phases.profile_start_ms, None);
         // An external caller can run the same prepared context through the
         // public offline P/D executor without private runtime constructors.
-        use aisimulate_core::replay::{
+        use aisim_core::replay::{
             ReplayEngineConfig, ReplayEngineFactory, ReplayRuntimeInput, ReplaySpec,
             ReplayTopology, Replayer, WorkerPoolSpec,
         };
@@ -1119,7 +1210,7 @@ mod tests {
         assert_eq!(driver.total_turns(), 2);
         assert_eq!(driver.next_ready_time_ms(), Some(0.0));
         driver
-            .enable_agentic_profile(aisimulate_core::replay::loadgen::AgenticProfileOptions {
+            .enable_agentic_profile(aisim_core::replay::loadgen::AgenticProfileOptions {
                 duration_seconds: 1.0,
                 response_grace_seconds: 0.0,
                 ..Default::default()
@@ -1130,8 +1221,8 @@ mod tests {
 
     #[test]
     fn state_snapshots_save_and_restore_through_the_canonical_constructor() {
-        use aisimulate_core::engine::EngineLaunchConfig;
-        use aisimulate_core::{
+        use aisim_core::engine::EngineLaunchConfig;
+        use aisim_core::{
             ForwardPassReadinessReport, ScheduledRequestMetrics, StateSnapshotConfig,
             StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
             STATE_SNAPSHOT_LAYOUT_VERSION,
@@ -1180,7 +1271,7 @@ mod tests {
             std::fs::copy(directory.join(name), moved.join(name)).unwrap();
         }
         std::fs::remove_dir_all(&directory).unwrap();
-        let mut config: aisimulate_core::ForwardPassPerfModelConfig =
+        let mut config: aisim_core::ForwardPassPerfModelConfig =
             serde_json::from_slice(&std::fs::read(moved.join("config.json")).unwrap()).unwrap();
         config.estimator_config.state_snapshot.as_mut().unwrap().path = moved.clone();
         let relocated = ForwardPassPerfModel::best_available(config).unwrap();
@@ -1211,7 +1302,7 @@ mod tests {
 
     #[test]
     fn unknown_identity_and_deployment_limits_are_public() {
-        use aisimulate_core::{
+        use aisim_core::{
             DeploymentLimit, DeploymentLimits, EstimationMode, ForwardPassPerfModelConfig,
             UNKNOWN_IDENTITY, UNKNOWN_SIZE,
         };
@@ -1243,13 +1334,13 @@ mod tests {
 /// Cold callers explicitly leave both newly introduced phase fields absent.
 /// Keeping this in an external crate catches public-field source changes.
 pub fn rebuild_replay_report_literals(
-    report: aisimulate_core::ReplayReport,
-    record: aisimulate_core::replay::PerRequestRecord,
+    report: aisim_core::ReplayReport,
+    record: aisim_core::replay::PerRequestRecord,
 ) -> (
-    aisimulate_core::ReplayReport,
-    aisimulate_core::replay::PerRequestRecord,
+    aisim_core::ReplayReport,
+    aisim_core::replay::PerRequestRecord,
 ) {
-    use aisimulate_core::{ReplayReport, replay::PerRequestRecord};
+    use aisim_core::{ReplayReport, replay::PerRequestRecord};
     (
         ReplayReport {
             telemetry: report.telemetry,
@@ -1336,7 +1427,7 @@ pub fn rebuild_replay_report_literals(
 pub fn operation_diagnostics(
     model: &ForwardPassPerfModel,
 ) -> Result<
-    Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>,
+    Vec<aisim_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>,
     AicError,
 > {
     model.static_phase_diagnostics(1, 128, 0, true)
@@ -1346,32 +1437,32 @@ pub fn operation_diagnostics(
 /// operation evidence, in the same type as the static phase diagnostics.
 pub fn rank_operation_evidence(
     model: &ForwardPassPerfModel,
-    metrics_by_rank: &[aisimulate_core::ForwardPassMetrics],
+    metrics_by_rank: &[aisim_core::ForwardPassMetrics],
 ) -> Result<
-    Vec<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>>,
+    Vec<Vec<aisim_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>>,
     AicError,
 > {
-    let estimate: aisimulate_core::ForwardPassEstimate =
+    let estimate: aisim_core::ForwardPassEstimate =
         model.estimate_forward_pass_detailed(metrics_by_rank)?;
     Ok(estimate
         .ranks
         .into_iter()
-        .map(|rank: aisimulate_core::FpmRankEstimate| rank.operations)
+        .map(|rank: aisim_core::FpmRankEstimate| rank.operations)
         .collect())
 }
 
 /// Join engines built by separate factories to one cluster-shared G2 pool.
 pub fn shared_g2_factories(
-    config: aisimulate_core::engine::EngineConfig,
+    config: aisim_core::engine::EngineConfig,
     workers: usize,
 ) -> anyhow::Result<(
-    aisimulate_core::engine::SharedG2Pool,
-    Vec<aisimulate_core::engine::EngineFactory>,
+    aisim_core::engine::SharedG2Pool,
+    Vec<aisim_core::engine::EngineFactory>,
 )> {
-    let pool = aisimulate_core::engine::SharedG2Pool::new();
+    let pool = aisim_core::engine::SharedG2Pool::new();
     let factories = (0..workers)
         .map(|_| {
-            aisimulate_core::engine::EngineFactory::new(config.clone())
+            aisim_core::engine::EngineFactory::new(config.clone())
                 .map(|factory| factory.with_shared_g2_pool(&pool, 1))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;

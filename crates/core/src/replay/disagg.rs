@@ -2468,7 +2468,8 @@ where
             return Ok(());
         }
         if let Some(token_id) = signal.token_id {
-            self.admission.defer_output_token(signal.uuid, token_id)?;
+            self.admission
+                .defer_output_token(signal.uuid, token_id, self.now_ms)?;
             // Generalized-engine completion effects become visible at the
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
@@ -2846,7 +2847,7 @@ where
         &mut self,
         effects: EngineEffects<Observation::Batch>,
     ) -> Result<()> {
-        self.record_prefill_admissions(effects.admissions);
+        self.record_prefill_admissions(&effects.admissions);
         for pressure in effects.pressure_events {
             self.evidence.record_native_pressure(
                 &mut self.collector,
@@ -2857,6 +2858,9 @@ where
             );
         }
         self.apply_prefill_observations(effects.pass_start_events, KvIngestBoundary::PassStart)?;
+        for admission in &effects.admissions {
+            self.notify_prefill_started(admission)?;
+        }
         for payload in effects.immediate_completions {
             self.process_worker_completion_payload(payload)?;
         }
@@ -2866,7 +2870,7 @@ where
         Ok(())
     }
 
-    fn record_prefill_admissions(&mut self, admissions: Vec<AdmissionEvent>) {
+    fn record_prefill_admissions(&mut self, admissions: &[AdmissionEvent]) {
         for admission in admissions {
             if let (Some(telemetry), Some(input)) = (
                 &mut self.telemetry,
@@ -2890,6 +2894,22 @@ where
                 self.now_ms,
             );
         }
+    }
+
+    /// Tell the prefill placement policy about a request's first prefill
+    /// admission. Later admissions re-run a preempted or retracted prefill.
+    fn notify_prefill_started(&mut self, admission: &AdmissionEvent) -> Result<()> {
+        let state = self.state_mut(admission.uuid)?;
+        if state.prefill_started {
+            return Ok(());
+        }
+        state.prefill_started = true;
+        let placements = self.prefill_placement.prefill_started(
+            admission.uuid,
+            admission.reused_input_tokens,
+            self.now_ms,
+        )?;
+        self.dispatch_prefill_placements(placements)
     }
 
     fn record_decode_admissions(&mut self, admissions: Vec<AdmissionEvent>) -> Result<()> {
@@ -3109,6 +3129,9 @@ where
             changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.release_tokenized()?;
+            // Submit arrivals released at this boundary before a worker commits
+            // its next pass. The engine still enforces async batch eligibility.
+            changed |= self.drive_pending_actions()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
             let removed_prefill = self
@@ -4265,6 +4288,7 @@ fn direct_to_native(
     kv_hint: Option<KvHintSource>,
 ) -> Result<crate::engine::Request> {
     Ok(crate::engine::Request {
+        cache_salt: request.cache_salt,
         request_id: request
             .uuid
             .ok_or_else(|| anyhow!("offline replay request must have a UUID before dispatch"))?,
