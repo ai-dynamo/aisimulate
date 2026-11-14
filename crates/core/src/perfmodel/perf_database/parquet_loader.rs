@@ -25,14 +25,16 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::arrow_reader::{
     ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
 };
+use parquet::basic::ConvertedType;
 use parquet::errors::ParquetError;
 
 use crate::common::error::AicError;
@@ -76,12 +78,17 @@ impl PerfReader {
         // Column types come from the parquet schema alone: the Arrow schema
         // pyarrow embeds could make string columns dictionary or large-string
         // arrays, which the accessors do not read.
+        let parquet_error = |source| AicError::Parquet {
+            path: path.to_path_buf(),
+            source,
+        };
         let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
-        let metadata =
-            ArrowReaderMetadata::load(&file, options).map_err(|source| AicError::Parquet {
-                path: path.to_path_buf(),
-                source,
-            })?;
+        let mut metadata = ArrowReaderMetadata::load(&file, options).map_err(parquet_error)?;
+        if let Some(schema) = enum_columns_as_utf8(&metadata) {
+            let options = ArrowReaderOptions::new().with_schema(schema);
+            metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options)
+                .map_err(parquet_error)?;
+        }
         let column_names = metadata
             .schema()
             .fields()
@@ -122,11 +129,22 @@ impl PerfReader {
         self.column_names.iter().position(|n| n == name)
     }
 
-    /// Row count from the file footer; decodes no data. A negative count in
-    /// a corrupt footer reads as 0.
-    pub fn num_rows(&self) -> u64 {
-        let rows = self.metadata.metadata().file_metadata().num_rows();
-        u64::try_from(rows).unwrap_or(0)
+    /// Rows that `rows` will decode: the sum of the row groups' counts in the
+    /// footer, which is what the Arrow reader iterates (not the file-level
+    /// count). Decodes no data. A negative count is a corrupt footer.
+    pub fn num_rows(&self) -> Result<u64, AicError> {
+        let groups = self.metadata.metadata().row_groups();
+        groups
+            .iter()
+            .try_fold(0u64, |total, group| {
+                total.checked_add(u64::try_from(group.num_rows()).ok()?)
+            })
+            .ok_or_else(|| {
+                AicError::PerfDatabase(format!(
+                    "parquet footer has an invalid row-group row count at {}",
+                    self.path.display()
+                ))
+            })
     }
 
     /// Iterate over every row, in file order. A decode error (corrupt page,
@@ -178,6 +196,39 @@ impl PerfReader {
     }
 }
 
+/// The file's Arrow schema with ENUM-annotated BYTE_ARRAY columns typed
+/// `Utf8`, or `None` when it has none. The record API reads an ENUM cell as a
+/// string; Arrow types the column `Binary`, which no accessor reads, so the
+/// optional accessors would report a present ENUM cell as absent. As a schema
+/// hint this makes the reader decode (and UTF-8 check) those columns like
+/// UTF8 ones.
+fn enum_columns_as_utf8(metadata: &ArrowReaderMetadata) -> Option<SchemaRef> {
+    let schema = metadata.schema();
+    let file_metadata = metadata.metadata().file_metadata();
+    let columns = file_metadata.schema_descr().root_schema().get_fields();
+    if columns.len() != schema.fields().len() {
+        return None;
+    }
+    let mut any = false;
+    let fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .zip(columns)
+        .map(|(field, column)| {
+            let field = field.as_ref().clone();
+            let is_enum = field.data_type() == &DataType::Binary
+                && column.get_basic_info().converted_type() == ConvertedType::ENUM;
+            any |= is_enum;
+            if is_enum {
+                field.with_data_type(DataType::Utf8)
+            } else {
+                field
+            }
+        })
+        .collect();
+    any.then(|| Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())))
+}
+
 /// One decoded batch and the file it came from.
 struct RowBatch {
     path: PathBuf,
@@ -193,7 +244,7 @@ enum Cell<'a> {
     Double(f64),
     Str(&'a str),
     /// A present cell of a type no accessor reads (INT32, UINT_64,
-    /// timestamps, unannotated or ENUM binary, lists).
+    /// timestamps, unannotated binary, lists).
     Other(&'a DataType),
 }
 
@@ -367,8 +418,6 @@ impl PerfRow {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use parquet::data_type::{
         BoolType, ByteArray, ByteArrayType, DataType, DoubleType, Int32Type, Int64Type,
     };
@@ -410,13 +459,14 @@ mod tests {
     }
 
     /// OPTIONAL columns (nulls on different rows per column), a REQUIRED
-    /// string, annotations the accessors read (INT_64, JSON) and types they
-    /// do not (INT32, TIMESTAMP_MICROS, raw BYTE_ARRAY, REPEATED).
+    /// string, annotations the accessors read (INT_64, JSON, ENUM) and types
+    /// they do not (INT32, TIMESTAMP_MICROS, raw BYTE_ARRAY, REPEATED).
     fn write_fixture(path: &Path) {
         let schema = "message fixture { OPTIONAL BYTE_ARRAY s (UTF8); REQUIRED BYTE_ARRAY r (UTF8); \
              OPTIONAL INT64 i; OPTIONAL DOUBLE d; OPTIONAL BOOLEAN b; OPTIONAL INT32 x; \
              OPTIONAL INT64 a (INT_64); OPTIONAL INT64 ts (TIMESTAMP_MICROS); \
-             OPTIONAL BYTE_ARRAY raw; OPTIONAL BYTE_ARRAY j (JSON); REPEATED INT64 rep; }";
+             OPTIONAL BYTE_ARRAY raw; OPTIONAL BYTE_ARRAY j (JSON); \
+             OPTIONAL BYTE_ARRAY e (ENUM); REPEATED INT64 rep; }";
         write_file(path, schema, |rg| {
             let rows: Vec<usize> = (0..ROWS).collect();
             let defs = |every: usize| -> Vec<i16> {
@@ -430,6 +480,7 @@ mod tests {
             let json: Vec<_> = present(29)
                 .map(|r| bytes(format!("{{\"r\":{r}}}")))
                 .collect();
+            let enums: Vec<_> = present(31).map(|r| bytes(format!("E{}", r % 3))).collect();
             let longs: Vec<i64> = present(5).map(|r| r as i64 - 1000).collect();
             let doubles: Vec<f64> = present(3).map(|r| r as f64 * 0.1).collect();
             let bools: Vec<bool> = present(11).map(|r| r % 2 == 0).collect();
@@ -447,6 +498,7 @@ mod tests {
             column::<Int64Type>(rg, &micros, Some(&defs(19)), None);
             column::<ByteArrayType>(rg, &raw, Some(&defs(23)), None);
             column::<ByteArrayType>(rg, &json, Some(&defs(29)), None);
+            column::<ByteArrayType>(rg, &enums, Some(&defs(31)), None);
             // One element per row: present (def 1), each starting a record (rep 0).
             let ones = vec![1; rows.len()];
             column::<Int64Type>(rg, &repeated, Some(&ones), Some(&vec![0; rows.len()]));
@@ -468,7 +520,7 @@ mod tests {
         let rows: Vec<PerfRow> = reader.rows().unwrap().map(Result::unwrap).collect();
         assert_eq!(rows.len(), ROWS);
         assert_eq!(rows.len(), oracle.len());
-        assert_eq!(reader.num_rows(), oracle.len() as u64);
+        assert_eq!(reader.num_rows().unwrap(), oracle.len() as u64);
         for (index, (row, expected)) in rows.iter().zip(&oracle).enumerate() {
             assert_eq!(expected.len(), reader.column_names.len());
             for (col, (_, field)) in expected.get_column_iter().enumerate() {
@@ -504,6 +556,27 @@ mod tests {
                 })
             ));
         }
+    }
+
+    /// The record API read an ENUM cell as a string, so an ENUM
+    /// `kernel_source` matched a source filter; read as absent, the filter
+    /// would drop the row.
+    #[test]
+    fn enum_kernel_source_passes_the_source_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("enum.parquet");
+        let schema =
+            "message t { REQUIRED BYTE_ARRAY kernel_source (ENUM); REQUIRED DOUBLE latency; }";
+        write_file(&path, schema, |rg| {
+            column::<ByteArrayType>(rg, &[ByteArray::from("measured_kernel")], None, None);
+            column::<DoubleType>(rg, &[1.5], None, None);
+        });
+        let reader = PerfReader::open(&path).unwrap();
+        let ks_col = reader.col_optional("kernel_source");
+        let row = reader.rows().unwrap().next().unwrap().unwrap();
+        assert_eq!(row.str_optional(ks_col).unwrap(), Some("measured_kernel"));
+        let allow = ["measured_kernel".to_string()];
+        assert!(crate::perf_database::kernel_source_ok(Some(&allow), ks_col, &row).unwrap());
     }
 
     #[test]

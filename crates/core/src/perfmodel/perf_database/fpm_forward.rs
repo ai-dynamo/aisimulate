@@ -860,8 +860,9 @@ fn load_pair(
     // Python checks the sidecar row_count against the FULL row list before any
     // per-row validation (`load_fpm_forward_data`: read_table -> row_count ->
     // empty -> per-row loop); mirror that error precedence with the footer's
-    // row count so a wrong-count pair reports the count, not the first bad row.
-    let actual_row_count = reader.num_rows();
+    // row-group counts (the rows the loop below decodes) so a wrong-count pair
+    // reports the count, not the first bad row.
+    let actual_row_count = reader.num_rows()?;
     match sidecar.row_count {
         Some(expected) if expected == actual_row_count => {}
         other => {
