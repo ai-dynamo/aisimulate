@@ -58,14 +58,15 @@ def _offline(monkeypatch):
         cached.cache_clear()
 
 
-# The op graph prices these GEMMs as fp8_static today. The export stores the shared experts as NVFP4 and
-# the latent projections as BF16, so per-layer pricing would move four of these eight GEMMs off that lane.
-# The assertion that reads this tuple is a tripwire for that change.
+# Per-layer pricing keeps these GEMMs fp8_static. The export stores the shared experts as NVFP4 and the
+# latent projections as BF16, and the packaged SGLang tables measure both lanes.
 _FP8_STATIC_GEMMS = (
     "mamba_in_proj_gemm",
     "mamba_out_proj_gemm",
     "qkv_gemm",
     "proj_gemm",
+)
+_MEASURED_GEMMS = (
     "shared_up_gemm",
     "shared_down_gemm",
     "fc1_latent_proj_gemm",
@@ -195,6 +196,7 @@ def test_sglang_silicon_reads_the_packaged_moe_and_attention_tables():
         "context_router_gemm": "silicon",
     }
     assert {prefill[f"context_{name}"] for name in _FP8_STATIC_GEMMS} == {"estimated"}
+    assert {prefill[f"context_{name}"] for name in _MEASURED_GEMMS} == {"silicon"}
     assert {n: decode[n] for n in ("generation_moe", "generation_attention")} == {
         "generation_moe": "silicon",
         "generation_attention": "silicon",

@@ -199,22 +199,19 @@ def test_nvfp4_quant_artifacts_have_exact_moe_profiles_and_lanes(monkeypatch, mo
 
 
 @pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
-def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypatch, caplog, backend):
-    from collector.case_generator import get_common_moe_test_cases
-    from collector.op_plans import plan_cases
-
-    model_path = "nvidia/Qwen3.6-35B-A3B-NVFP4"
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-
+@pytest.mark.parametrize(
+    ("model_path", "modes"),
+    [
+        ("nvidia/Qwen3.6-35B-A3B-NVFP4", set()),
+        ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", {"nvfp4"}),
+    ],
+)
+def test_w4a16_nvfp4_moe_is_collected_on_vllm_only(monkeypatch, backend, model_path, modes):
     assert "moe" in build_collection_case_plan(backend=backend, model_path=model_path).selected_ops
-    transferred_shapes = get_common_moe_test_cases()
-    assert transferred_shapes
-    assert {case.model_name for case in transferred_shapes} == {model_path}
-    assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs()}
-
-    with caplog.at_level("INFO", logger="collector.op_plans"):
-        assert plan_cases("moe", backend, 100) == []
-    assert f"plan no case (quantization_modes: []): {model_path}" in caplog.text
+    # SGLang and TRT-LLM have no w4a16_nvfp4 MoE path, and vLLM times these
+    # W4A16_NVFP4 checkpoints only on that lane (collector/skips.py).
+    expected = {"w4a16_nvfp4"} if backend == "vllm" else modes
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == expected
 
 
 @pytest.mark.parametrize(
@@ -758,13 +755,14 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     # its other shared-expert projections overlap the existing base shapes.
     # GLM-5.3-Flash adds ten new off-grid output widths at k=4096 (its
     # declared widths minus those another model already declares) across the
-    # 74 standard / 21 XPU token counts.
-    assert len(cases) == 38258
+    # 74 standard / 21 XPU token counts. Nemotron-3.5-Lightning adds its six
+    # off-grid shared-expert shapes across the 74 standard / 21 XPU token counts.
+    assert len(cases) == 38702
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert not any(case.n == 65536 and case.k == 65536 for case in cases)
 
-    assert len(xpu_cases) == 10857
+    assert len(xpu_cases) == 10983
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=32768)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
@@ -1002,6 +1000,7 @@ def test_vllm_moe_quantization_metadata_is_yaml_backed():
         "fp8_block",
         "int4_wo",
         "nvfp4",
+        "w4a16_nvfp4",
         "w4a16_mxfp4",
         "w4a8_mxfp4_mxfp8",
     ]
