@@ -2237,6 +2237,9 @@ def _fpm_write_pair(data_dir, power_w=None) -> None:
                 execution_profile="full",
                 engram_residency="none",
                 input_modality="text",
+                # Schema 8 binds every row to the sidecar policy.
+                measurement_policy="dynamo_native_single_sample_power_window_v1",
+                measurement_repeats=1,
                 power_w=power_w(index),
             )
     parquet_path = data_dir / "fpm_forward_perf.parquet"

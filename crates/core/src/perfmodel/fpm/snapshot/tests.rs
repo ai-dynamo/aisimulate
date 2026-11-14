@@ -1084,6 +1084,10 @@ fn packed_snapshot_over_a_powered_fpm_pair_restores_energy() {
     let rows: Vec<RowSpec> = default_rows()
         .into_iter()
         .map(|row| RowSpec {
+            measurement: Some((
+                crate::perf_database::fpm_forward::FPM_FORWARD_POWER_MEASUREMENT_POLICY,
+                1,
+            )),
             power_w: Some(PowerCell::Double(Some(500.0))),
             ..row
         })
