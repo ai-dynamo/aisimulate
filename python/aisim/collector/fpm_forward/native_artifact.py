@@ -340,13 +340,13 @@ def _validate_glm_provenance(cell: FPMCell, payload: dict[str, Any], path: Path)
     # The producer draws a nonempty token stream, so a count below 1 contradicts the input that it records.
     if evidence["count"] < 1:
         raise lacks("input_provenance.count")
-    # The generator encodes the seed with int(seed).to_bytes(8, "big") (collector/glm53flash_attention_tokens.py:71), so
+    # The generator encodes the seed with int(seed).to_bytes(8, "big") (collector/glm53flash_attention_tokens.py:72), so
     # an unsigned 64-bit integer is the only seed that can have drawn the stream.
     if not 0 <= evidence["seed"] < 2**64:
         raise lacks("input_provenance.seed")
     # The generator draws ids from the half-open range [vocab_low, vocab_high_exclusive). It requires
     # 0 <= vocab_low < vocab_high_exclusive and at most 2**63 ids in the range
-    # (collector/glm53flash_attention_tokens.py:67, 79), so the range holds vocab_high_exclusive - vocab_low ids. The
+    # (collector/glm53flash_attention_tokens.py:68, 80), so the range holds vocab_high_exclusive - vocab_low ids. The
     # producer records both bounds in every artifact.
     low, high = evidence.get("vocab_low"), evidence.get("vocab_high_exclusive")
     if type(low) is not int or low < 0:
