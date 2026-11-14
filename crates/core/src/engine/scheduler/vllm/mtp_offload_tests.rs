@@ -263,6 +263,47 @@ fn cold_g2_and_g1_share_the_same_mtp_state_transitions(#[case] reject_first: boo
     assert_eq!(host.kv_manager.num_active_blocks(), 0);
 }
 
+/// Modeled on vLLM `Scheduler.schedule`: a preempted request resumes only
+/// with room for every token it holds, the one it sampled last included.
+#[test]
+fn a_preempted_request_waits_for_the_block_a_shared_store_holds() {
+    use crate::engine::common::protocols::WorkerType;
+    use crate::engine::host_offload::{G2Binding, G2Registry};
+    let binding = G2Binding {
+        registry: std::sync::Arc::<G2Registry>::default(),
+        tensor_parallel_size: 1,
+    };
+    // A store copies one block per second.
+    let host = crate::engine::NativeHostOffloadConfig::new(4)
+        .with_bandwidths(0.001, 1.0)
+        .cluster_shared("tp1");
+    let mut args = args(2, 16, false, false);
+    (args.worker_type, args.num_gpu_blocks) = (WorkerType::Decode, 2);
+    (args.enable_prefix_caching, args.native_host_offload) = (true, Some(host));
+    let mut core = VllmCore::new_with_worker_rank(args, 0, 0, 0, false, Some(&binding)).unwrap();
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    // The first request leaves; the pool holds its prompt block while it copies it.
+    submit(&mut core, 1, 4, 1);
+    let seed = core.execute_pass(&mut collector, 0.0);
+    core.complete_engine_boundary(seed.end_ms);
+    assert_eq!(core.kv_manager.num_active_blocks(), 1);
+
+    // The second request fills the other block, and its next tokens need one more.
+    let uuid = submit(&mut core, 2, 3, 3);
+    let first = core.execute_pass(&mut collector, seed.end_ms);
+    core.complete_engine_boundary(first.end_ms);
+    core.execute_pass(&mut collector, first.end_ms);
+    assert_eq!(core.state.requests[&uuid].num_preemptions, 1);
+    let waiting = core.execute_pass(&mut collector, first.end_ms);
+    assert!(waiting.admissions.is_empty() && waiting.pressure_events.is_empty());
+
+    let copied = core.next_internal_deadline_ms().unwrap();
+    core.process_internal_work(copied);
+    let resumed = core.execute_pass(&mut collector, copied);
+    assert_eq!(resumed.output_signals.len(), 1);
+}
+
 mod transfer_lifecycle {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};

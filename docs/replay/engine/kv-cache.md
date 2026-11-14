@@ -349,14 +349,16 @@ G2 supports vLLM aggregated and token-only disaggregated workers with prefix
 caching and any `attention_data`. It is rejected with SGLang, TensorRT-LLM,
 ngram speculation, `state_cache`, and Belady eviction.
 
-Canonical `engine.speculation.kind: mtp` can combine with G2 only on an
-aggregated vLLM worker with `attention_data: 1`, `scope: dp_rank_local`, prefix
-caching and no G3. Use explicit fixed KV capacity and default timing. This
-models synchronous single-module MTP with one uniform shared FullAttention
-cache; separate draft models and grouped caches are unsupported. See
+Canonical `engine.speculation.kind: mtp` can combine with G2 on aggregated and
+token-only disaggregated vLLM workers, with any `attention_data`, prefix
+caching and no G3. An aggregated worker needs `scope: dp_rank_local`; prefill
+and decode workers take either scope. Use explicit fixed KV capacity and
+default timing. Scheduling is synchronous. Separate draft models and grouped
+caches are unsupported. See
 [speculation](speculation.md#registered-schemes) for the complete composition.
 
-This combined behavior is adapted and modified from the
+An aggregated worker models single-module MTP with one uniform shared
+FullAttention cache. This combined behavior is adapted and modified from the
 [vLLM v0.32.0 scheduler](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py)
 and [OffloadingConnector](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py),
 Copyright contributors to the vLLM project, Apache-2.0. Prompt stores exclude
@@ -365,6 +367,18 @@ completes. A next step that can never fit physical KV capacity or the total
 padded verification budget is rejected instead of retried indefinitely; this
 is a simulation capacity guard. The scheduling baseline does not change the
 version or provenance of the performance data used for timing.
+
+Prefill and decode workers keep the speculative lifecycle they have without
+G2. G2 stores complete prompt blocks only, so drafts never reach it. A restore
+resumes at the loaded prefix, as on an aggregated worker. Accepted drafts that
+take a G1 block a store still reads make the forward that writes it wait for
+that copy, and so does preempting a request whose store is in flight; a store
+prepared in that same pass delays the rank's next pass. A preempted request
+resumes once G1 has room for its tokens and its next one; a shared pool keeps
+the G1 blocks it copies until each copy completes, so its stores can delay
+that. The capacity guard above does not cover these workers: when G1 holds
+fewer than about two requests, a replay can end with a stall error or not
+terminate, with or without G2. Size G1 for several concurrent requests.
 
 For shared pools, the report's `g2_domains` gives capacity and resident blocks.
 Workers that publish KV events report G2 changes with `"tier": "host_pinned"`;
@@ -512,7 +526,7 @@ KVCR supports vLLM aggregated workers with any `attention_data`, and pulls
 between the prefill ranks of P/D. Workers may be fixed or Planner-scaled; a
 draining worker is removed only after every pull from or into it has landed and
 been taken by its target. Rejected: missing or `cluster_shared` `host_offload`,
-a `host_offload.connector` other than `offloading_v0_24`, `g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1,
+a `host_offload.connector` other than `offloading_v0_24`, `g3_offload` together with `kvcr`, `kvcr` on the decode role, MTP on a prefill role with `kvcr`, `parallelism.pipeline` above 1,
 `parallelism.prefill_context` above 1 (native `prefill_context_parallel_size`), and `recommend`.
 Everything G2 rejects is rejected too, including SGLang and TensorRT-LLM.
 

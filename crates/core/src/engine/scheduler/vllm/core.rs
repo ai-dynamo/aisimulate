@@ -676,6 +676,11 @@ pub(crate) struct VllmCore {
     speculative_sampler: Option<SpeculativeDecodeSampler>,
     /// Native MTP lookahead depth, fixed by the worker configuration.
     native_mtp_depth: Option<usize>,
+    /// Whether a G2 restore under MTP resumes at the loaded prefix. vLLM
+    /// v0.32.0 adds the connector hit to the local hit, and only an annotated
+    /// drafter KV group loses the last chunk of the connector hit. A uniform
+    /// cache has no such group.
+    mtp_restore_keeps_loaded_prefix: bool,
     kv_event_buffer: Option<CapturedKvEventBuffer>,
     source_holds: SourceHolds<HeldVllmPrefill>,
     pending_destinations: PendingDestinations<VllmRequestState>,
@@ -973,14 +978,17 @@ impl VllmCore {
                     .expect("validated grouped cache capacity"),
             ));
         }
-        let native_mtp_depth = if args.worker_type == WorkerType::Aggregated
-            && args.prefix_match_unit.is_none()
-            && kv_manager.supports_native_speculative_slots()
-        {
-            policy::native_mtp_depth(args.scheduling_policy(), args.aic_nextn)
-        } else {
-            None
-        };
+        // MTP over one uniform token cache, on any worker type.
+        let uniform_mtp_depth =
+            if args.prefix_match_unit.is_none() && kv_manager.supports_native_speculative_slots() {
+                policy::native_mtp_depth(args.scheduling_policy(), args.aic_nextn)
+            } else {
+                None
+            };
+        let native_mtp_depth =
+            uniform_mtp_depth.filter(|_| args.worker_type == WorkerType::Aggregated);
+        let mtp_restore_keeps_loaded_prefix = native_mtp_depth.is_some()
+            || (native_host_offload.is_some() && uniform_mtp_depth.is_some());
         Ok(Self {
             kv_manager,
             belady_oracle: None,
@@ -989,6 +997,7 @@ impl VllmCore {
             state: SchedulerState::default(),
             speculative_sampler,
             native_mtp_depth,
+            mtp_restore_keeps_loaded_prefix,
             kv_event_buffer,
             source_holds: SourceHolds::default(),
             pending_destinations: PendingDestinations::default(),
@@ -1846,6 +1855,47 @@ impl VllmCore {
         }
     }
 
+    /// Whether a preempted request would resume without the blocks its
+    /// emission takes. vLLM resumes a request only with room for the token it
+    /// sampled last, and speculative emission takes that token's blocks in the
+    /// pass that samples it. Resumed without them, the request is preempted by
+    /// the same pass and resumed again at the same instant, without end while
+    /// the stores of a shared pool hold the blocks. Only a rank with a host
+    /// pool waits: its queue serves the handoffs and restores that own G1
+    /// blocks first, so the waiting request cannot keep them from finishing.
+    fn resumed_emission_lacks_blocks(&self, uuid: Uuid, cost: &PrefillCost) -> bool {
+        if self.native_host_offload.is_none()
+            || self.speculative_sampler.is_none()
+            || self.native_mtp_depth.is_some()
+        {
+            return false;
+        }
+        let request = &self.state.requests[&uuid];
+        if request.status != RequestStatus::Preempted || request.sequence.num_allocated_tokens() > 0
+        {
+            return false;
+        }
+        let remaining =
+            policy::remaining_generation_tokens(&request.sequence, self.args.max_model_len);
+        let (AllocationRequirement::Blocks(resumed), AllocationRequirement::Blocks(emitted)) = (
+            request
+                .sequence
+                .admission_requirement(&self.kv_manager, cost, 0),
+            self.kv_manager.decode_requirement(
+                &request.sequence.lease,
+                request.sequence.len(),
+                remaining.min(1),
+            ),
+        ) else {
+            return false;
+        };
+        let free = self
+            .args
+            .num_gpu_blocks
+            .saturating_sub(self.kv_manager.num_active_blocks());
+        resumed + emitted > free
+    }
+
     fn host_inflight_tail_blocks(&self) -> usize {
         self.state
             .requests
@@ -2169,6 +2219,7 @@ impl VllmCore {
         let admission = AdmissionInvariant::new(self.pending_destinations.has_pending());
         let mut host_step_skipped = Vec::new();
         let native_mtp_depth = self.native_mtp_depth;
+        let keeps_loaded_prefix = self.mtp_restore_keeps_loaded_prefix;
         // Agent-style workloads can keep many requests in both collections.
         // Scan once, then update only the selected request's contribution as
         // this pass queues/consumes a host load or admits a new prefill.
@@ -2275,7 +2326,7 @@ impl VllmCore {
                 {
                     counts.record(request.sequence.len(), cost.cached_tokens)?;
                 }
-                if native_mtp_depth.is_some() {
+                if keeps_loaded_prefix {
                     let requires_logits =
                         !policy::generation_complete(&request.sequence, self.args.max_model_len);
                     let activated = request.host_offload.as_deref().and_then(|host| {
@@ -2301,7 +2352,7 @@ impl VllmCore {
                     self.native_host_offload.as_mut(),
                     request.host_offload.as_deref_mut(),
                 ) {
-                    if native_mtp_depth.is_none() {
+                    if !keeps_loaded_prefix {
                         cost = VllmHostOffloadAdapter::freeze_activated_cost(
                             host,
                             cost,
@@ -2412,7 +2463,7 @@ impl VllmCore {
                                     } else {
                                         0
                                     };
-                                let decide_admission = if native_mtp_depth.is_some() {
+                                let decide_admission = if keeps_loaded_prefix {
                                     policy::decide_waiting_admission_with_adjusted_cost
                                 } else {
                                     policy::decide_waiting_admission_with_cost
@@ -2471,6 +2522,15 @@ impl VllmCore {
                 }
             } else {
                 decision
+            };
+            let decision = match decision {
+                AdmissionDecision::Admit { prefill_cost }
+                    if host_hit.is_none()
+                        && self.resumed_emission_lacks_blocks(uuid, &prefill_cost) =>
+                {
+                    AdmissionDecision::Wait
+                }
+                decision => decision,
             };
             let prefill_cost = match decision {
                 AdmissionDecision::Admit { prefill_cost } => prefill_cost,
@@ -2645,10 +2705,6 @@ impl VllmCore {
             }
         }
 
-        let compute_start_ms = self
-            .native_host_offload
-            .as_ref()
-            .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         let prefill = priced_prefill(
             batch_count,
             batch_total_isl,
@@ -2677,6 +2733,12 @@ impl VllmCore {
         // that computes prefill and decode together may be one forward.
         let (decode, mut output_signals) =
             self.emit_ready_tokens(now_ms, &scheduled, &mut decode_acceptance)?;
+        // Read after emission: accepted drafts that take a block a store still
+        // reads, and a preemption they force, delay this pass's forward.
+        let compute_start_ms = self
+            .native_host_offload
+            .as_ref()
+            .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
         // Emit the terminal signals for the requests the gate rejected above
         // (see the gate comment for why this can't be done inline).
         for uuid in rejected_uuids {
@@ -3800,6 +3862,7 @@ impl VllmCore {
         for &SpeculativeBurst { uuid, burst, .. } in &bursts {
             let completed = {
                 let kv_manager = &mut self.kv_manager;
+                let native_host_offload = &mut self.native_host_offload;
                 let request = self
                     .state
                     .requests
@@ -3844,9 +3907,25 @@ impl VllmCore {
                                 .as_mut()
                                 .expect("legacy speculative reservation"),
                         );
-                        assert!(
-                            matches!(allocation, NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty())
-                        );
+                        // A reserved block may still be the source of an in-flight G2
+                        // store. vLLM flushes the pending stores of every block a step
+                        // allocates, lookahead slots included, before its forward, so
+                        // this pass's forward waits. A store prepared in this pass has
+                        // its deadline at the pass boundary: the next pass waits for it.
+                        let NativeAllocation::Ready { dependencies, .. } = allocation else {
+                            panic!("speculative decode reservation must cover its blocks");
+                        };
+                        if !dependencies.is_empty() {
+                            native_host_offload
+                                .as_mut()
+                                .expect("G1 source dependencies require native host offload")
+                                .fence_speculative_growth(
+                                    uuid,
+                                    &mut request.sequence.lease,
+                                    &dependencies,
+                                    kv_manager,
+                                );
+                        }
                     }
                     output_signals.push(OutputSignal {
                         uuid,

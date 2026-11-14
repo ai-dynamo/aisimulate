@@ -474,8 +474,8 @@ search fields. Those legacy fields have no adapter migration.
 
 The public `predict` and `recommend` commands support a separate native host-offload descriptor
 at `engine.workers.<role>.kv_cache.host_offload`. It sets the G2 `scope`, `num_host_blocks` and
-bandwidths as fixed values, not search dimensions. It requires vLLM and prefix caching; native
-speculative decoding is not supported. For `recommend`, mode (`aggregated` or `disaggregated`)
+bandwidths as fixed values, not search dimensions. It requires vLLM and prefix caching; `predict`
+takes it with canonical MTP and no other speculation, `recommend` without speculation. For `recommend`, mode (`aggregated` or `disaggregated`)
 and backend must be concrete; parallelism knobs, including `attention_data`, may be searched. When
 both prefill and decode use `scope: cluster_shared`, both roles must set `tensor` and `pipeline` to
 the same explicit integer (an omitted value is searched), their KV block geometry and pool fields

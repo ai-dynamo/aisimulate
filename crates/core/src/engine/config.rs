@@ -1684,16 +1684,17 @@ impl EngineConfig {
                     "native_host_offload with MTP requires async_scheduling=false"
                 );
                 ensure!(
-                    self.worker_type == WorkerType::Aggregated,
-                    "native_host_offload with aic_nextn requires worker_type=aggregated"
-                );
-                ensure!(
-                    host_offload.scope == G2Scope::DpRankLocal,
-                    "native_host_offload with aic_nextn requires dp_rank_local scope"
+                    host_offload.scope == G2Scope::DpRankLocal
+                        || self.worker_type != WorkerType::Aggregated,
+                    "native_host_offload with aic_nextn on an aggregated worker requires dp_rank_local scope"
                 );
                 ensure!(
                     self.g3_offload.is_none(),
                     "native_host_offload with aic_nextn does not support g3_offload"
+                );
+                ensure!(
+                    self.kvcr.is_none() || self.worker_type == WorkerType::Aggregated,
+                    "kvcr with aic_nextn requires worker_type=aggregated"
                 );
                 ensure!(
                     self.state_cache.is_none()
@@ -2635,13 +2636,6 @@ mod tests {
             ),
             (
                 |config| {
-                    set_canonical_mtp(config, 1);
-                    config.worker_type = WorkerType::Decode;
-                },
-                "requires worker_type=aggregated",
-            ),
-            (
-                |config| {
                     set_canonical_mtp(config, 2);
                     let host = config.native_host_offload.as_mut().unwrap();
                     host.scope = G2Scope::ClusterShared;
@@ -2796,6 +2790,13 @@ mod tests {
                     })
                 },
                 "kvcr cannot be combined with g3_offload",
+            ),
+            (
+                |config| {
+                    set_canonical_mtp(config, 1);
+                    config.worker_type = WorkerType::Prefill;
+                },
+                "kvcr with aic_nextn requires worker_type=aggregated",
             ),
             (
                 |config| config.kvcr.as_mut().unwrap().bandwidth_gbps = -1.0,

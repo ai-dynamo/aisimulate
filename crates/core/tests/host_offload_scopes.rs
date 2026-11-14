@@ -5,11 +5,12 @@
 //! across ranks, replicas and P/D roles.
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use aisim_core::engine::generalized::{EngineIdentity, SchedulerCommand};
 use aisim_core::engine::{
     Admission, Command, Engine, EngineConfig, EngineFactory, KvEventData, KvEventTier, Request,
-    SharedG2Pool,
+    SharedG2Pool, TimingModel,
 };
 use aisim_core::replay::{
     G2DomainStats, ReplayCaptureOptions, ReplayDeterminism, ReplayEngineFactory, ReplayReport,
@@ -30,6 +31,33 @@ fn rank(host_offload: Value) -> Value {
     })
 }
 
+/// Canonical MTP, the only speculation G2 takes: the `aic` timing identity
+/// selects it, and [`timed_factory`] supplies the forward times.
+fn canonical_mtp(rank: &mut Value, depth: usize) {
+    rank["aic_nextn"] = json!(depth);
+    rank["aic_nextn_accept_rates"] = json!(vec!["1"; depth].join(","));
+    rank["timing_model"] = json!({
+        "type": "external", "provider": "aic",
+        "config": {"speculation": {"kind": "mtp", "params": {"depth": depth}}},
+    });
+}
+
+struct OneMsTiming;
+
+impl TimingModel for OneMsTiming {
+    fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+        Ok(1.0)
+    }
+
+    fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+        Ok(1.0)
+    }
+}
+
+fn timed_factory() -> ReplayEngineFactory {
+    ReplayEngineFactory::with_timing_model(Arc::new(OneMsTiming))
+}
+
 fn host(scope: &str) -> Value {
     json!({"scope": scope, "num_host_blocks": 8, "kv_layout_id": "test-tp1"})
 }
@@ -45,6 +73,20 @@ fn requests(prompts: usize, rank_field: &str) -> Vec<Value> {
             });
             request[rank_field] = json!(index / 2 % 2);
             request
+        })
+        .collect()
+}
+
+/// Requests `(id, arrival_ms, first_token, tokens, output_tokens)`.
+fn trace(requests: &[(&str, f64, u32, u32, usize)]) -> Vec<Value> {
+    requests
+        .iter()
+        .map(|&(id, arrival_time_ms, first, tokens, output_tokens)| {
+            json!({
+                "id": id, "arrival_time_ms": arrival_time_ms, "input_tokens": tokens,
+                "input_token_ids": (first..first + tokens).collect::<Vec<_>>(),
+                "output_tokens": output_tokens,
+            })
         })
         .collect()
 }
@@ -78,6 +120,13 @@ fn host_reuse(report: &ReplayReport) -> Vec<Option<usize>> {
         .iter()
         .map(|record| record.first_admission_host_reused_input_tokens)
         .collect()
+}
+
+/// Whole milliseconds at which request `id` finished.
+fn terminal_ms(report: &ReplayReport, id: &str) -> f64 {
+    let mut records = report.per_request.iter();
+    let record = records.find(|record| record.request_id.as_deref() == Some(id));
+    record.unwrap().terminal_time_ms.round()
 }
 
 fn aggregated(workers: usize) -> Value {
@@ -119,22 +168,142 @@ fn attention_dp_ranks_share_g2_only_in_cluster_scope() {
 #[test]
 fn token_only_prefill_and_decode_join_one_cluster_pool() {
     for (prefill_scope, decode_scope, reuse) in [
-        ("dp_rank_local", "dp_rank_local", [0, 0]),
-        ("cluster_shared", "cluster_shared", [0, 8]),
+        ("dp_rank_local", "dp_rank_local", [0, 0, 0, 0]),
+        ("cluster_shared", "cluster_shared", [0, 8, 8, 8]),
         // Roles choose scopes independently; the shared prefill pool still reuses.
-        ("cluster_shared", "dp_rank_local", [0, 8]),
+        ("cluster_shared", "dp_rank_local", [0, 8, 8, 8]),
     ] {
-        let role = |scope| json!({"dp_size": 2, "rank": rank(host(scope))});
+        // MTP keeps the restored prefix on these workers too.
+        for mtp in [false, true] {
+            let rank = |host| {
+                let mut rank = rank(host);
+                if mtp {
+                    canonical_mtp(&mut rank, 2);
+                }
+                rank
+            };
+            let role = |scope| json!({"dp_size": 2, "rank": rank(host(scope))});
+            let engine = json!({
+                "rank": rank(Value::Null),
+                "prefill": role(prefill_scope),
+                "decode": role(decode_scope),
+            });
+            let requests = requests(4, "prefill_dp_rank");
+            let report = run_with(&timed_factory(), disaggregated(2), engine, requests).unwrap();
+            assert_eq!(report.request_counts.completed_requests, 4);
+            let case = format!("{prefill_scope}/{decode_scope} mtp={mtp}");
+            assert_eq!(host_reuse(&report), reuse.map(Some), "{case}");
+        }
+    }
+}
+
+#[test]
+fn overlapping_mtp_requests_run_on_two_attention_dp_ranks() {
+    // One aggregated worker of two attention-DP ranks with a local pool each,
+    // MTP depth 2. `a` and `b` overlap on different ranks: 12-token prompts
+    // in an 8-token budget (chunked prefills) and draft rounds, while their
+    // stores (1 ms a block) are in flight. `evict` then fills rank 0's G1, so
+    // `c`, which repeats `a`'s prompt there, loads 12 of its 13 tokens from
+    // that rank's pool. `d` repeats it on rank 1, whose pool never had it.
+    let pool = json!({
+        "num_host_blocks": 16, "d2h_bandwidth_gbps": 1.0, "h2d_bandwidth_gbps": 1.0,
+    });
+    let mut rank = small_rank(8, 4, 8, json!({"native_host_offload": pool}));
+    canonical_mtp(&mut rank, 2);
+    let mut requests = token_ranges(&[
+        ("a", 0.0, 1, 12, 6),
+        ("b", 0.0, 101, 12, 6),
+        ("evict", 20.0, 201, 28, 1),
+        ("c", 40.0, 1, 13, 1),
+        ("d", 40.0, 1, 13, 1),
+    ]);
+    for (request, dp_rank) in requests.iter_mut().zip([0, 1, 0, 0, 1]) {
+        request["dp_rank"] = json!(dp_rank);
+    }
+    let engine = json!({"dp_size": 2, "rank": rank});
+    let report = run_with(&timed_factory(), aggregated(1), engine, requests).unwrap();
+    let mut records = report.per_request.iter().collect::<Vec<_>>();
+    records.sort_by_key(|record| record.request_id.clone());
+    let outputs = records.iter().map(|record| record.output_length);
+    assert_eq!(outputs.collect::<Vec<_>>(), [6, 6, 1, 1, 1]);
+    // Without accepted drafts six tokens take seven 1 ms passes: two prefill
+    // chunks, then a token a pass.
+    assert!(records[0].terminal_time_ms < 7.0);
+    assert_eq!(host_reuse(&report), [0, 0, 12, 0, 0].map(Some));
+}
+
+#[test]
+fn an_mtp_restore_keeps_its_loaded_prefix_on_a_prefill_worker_as_on_an_aggregated_one() {
+    // vLLM adds a connector hit to the local hit; a uniform cache has no
+    // drafter group that would lose a chunk. A restore reuses every stored
+    // token but the last one it must compute, whatever the worker type: 12
+    // of a 13-token prompt, and 11 of the stored 12-token prompt itself.
+    let mtp_rank = |host: Value| {
+        let mut rank = rank(host);
+        rank["num_gpu_blocks"] = json!(8);
+        canonical_mtp(&mut rank, 1);
+        rank
+    };
+    let local = || json!({"scope": "dp_rank_local", "num_host_blocks": 16});
+    let pd = json!({
+        "rank": mtp_rank(Value::Null),
+        "prefill": {"rank": mtp_rank(local())},
+        "decode": {"rank": mtp_rank(Value::Null)},
+    });
+    for (topology, engine, tokens) in [
+        (aggregated(1), json!({"rank": mtp_rank(local())}), 13),
+        (disaggregated(1), pd.clone(), 13),
+        (disaggregated(1), pd, 12),
+    ] {
+        // `evict` fills G1, so `seed` survives only in the host tier.
+        let requests = trace(&[
+            ("seed", 0.0, 1, 12, 1),
+            ("evict", 20.0, 101, 28, 1),
+            ("restore", 40.0, 1, tokens, 1),
+        ]);
+        let report = run_with(&timed_factory(), topology, engine, requests).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 3);
+        let reuse = [0, tokens as usize - 1, 0].map(Some);
+        assert_eq!(host_reuse(&report), reuse, "{tokens} tokens");
+    }
+}
+
+#[test]
+fn mtp_growth_waits_for_a_store_that_still_reads_its_block() {
+    // A local store copies one block per second and does not hold its G1
+    // source. Accepted drafts of `grower` take a block that the store of
+    // `stored` still reads, so the forward that writes it waits for that
+    // copy, as vLLM flushes a reallocated block's store. A store starts at
+    // the end of the pass that prepares it, stores queue behind one another,
+    // and one prepared in the pass that grows delays the next pass.
+    let slow_store = || json!({"num_host_blocks": 16, "d2h_bandwidth_gbps": 0.001});
+    let mtp_rank = |host: Value, depth: usize| {
+        let mut rank = rank(host);
+        rank["num_gpu_blocks"] = json!(4);
+        rank["max_num_seqs"] = json!(2);
+        rank["max_num_batched_tokens"] = json!(16);
+        canonical_mtp(&mut rank, depth);
+        rank
+    };
+    let in_flight = trace(&[("stored", 0.0, 101, 8, 1), ("grower", 10.0, 1, 4, 6)]);
+    let same_pass = trace(&[("grower", 0.0, 101, 4, 6), ("stored", 0.0, 1, 8, 1)]);
+    for (depth, requests, done_ms) in [
+        // The two-block copy runs from 2 ms to 2,002 ms, and the burst that
+        // takes its block is `grower`'s last: that 1 ms forward waits for it.
+        (2, in_flight, 2_003.0),
+        // Both arrive together, so the store is prepared in the pass that
+        // grows and submitted at its boundary: three blocks, 2 ms to 3,002 ms.
+        // `grower` then needs one more 1 ms pass.
+        (3, same_pass, 3_003.0),
+    ] {
         let engine = json!({
-            "rank": rank(Value::Null), "prefill": role(prefill_scope), "decode": role(decode_scope),
+            "rank": mtp_rank(Value::Null, depth),
+            "prefill": {"rank": mtp_rank(Value::Null, depth)},
+            "decode": {"rank": mtp_rank(slow_store(), depth)},
         });
-        let report = run(disaggregated(2), engine, requests(2, "prefill_dp_rank")).unwrap();
+        let report = run_with(&timed_factory(), disaggregated(1), engine, requests).unwrap();
         assert_eq!(report.request_counts.completed_requests, 2);
-        assert_eq!(
-            host_reuse(&report),
-            reuse.map(Some),
-            "{prefill_scope}/{decode_scope}"
-        );
+        assert_eq!(terminal_ms(&report, "grower"), done_ms, "depth={depth}");
     }
 }
 
