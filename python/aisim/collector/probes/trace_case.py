@@ -16,9 +16,13 @@ decides per SM (a pinned dispatch, a KV pool) is what a collection would run. Th
 once through the backend registry's run function under ``torch.profiler``, binding what
 collect.py binds, with its perf files in a discarded scratch directory. The result lists
 the CUDA kernels the row times (``timed_only``: inside benchmark_with_power; otherwise the
-whole run): the collector side of an opharness path gate. A collector that times its
-points in a child process (``helper.trace_child_argv``) runs that child under the profiler
-too, and its kernels are included (``measurement_children`` counts them).
+whole run) and ``measured_kernels``, those of the timed runs alone (None when the row did
+not time through benchmark_with_power): the collector side of an opharness path gate.
+``measured_timing`` gives the device time of those runs, one ``{kernel: {us, launches}}``
+table per benchmark_with_power call in launch order (one per swept point): the timing side
+of the gate. A collector that times its points in a child process (``helper.trace_child_argv``) runs that
+child under the profiler too, and its kernels are included (``measurement_children`` counts
+them).
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ import tempfile
 from inspect import signature
 from pathlib import Path
 
-from collector.probes._traced_child import kernel_names
+from collector.probes._traced_child import kernel_names, measured_timing
 
 _RESTART_CODE = 10  # collector.helper.EXIT_CODE_RESTART: the worker recycles after the case ran
 
@@ -60,9 +64,12 @@ def planned_row(backend: str, op: str, sm_version: int | None, **select):
     """The run arguments the collector queues for the ONE planned case whose fields equal
     ``select``. A sweep field (a list in the case, such as moe ``num_tokens`` or gdn
     ``seq_lens``) may be given a subset of its planned values; the case then sweeps only
-    those. A selection matching no planned case, or several, raises."""
+    those. A selection matching no planned case, or several, raises. ``row`` (an index in
+    plan order) picks one row of a case the plan runs as several, such as a TRT-LLM MoE
+    case with its min-latency twin; such a case without ``row`` raises."""
     from collector.op_plans import plan
 
+    pick = select.pop("row", None)
     op_plan = plan(op, backend, sm_version)
     picked = [i for i, case in enumerate(op_plan.cases) if _matches(case, select)]
     if len(picked) != 1:
@@ -81,8 +88,13 @@ def planned_row(backend: str, op: str, sm_version: int | None, **select):
         op_plan, cases=[case], dispatches=op_plan.dispatches[i : i + 1] if op_plan.dispatches else []
     )
     rows = one.rows
+    if pick is not None:
+        i = int(pick)
+        if not 0 <= i < len(rows):
+            raise ValueError(f"{backend} {op}: the planned case {case} has {len(rows)} rows, no row {i}")
+        return rows[i]
     if len(rows) != 1:
-        raise ValueError(f"{backend} {op}: the planned case {case} runs as {len(rows)} rows, want 1")
+        raise ValueError(f"{backend} {op}: the planned case {case} runs as {len(rows)} rows; name one with row=<index>")
     return rows[0]
 
 
@@ -170,7 +182,8 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
                 error = f"{type(exc).__name__}: {exc}"[:500]
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-        own, own_timed = kernel_names(prof)
+        own, own_timed, own_measured = kernel_names(prof)
+        own_timing = measured_timing(prof)
         child_records = [json.loads(f.read_text()) for f in sorted(children.glob("child_*.json"))]
     finally:
         for name, value in saved.items():
@@ -181,9 +194,20 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
         shutil.rmtree(scratch, ignore_errors=True)
     # a process that timed through benchmark_with_power gave its timed kernels; when any did,
     # the processes that timed nothing (a parent that only spawned the measurement) are setup
-    traced = [(own, own_timed), *((r["kernels"], r.get("timed", False)) for r in child_records)]
-    timed = any(t for _, t in traced)
-    kernels = sorted(set().union(*(set(k) for k, t in traced if t or not timed)))
+    traced = [
+        (own, own_timed, own_measured),
+        *((r["kernels"], r.get("timed", False), r.get("measured")) for r in child_records),
+    ]
+    timed = any(t for _, t, _ in traced)
+    kernels = sorted(set().union(*(set(k) for k, t, _ in traced if t or not timed)))
+    # the timed runs alone, only when every process that timed completed its runs
+    runs = [m for _, t, m in traced if t]
+    measured = sorted(set().union(*map(set, runs))) if timed and None not in runs else None
+    # the per-window kernel times of every process that timed, in process order (one process
+    # times a case's points in practice)
+    windows = [own_timing] if own_timed else []
+    windows += [r.get("measured_timing") for r in child_records if r.get("timed")]
+    timing = [w for ws in windows for w in ws] if windows and None not in windows else None
     return {
         "backend": backend,
         "framework_version": version,
@@ -194,6 +218,8 @@ def run(args: dict[str, str], out_dir: Path) -> dict:
         "row": str(row),
         "kernels": kernels,
         "timed_only": timed,
+        "measured_kernels": measured,
+        "measured_timing": timing,
         "measurement_children": len(child_records),
         "error": error,
         "failed": error is not None or not kernels,

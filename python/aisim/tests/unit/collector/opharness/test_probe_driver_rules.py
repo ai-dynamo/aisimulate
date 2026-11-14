@@ -76,12 +76,32 @@ def test_normalize_drops_denied_names(pd):
         ("nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN", "cublas"),
         ("fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel", "trtllm_mha"),
         ("fused_moe_kernel", "triton_fused_moe"),
+        # triton_kernels' MoE matmul under its current name (SGLang triton_kernel runner,
+        # TRT-LLM TritonFusedMoE), and the earlier _matmul_ogs_ one
+        ("_matmul_NNT_bf16xbf16xmxfp4_swiglu", "triton_fused_moe"),
+        ("_matmul_NNT_bf16xbf16xmxfp4", "triton_fused_moe"),
+        ("_matmul_ogs_NNT_bf16xbf16xmxfp4", "triton_fused_moe"),
         ("chunk_kda_fwd_kernel_inter_solve_fused", "fla_triton"),
     ],
 )
 def test_taxonomy_labels_identity_kernels(pd, kernel, family):
     labels, unmatched = pd.label_kernels([kernel], "sm90")
     assert family in labels and not unmatched
+
+
+@pytest.mark.parametrize("sm", ["sm89", "sm90", "sm100", "sm103", "sm120"])
+@pytest.mark.parametrize(
+    "kernel",
+    [
+        "moe_align_block_size_kernel",
+        "moe_sum_reduce_kernel",
+        # SGLang's Triton align (top-k numel <= 64) and sum-reduce
+        "_moe_align_small_numel_kernel",
+        "_moe_sum_reduce_kernel",
+    ],
+)
+def test_taxonomy_labels_moe_align_and_sum_reduce_as_moe_infra(pd, kernel, sm):
+    assert pd.kernel_role(kernel, sm) == ("sgl_kernel", "moe_infra")
 
 
 @pytest.mark.parametrize(
@@ -209,19 +229,51 @@ def test_customization_sms_scope(pd, monkeypatch):
     assert pd._cea(["-b"], "sm120") == ["-b"]
 
 
+def test_the_marlin_rescue_of_nvfp4_deepseek_v4_holds_on_sm90_only(pd):
+    """SGLang picks its NVFP4 runner for these checkpoints only while the runner is auto, on every
+    SM; a forced marlin on SM100 would record weight-only kernels where serving runs NVFP4."""
+    import yaml
+
+    targets = yaml.safe_load((COMPONENTS.parent / "targets.yaml").read_text())
+    entries = {}
+    for fam in targets["families"].values():
+        for ck in fam.get("checkpoints") or []:
+            entries[ck["repo"]] = (ck.get("cli_extra_args") or {}).get("sglang")
+        for repo, override in (fam.get("checkpoint_overrides") or {}).items():
+            entries[repo] = ((override or {}).get("cli_extra_args") or {}).get("sglang")
+    forced = {repo: v for repo, v in entries.items() if v and "marlin" in str(v)}
+    assert set(forced) == {
+        "nvidia/DeepSeek-V4-Pro-NVFP4",
+        "nvidia/DeepSeek-V4-Flash-NVFP4",
+        "nvidia/DeepSeek-V4.1-Flash-NVFP4",
+    }
+    for v in forced.values():
+        assert pd._cea(v, "sm90") == ["--generator-set", "params.agg.moe_backend=marlin"]
+        assert [pd._cea(v, sm) for sm in ("sm89", "sm100", "sm103", "sm120")] == [[], [], [], []]
+
+
+def test_customization_list_scopes_each_entry(pd):
+    """A list of entries applies each on its own SMs: DeepSeek-V4's page size holds on
+    every SM, its fp8_ds_mla KV only on Hopper (rc2 takes it off Hopper only at 256)."""
+    entries = [
+        {"args": ["--generator-set", "params.agg.tokens_per_block=128"], "fact": "f"},
+        {"args": ["--generator-set", "params.agg.kv_cache_dtype=fp8_ds_mla"], "fact": "f", "sms": ["sm90"]},
+    ]
+    assert pd._cea(entries, "sm90") == [
+        "--generator-set",
+        "params.agg.tokens_per_block=128",
+        "--generator-set",
+        "params.agg.kv_cache_dtype=fp8_ds_mla",
+    ]
+    assert pd._cea(entries, "sm100") == ["--generator-set", "params.agg.tokens_per_block=128"]
+
+
 def test_run_id_carries_the_system_and_kv(pd):
     ck = {"repo": "org/m", "profile": "fp8"}
     ids = {
         pd._run_id(ck, "v", "vllm", "0.30.0", 1, kv, sys) for kv in (None, "fp8") for sys in ("h200_sxm", "b200_sxm")
     }
     assert len(ids) == 4 and all(len(i) == 12 for i in ids)
-
-
-def test_attention_identity_uses_taxonomy_backend_labels(pd):
-    """The identity column shows the backend label, not an 80-char cubin name."""
-    assert pd.attn_identity_label("flash::FlashAttnFwdSm90<...>", "sm90") == "fa3"
-    unknown = "some_totally_unknown_kernel_name"
-    assert pd.attn_identity_label(unknown, "sm90") == pd.normalize_kernel(unknown)
 
 
 # --- golden render facts status + dummy adapter guard (sm120 V4.1 re-probe, 2026-10-01) ---

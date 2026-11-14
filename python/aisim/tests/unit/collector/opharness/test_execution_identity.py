@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Execution identity (review 2026-09-25 P1 #3): the run id names the CASE; the
-execution fingerprint names what actually shaped the run (engine invocation,
-dummy config, probe code, image, kv override). The spec carries it into the job and
---import-raws files a raw only when the job ran this emit's fingerprint."""
+"""Execution identity (review 2026-09-25 P1 #3): the run id names the CASE; the fingerprint
+names what one emit hands the job (image, probe script and arguments, every input file of the
+bundle). The spec carries it into the job and --import-raws files a raw only when the job ran
+this emit's fingerprint."""
 
 import importlib.util
 import os
@@ -27,82 +27,33 @@ def pd(tmp_path_factory):
     return mod
 
 
-RUN_SH = """#!/bin/bash
-engine_command=(python3 -m dynamo.vllm --model org/m --served-model-name org/m --tensor-parallel-size 1 --max-num-seqs 512 --max-num-batched-tokens {budget} --dump-config-to /results/resolved.json)
-"""  # noqa: E501
-
-
-def _plan_run(pd, tmp_path, budget, dummy_cfg='{"a": 1}'):
+def _run(pd, budget=6012, dummy_cfg='{"a": 1}', image="vllm/vllm-openai:v0.32.0"):
     ws = Path(pd.ROOT)
-    (ws / "archive" / "run_sh").mkdir(parents=True, exist_ok=True)
-    (ws / "dummy_models" / "generic" / "m__rep").mkdir(parents=True, exist_ok=True)
-    (ws / "dummy_models" / "generic" / "m__rep" / "config.json").write_text(dummy_cfg)
-    rsh = ws / "archive" / "run_sh" / f"r{budget}.sh"
-    rsh.write_text(RUN_SH.format(budget=budget))
-    return {
-        "id": "9d000f77e125",
-        "repo": "org/m",
-        "backend": "vllm",
-        "version": "0.29.0",
-        "image": "vllm/vllm-openai:v0.29.0",
-        "kv_dtype": None,
-        "cli_extra_args": [],
-        "run_sh": str(rsh),
-        "model_dir": f"{pd.WORK}/dummy_models/generic/m__rep",
-    }
-
-
-def test_review_p1_changed_token_budget_changes_the_fingerprint_not_the_id(pd, tmp_path):
-    a = _plan_run(pd, tmp_path, 6012)
-    b = _plan_run(pd, tmp_path, 6016)
-    assert a["id"] == b["id"]  # the CASE is the same
-    fa, fb = pd.exec_fingerprint(a), pd.exec_fingerprint(b)
-    assert fa["fingerprint"] != fb["fingerprint"] and fa["engine"] != fb["engine"]
-    assert fa["dummy"] == fb["dummy"]
-
-
-def test_dummy_and_image_are_part_of_the_fingerprint(pd, tmp_path):
-    a = _plan_run(pd, tmp_path, 6016)
-    fa = pd.exec_fingerprint(a)
-    b = _plan_run(pd, tmp_path, 6016, dummy_cfg='{"a": 2}')
-    assert pd.exec_fingerprint(b)["fingerprint"] != fa["fingerprint"]
-    c = dict(_plan_run(pd, tmp_path, 6016), image="vllm/vllm-openai:v0.30.0")
-    assert pd.exec_fingerprint(c)["fingerprint"] != fa["fingerprint"]
-
-
-def test_engine_tokens_drop_deployment_specific_values_only(pd):
-    toks = [
-        "--model",
-        "/work/dummy_models/x",
-        "--served-model-name=org/m",
-        "--tensor-parallel-size",
-        "1",
-        "--max-num-batched-tokens",
-        "6016",
-        "--dump-config-to",
-        "/results/r.json",
-    ]
-    assert pd.engine_tokens("vllm", toks) == ["--tensor-parallel-size", "1", "--max-num-batched-tokens", "6016"]
-
-
-def test_trtllm_engine_yaml_compared_semantically(pd, tmp_path):
-    ws = Path(pd.ROOT)
-    (ws / "archive" / "run_sh").mkdir(parents=True, exist_ok=True)
-    y = ws / "archive" / "run_sh" / "t.engine.yaml"
-    y.write_text("backend: pytorch\nmax_num_tokens: 4672\nkv_cache_config:\n  dtype: auto\n")
+    (ws / "dummy_models" / "m__rep").mkdir(parents=True, exist_ok=True)
+    (ws / "dummy_models" / "m__rep" / "config.json").write_text(dummy_cfg)
+    (ws / "inputs").mkdir(exist_ok=True)
+    (ws / "inputs" / "r.sh").write_text(f"engine_command=(python3 -m dynamo.vllm --max-num-batched-tokens {budget})\n")
     run = {
-        "id": "t",
-        "repo": "org/m",
-        "backend": "trtllm",
-        "version": "1.3.0rc23",
-        "image": "img",
-        "kv_dtype": None,
-        "cli_extra_args": [],
-        "render_artifact": str(y),
-        "model_dir": "",
+        "id": "9d000f77e125",
+        "image": image,
+        "probe_script": "probe_vllm.py",
+        "probe_args": ["--run-sh", f"{pd.WORK}/inputs/r.sh", "--model-override", f"{pd.WORK}/dummy_models/m__rep"],
+        "probe_env": {},
     }
-    a = pd.exec_fingerprint(run)["engine"]
-    y.write_text("max_num_tokens: 4672\nbackend: pytorch\nkv_cache_config: {dtype: auto}\n")
-    assert pd.exec_fingerprint(run)["engine"] == a  # formatting and key order never count
-    y.write_text("backend: pytorch\nmax_num_tokens: 4608\nkv_cache_config:\n  dtype: auto\n")
-    assert pd.exec_fingerprint(run)["engine"] != a
+    return pd.exec_fingerprint(run, ["inputs/r.sh", "dummy_models/m__rep"])
+
+
+def test_a_changed_token_budget_changes_the_fingerprint_not_the_id(pd):
+    """The rendered config is an input file of the bundle: the same case with another engine
+    budget is another emit."""
+    assert _run(pd) == _run(pd)
+    assert _run(pd, budget=6016) != _run(pd, budget=6012)
+
+
+def test_the_dummy_the_image_and_the_arguments_are_part_of_the_fingerprint(pd):
+    base = _run(pd)
+    assert _run(pd, dummy_cfg='{"a": 2}') != base
+    assert _run(pd, image="vllm/vllm-openai:v0.33.0") != base
+    run = {"image": "i", "probe_script": "probe_vllm.py", "probe_env": {}}
+    with_kv = pd.exec_fingerprint({**run, "probe_args": ["--kv-cache-dtype", "fp8"]}, [])
+    assert with_kv != pd.exec_fingerprint({**run, "probe_args": []}, [])

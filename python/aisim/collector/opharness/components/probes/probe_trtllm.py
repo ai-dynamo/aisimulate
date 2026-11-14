@@ -222,6 +222,10 @@ def vision_dummy_forward(model, model_dir: str, rec: dict, attr_names=("visual",
         rec["vision_probe"] = {"error": f"{type(e).__name__}: {e}"[:400]}
 
 
+# decode steps the profiled generate runs beyond the prefill (steady-state decode timing)
+DECODE_STEPS = 8
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -244,6 +248,11 @@ def main() -> None:
     )
     ap.add_argument(
         "--engine-yaml", default=None, help="generator-rendered extra_engine_args yaml (dynamo.trtllm contract)"
+    )
+    ap.add_argument(
+        "--framework-dummy",
+        action="store_true",
+        help="keep TRT-LLM's own U(-1e-3, 1e-3) float dummy weights (A/B only; default refills them, _dense_dummy)",
     )
     args = ap.parse_args()
     rec: dict = {"model_path": args.model, "errors": {}}
@@ -338,6 +347,13 @@ def main() -> None:
                 probe_overrides["max_seq_len"] = f"raised to {args.isl + 64} to fit the {args.isl}-token probe prompt"
                 kwargs["max_seq_len"] = args.isl + 64
             rec["probe_overrides"] = probe_overrides
+        # dense float dummy weights: the kernel times are the timing reference of the path gates
+        # (_dense_dummy explains how near-zero floats collapse the MoE routing)
+        rec["probe_framework_dummy"] = bool(args.framework_dummy)
+        if not args.framework_dummy:
+            import _dense_dummy
+
+            _dense_dummy.install_trtllm(rec)
         # unknown kwargs are drift facts (template ahead of / behind llmapi)
         rec["engine_yaml_unknown_args"] = []
         for _ in range(8):
@@ -422,15 +438,18 @@ def main() -> None:
                 return sorted(rows, key=lambda r: -r["us"])  # no count cap: identity evidence
 
             # TWO phases, like the vllm/sglang probes: the llmapi has no step()
-            # so prefill = a max_tokens=1 run; decode = what a max_tokens=2 run
-            # executes beyond it (per-kernel launch/time difference)
+            # so prefill = a max_tokens=1 run; decode = what a longer run executes
+            # beyond it (per-kernel launch/time difference), over DECODE_STEPS steps
+            # so the first, just-after-prefill step weighs 1/DECODE_STEPS of the
+            # per-launch time (a single step timed a slow state, 2026-11-09)
             _kw = dict(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
             with profile(**_kw) as p1:
                 llm.generate(prompt, SamplingParams(max_tokens=1))
                 torch.cuda.synchronize()
             with profile(**_kw) as p2:
-                llm.generate(prompt, SamplingParams(max_tokens=2))
+                llm.generate(prompt, SamplingParams(max_tokens=1 + DECODE_STEPS, ignore_eos=True))
                 torch.cuda.synchronize()
+            rec["probe_decode_steps"] = {"warm": 0, "timed": DECODE_STEPS}
             pre = _table(p1)
             both = {r["kernel"]: r for r in _table(p2)}
             pre_by = {r["kernel"]: r for r in pre}

@@ -9,7 +9,18 @@
 # `no_serving` names SMs where serving cannot run the model at all (a serving fact, not a
 # plan fact); `also` traces further planned cases into the same verdict; `env` is a
 # capture-only switch the collector reads; `isl` grades against a serving record probed at
-# that prompt length (default 4096; a prefill case's length must match it).
+# that prompt length (default 4096; a prefill case's length must match it); `row` picks the
+# row serving runs (index in plan order) of a case the plan runs as several.
+# `ungated` gives the reason a registry op (or op:phase) has no gate; every other registry op
+# of a backend needs a gate naming it, one per planned phase (gates.uncovered).
+ungated:
+  compute_scale: deviation note in collector/vllm/collect_computescale.py; no serving instance to gate
+  mhc_module: measures the no-norm mhc_pre by contract (the SDK bills attn_norm); serving fuses the norm
+  dsa_context_module_skip_indexer: the sglang dsa_context_module path without the indexer
+  dsa_generation_module_skip_indexer: the sglang dsa_generation_module path without the indexer
+  dsv4_csa_topk_calib: calibration helper, not a serving op
+  dsv41_module: the native runner times TP ranks in spawned processes; probe.trace_case refuses it
+  kda:verify: the serving probe runs no speculative decoding
 gates:
 - gate: gemm_fp8block_DeepSeek-V3.2
   backend: vllm
@@ -190,6 +201,51 @@ gates:
       fp8; no serving record can exist'}
   repo: deepseek-ai/DeepSeek-V3.2
   kv: fp8
+- gate: gemm_nvfp4_DeepSeek-V3.1-NVFP4
+  backend: vllm
+  op: gemm
+  select: {gemm_type: nvfp4, m: 4096, n: 7168, k: 16384}
+  also:
+  - op: gemm
+    select: {gemm_type: nvfp4, m: 1, n: 7168, k: 16384}
+  repo: nvidia/DeepSeek-V3.1-NVFP4
+  kv: auto
+- gate: gemm_nvfp4_DeepSeek-V3.1-NVFP4
+  backend: sglang
+  op: gemm
+  select: {gemm_type: nvfp4, m: 4096, n: 7168, k: 16384}
+  also:
+  - op: gemm
+    select: {gemm_type: nvfp4, m: 1, n: 7168, k: 16384}
+  repo: nvidia/DeepSeek-V3.1-NVFP4
+  kv: auto
+- gate: gemm_nvfp4_DeepSeek-V3.1-NVFP4
+  backend: trtllm
+  op: gemm
+  select: {gemm_type: nvfp4, m: 4096, n: 7168, k: 16384}
+  also:
+  - op: gemm
+    select: {gemm_type: nvfp4, m: 1, n: 7168, k: 16384}
+  repo: nvidia/DeepSeek-V3.1-NVFP4
+  kv: auto
+- gate: gemm_bf16_Llama-3.1-8B
+  backend: sglang
+  op: gemm
+  select: {gemm_type: bfloat16, m: 4096, n: 4096, k: 4096}
+  also:
+  - op: gemm
+    select: {gemm_type: bfloat16, m: 1, n: 4096, k: 4096}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
+- gate: gemm_bf16_Llama-3.1-8B
+  backend: trtllm
+  op: gemm
+  select: {gemm_type: bfloat16, m: 4096, n: 4096, k: 4096}
+  also:
+  - op: gemm
+    select: {gemm_type: bfloat16, m: 1, n: 4096, k: 4096}
+  repo: meta-llama/Meta-Llama-3.1-8B
+  kv: auto
 - gate: kda_gen_Kimi-K3
   backend: vllm
   op: kda
@@ -577,4 +633,63 @@ gates:
   select: {model_path: MiniMaxAI/MiniMax-M3, seq_len: 4096, batch_size: 1, num_heads: 64, kv_cache_dtype: bfloat16, compute_dtype: bfloat16, gemm_type: bfloat16,
     prefix_len: 0}
   repo: MiniMaxAI/MiniMax-M3
+  kv: auto
+- gate: moe_nvfp4_DeepSeek-V3.1-NVFP4
+  backend: vllm
+  op: moe
+  select: {moe_type: nvfp4, model_name: nvidia/DeepSeek-V3.1-NVFP4, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  repo: nvidia/DeepSeek-V3.1-NVFP4
+  kv: auto
+- gate: moe_nvfp4_DeepSeek-V3.1-NVFP4
+  backend: sglang
+  op: moe
+  select: {moe_type: nvfp4, model_name: nvidia/DeepSeek-V3.1-NVFP4, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  repo: nvidia/DeepSeek-V3.1-NVFP4
+  kv: auto
+- gate: moe_nvfp4_DeepSeek-V3.1-NVFP4
+  backend: trtllm
+  op: moe
+  select: {moe_type: nvfp4, model_name: nvidia/DeepSeek-V3.1-NVFP4, hidden_size: 7168, inter_size: 2048, topk: 8, num_experts: 256, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  # SM100/103 plan the case twice, min_latency_mode False then True; serving's default
+  # config enables no min-latency mode, so the gate traces row 0
+  row: 0
+  repo: nvidia/DeepSeek-V3.1-NVFP4
+  kv: auto
+- gate: moe_bf16_gemma4-26B-A4B
+  backend: sglang
+  op: moe
+  select: {moe_type: bfloat16, model_name: google/gemma-4-26B-A4B, hidden_size: 2816, inter_size: 704, topk: 8, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  repo: google/gemma-4-26B-A4B
+  kv: auto
+- gate: moe_mxfp4_gpt-oss-120b
+  backend: sglang
+  op: moe
+  select: {moe_type: w4a16_mxfp4, model_name: openai/gpt-oss-120b, hidden_size: 2880, inter_size: 2880, topk: 4, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  repo: openai/gpt-oss-120b
+  kv: auto
+# SM100 and newer serve GPT-OSS with MXFP8 activations (collector/skips.py): the W4A8 case
+- gate: moe_w4a8mxfp4_gpt-oss-120b
+  backend: sglang
+  op: moe
+  select: {moe_type: w4a8_mxfp4_mxfp8, model_name: openai/gpt-oss-120b, hidden_size: 2880, inter_size: 2880, topk: 4, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  repo: openai/gpt-oss-120b
+  kv: auto
+- gate: moe_bf16_gemma4-26B-A4B
+  backend: trtllm
+  op: moe
+  select: {moe_type: bfloat16, model_name: google/gemma-4-26B-A4B, hidden_size: 2816, inter_size: 704, topk: 8, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  repo: google/gemma-4-26B-A4B
+  kv: auto
+- gate: moe_mxfp4_gpt-oss-120b
+  backend: trtllm
+  op: moe
+  select: {moe_type: w4a16_mxfp4, model_name: openai/gpt-oss-120b, hidden_size: 2880, inter_size: 2880, topk: 4, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  repo: openai/gpt-oss-120b
+  kv: auto
+# SM100 and newer serve GPT-OSS with MXFP8 activations (collector/skips.py): the W4A8 case
+- gate: moe_w4a8mxfp4_gpt-oss-120b
+  backend: trtllm
+  op: moe
+  select: {moe_type: w4a8_mxfp4_mxfp8, model_name: openai/gpt-oss-120b, hidden_size: 2880, inter_size: 2880, topk: 4, num_experts: 128, tp: 1, ep: 1, distribution: balanced, num_tokens: [1, 4096]}
+  repo: openai/gpt-oss-120b
   kv: auto

@@ -114,6 +114,11 @@ def find_torch_model(root, max_depth: int = 8):
     return best[0] if best else None
 
 
+# decode steps run before the profiled ones, and profiled ones (steady-state decode timing)
+DECODE_WARM_STEPS = 3
+DECODE_TIMED_STEPS = 4
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-sh", required=True)
@@ -141,6 +146,11 @@ def main() -> None:
         "--eager",
         action="store_true",
         help="force enforce_eager (A/B only; default runs the framework's own compile/graph mode)",
+    )
+    ap.add_argument(
+        "--framework-dummy",
+        action="store_true",
+        help="keep vLLM's own near-zero low-bit dummy weights (A/B only; default refills them densely, _dense_dummy)",
     )
     args = ap.parse_args()
 
@@ -268,6 +278,13 @@ def main() -> None:
         from torch.profiler import ProfilerActivity
         from torch.profiler import profile as _profile
 
+        # dense low-bit dummy weights: the kernel times are the timing reference of the
+        # path gates (_dense_dummy explains why vLLM's own dummy draw is not)
+        rec["probe_framework_dummy"] = bool(args.framework_dummy)
+        if not args.framework_dummy:
+            import _dense_dummy
+
+            _dense_dummy.install_vllm(rec)
         with _profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as _p_init:
             engine = LLMEngine.from_engine_args(ea)
         try:
@@ -429,10 +446,22 @@ def main() -> None:
             # TWO phases, both profiled: prefill kernels (indexer quant/rope,
             # context attention) are DIFFERENT from decode's — excluding
             # prefill from the profile blinded the path-alignment gate
-            engine.add_request("probe0", prompt, SamplingParams(max_tokens=2, temperature=0))
+            # decode is timed in steady state: a few unprofiled steps first, then several profiled
+            # ones. A single step right after the 4096-token prefill timed kernels in a slow,
+            # just-after-heavy-work state (a 1-token routing kernel 2.3x its steady time, moe timing
+            # round 2026-11-09) — the collector's first-point warm-up exists for the same reason.
+            engine.add_request(
+                "probe0",
+                prompt,
+                SamplingParams(max_tokens=1 + DECODE_WARM_STEPS + DECODE_TIMED_STEPS, temperature=0, ignore_eos=True),
+            )
             with profile(**_prof_kw) as p_pre:
                 engine.step()  # prefill
                 torch.cuda.synchronize()
+            for _ in range(DECODE_WARM_STEPS):
+                engine.step()
+            torch.cuda.synchronize()
+            rec["probe_decode_steps"] = {"warm": DECODE_WARM_STEPS, "timed": DECODE_TIMED_STEPS}
             with profile(**_prof_kw) as p:
                 while engine.has_unfinished_requests():
                     engine.step()

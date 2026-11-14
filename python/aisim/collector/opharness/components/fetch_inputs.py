@@ -57,12 +57,12 @@ def _get(url: str, token: str | None, binary: bool = False):
     return data if binary else data.decode("utf-8")
 
 
-_SDK_CONFIGS = Path(__file__).resolve().parents[3] / "src" / "aisimulate_core" / "model_configs"
+_SDK_CONFIGS = Path(__file__).resolve().parents[3] / "src" / "aisim_core" / "model_configs"
 
 
 def _bundled_fallback(repo: str, configs: Path, reason: str) -> dict | None:
     """Gated or vanished repos: this checkout ships the SDK's copy of the HF
-    config (src/aisimulate_core/model_configs/<org>--<name>_config.json, plus
+    config (src/aisim_core/model_configs/<org>--<name>_config.json, plus
     the hf_quant config when the artifact has one). Use it, say so in
     configs/aux_files/<tag>/PROVENANCE.json, and leave the tokenizer to
     dummies.py (targets `tokenizer_from` / a sibling artifact) — every

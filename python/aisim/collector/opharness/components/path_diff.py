@@ -11,12 +11,15 @@ a campaign (probe_driver.py). Both kernel sets go through the ONE vocabulary
 (kernel_taxonomy.yaml rules for that SM); components/gates.py calls diff() for every gate.
 
   aligned              every collector kernel of the gate's target roles name-matches a
-                       serving kernel of that role, and the collector launched no
-                       target-role backend family serving did not (subset relation: the
-                       collector exercises one op, serving runs the whole model)
+                       serving kernel of that role, the collector launched no target-role
+                       backend family serving did not (subset relation: the collector
+                       exercises one op, serving runs the whole model), and every other
+                       kernel of the timed runs is one serving runs. A kernel that differs
+                       from serving's only in its tactic (tile, stages) is the same path:
+                       it is listed under tactic_drift and does not diverge the gate
   diverged             a target role the collector ran is absent from serving, a
-                       collector-only backend family inside a target role, or kernel drift
-                       inside a role
+                       collector-only backend family inside a target role, kernel drift
+                       inside a role, or auxiliary work in the timed runs serving never does
   unlabeled-kernels    the capture ran kernels the vocabulary cannot label on this SM
   no-collector-signal  the capture ran no kernel of any target role
   invalid-capture      the capture itself failed
@@ -45,7 +48,8 @@ def _kv_equiv(a, b):
 # linear_attention, dsa_indexer, quant, mhc, routing, kvcache, norm_rope, infra, ...); the
 # gate's target roles (gates.gate_target, from its op) say which kernels are the evidence and
 # which are auxiliary work. Auxiliary overlap (a shared quant kernel next to two different
-# GEMMs) never carries a verdict (review 2026-09-25 P1).
+# GEMMs) never proves a gate (review 2026-09-25 P1), but auxiliary work serving never does
+# fails it: the row pays for it (aux_drift below).
 # roles that are never a target: they are the glue around every op
 _NEVER_TARGET = frozenset({"infra", "kvcache", "norm_rope", "activation", "moe_infra"})
 
@@ -62,10 +66,11 @@ _EQUIV_RULES = (
     ("moe_gemm", r"^(nvjet_sm\d+_\w+?)_\d[\w]*?_([A-Z]{3})$", r"\1_\2"),
     ("gemm", r"_tilesize\d+x\d+x\d+\S*", ""),  # xmma tile
     ("gemm", r"_\d+x\d+x\d+(x\d+)?(_|$)", r"\2"),  # cutlass tile shapes
+    ("gemm", r"_cta\d+x\d+x\d+_2cta\d", ""),  # CuTe DSL tile + 2-CTA cluster (SGLang TGV)
     # sgl_kernel DSA top-k selection dispatches on batch size (small_batch vs
     # main): one op, two instantiations — the probe's decode batch is small,
     # the collector's case batch is not
-    ("dsa_indexer", r"^topk_(main|small_batch)_kernel$", "topk_kernel"),
+    ("dsa_indexer", r"^(sglang::)?topk_(main|small_batch(_cluster)?)_kernel$", "topk_kernel"),
     # flashinfer -> TRT-LLM FMHA cubins (Blackwell dense attention / MLA decode): the family is
     # (sm, qkv dtypes, head dims, paged-kv kind, PAGE SIZE); the tail — HVPerCta<n>, MultiCtasKv[Cga],
     # VarSeqQ<n>Kv<n>, Persistent/Static/Grouped/SwapsAbForGen — is the tile/CTA split the runtime picks
@@ -88,7 +93,23 @@ def equiv_key(kernel: str, role: str | None) -> str:
     return k
 
 
-def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
+# A tactic is the instantiation a tuner or heuristic picks for a shape: a tile, a stage count,
+# a cluster or load scheme. Two kernels that differ only in it run the same path; near-ties
+# flip between runs (TRT-LLM-gen MoE at 4096 tokens, 2026-11-08), so a tactic never diverges
+# a gate. TRT-LLM-gen batched GEMMs name it after their dtypes (bmm_E4m3_..._Fp32 then
+# _t128x64x128u2_s6_et64x64_m64x64x32_c1x1x1_...); Triton tiles and cute-DSL parameters are
+# stripped at normalization already (probe_driver.normalize_kernel).
+_TACTIC_RULES = ((re.compile(r"^(bmm_\w+?)_t\d+x\d+x\d+\w*$"), r"\1"),)
+
+
+def tactic_key(kernel: str, role: str | None) -> str:
+    k = equiv_key(kernel, role)
+    for rx, rep in _TACTIC_RULES:
+        k = rx.sub(rep, k)
+    return k
+
+
+def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of, col_measured=None, srv_every=None) -> dict:
     """The verdict rule, pure (unit-tested in tests/unit/collector/opharness).
 
     col_kernels / srv_kernels: normalized CUDA kernel names of
@@ -96,15 +117,24 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
     target_roles: the op roles this gate must prove; None = every labeled
     non-glue role the collector executed (unscoped gate, recorded as such).
     role_of(kernel) -> (backend, role) | None, from the taxonomy.
+    col_measured: the kernels of the collector's timed runs alone; when given they
+    replace col_kernels for every check (None: the capture did not record them,
+    the timed range is graded and auxiliary work goes unchecked).
+    srv_every: every serving kernel, any phase (default srv_kernels).
+    Kernel drift that is only a tactic (tactic_key matches a serving kernel of the role) is
+    reported under tactic_drift and does not diverge the gate.
 
       aligned              every collector kernel of every target role name-
-                           matches a serving kernel of the same role, and the
+                           matches a serving kernel of the same role, the
                            collector launched no target-role backend family
-                           serving did not
+                           serving did not, and every other kernel of its timed
+                           runs name-matches a serving kernel of its role
       diverged             a target role the collector ran is absent from
                            serving (wrong phase/op), a collector-only backend
-                           family inside a target role, or kernel drift inside
-                           a role (same family, different kernel)
+                           family inside a target role, kernel drift inside
+                           a role (same family, different kernel), or a timed-
+                           run kernel outside the target roles serving never
+                           launches (aux_drift)
       unlabeled-kernels    the capture ran kernels kernel_taxonomy.yaml cannot label on this
                            SM: label them before the gate can pass
       no-collector-signal  the capture executed no kernel of any target role:
@@ -121,6 +151,11 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
                 out.setdefault(hit[1], {})[k.split("<")[0]] = hit[0]
         return out
 
+    # The timed runs alone are what the row pays for; a warmup's one-time work (a DeepGEMM
+    # scale pack on the first call, autotune candidates) is in the timed range but not in them.
+    # Without them (an older trace), the whole timed range stands in.
+    if col_measured:
+        col_kernels = col_measured
     col_roles, srv_roles = by_role(col_kernels), by_role(srv_kernels)
     if target_roles is None:
         target_roles = tuple(sorted(r for r in col_roles if r not in _NEVER_TARGET))
@@ -131,7 +166,7 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
         sk2 = {eq(s) for s in sk}
         return {c for c in ck if any(eq(c) in s or s in eq(c) for s in sk2)}
 
-    evidence, drift, missing_roles, only_col = {}, {}, [], []
+    evidence, drift, tactic_drift, missing_roles, only_col = {}, {}, {}, [], []
     for role, ck in col_target.items():
         sk = srv_roles.get(role, {})
         if not sk:
@@ -141,13 +176,32 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
         hits = name_hits(set(ck), set(sk), role)
         misses = sorted(set(ck) - hits)
         if misses:
-            drift[role] = {"collector_only_kernels": misses, "serving_kernels": sorted(sk)}
+            srv_tactics = {tactic_key(k, role) for k in sk}
+            if all(tactic_key(k, role) in srv_tactics for k in misses):
+                tactic_drift[role] = {"collector_only_kernels": misses, "serving_kernels": sorted(sk)}
+            else:
+                drift[role] = {"collector_only_kernels": misses, "serving_kernels": sorted(sk)}
         fam_only = sorted(set(ck.values()) - set(sk.values()))
         if fam_only:
             only_col.extend(f"{role}:{b}" for b in fam_only)
         evidence[role] = {"collector": sorted(ck), "serving": sorted(sk), "matched": sorted(hits)}
-    # auxiliary roles the collector ran that serving did not: information, not a verdict
-    aux_only = sorted(r for r in col_roles if r not in target_roles and r not in _NEVER_TARGET and r not in srv_roles)
+    # Auxiliary work the row pays for (review 2026-11-08): a kernel of the timed runs outside the
+    # target roles must be one serving launches, in any phase, under the same role. The vLLM B200
+    # fp8_block rows timed an inductor-compiled activation quant and a DeepGEMM fp32->ue8m0 scale
+    # pack where serving runs one CUDA quant (7-28% slower rows); a gemm-only gate passed them.
+    # Only the timed runs count: the warmups' one-time work (JIT, autotune inputs) is not paid
+    # per call.
+    aux_drift = None
+    if col_measured:
+        every = by_role(srv_kernels if srv_every is None else srv_every)
+        aux: dict = {}
+        for k in col_measured:
+            hit = role_of(k)
+            if hit is None or hit[1] in target_roles:
+                continue
+            if not name_hits({k.split("<")[0]}, set(every.get(hit[1], {})), hit[1]):
+                aux.setdefault(hit[1], []).append(k.split("<")[0])
+        aux_drift = {r: sorted(v) for r, v in sorted(aux.items())}
     # a kernel the vocabulary cannot name has no role, so it would be invisible to the rule above:
     # an op whose own kernels are unlabeled (the Blackwell flashinfer GDN cubins under the sm100
     # rules, 2026-11-06) passed on its conv1d alone
@@ -157,7 +211,7 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
     elif not col_target:
         verdict = "unlabeled-kernels" if unlabeled else "no-collector-signal"
     else:
-        verdict = "aligned" if not (missing_roles or drift or only_col) else "diverged"
+        verdict = "diverged" if (missing_roles or drift or only_col or aux_drift) else "aligned"
         if verdict == "aligned" and unlabeled:
             verdict = "unlabeled-kernels"
     return {
@@ -166,8 +220,11 @@ def grade(col_kernels, srv_kernels, target_roles, cap_error, role_of) -> dict:
         "only_col": sorted(only_col),
         "missing_roles": missing_roles,
         "kernel_drift": drift or None,
+        # same kernel, another tactic: a diagnostic, never a divergence
+        "tactic_drift": tactic_drift or None,
         "role_evidence": evidence,
-        "aux_collector_only_roles": aux_only,
+        # None: the capture carries no timed-run kernels, so auxiliary work was not checked
+        "aux_drift": aux_drift,
         "unlabeled_kernels": unlabeled,
     }
 
@@ -197,10 +254,11 @@ def select_serving(record: dict, phase: str | None) -> tuple[set, bool]:
 
 def load_collector_side(files) -> dict:
     """The collector side of a gate: the ``probe_trace_case.json`` of each of its cases
-    (``{"result": {"kernels", "error", "env", "row", ...}}``). A gate's ``also`` cases union
-    their kernels; the first error wins."""
+    (``{"result": {"kernels", "measured_kernels", "error", "env", "row", ...}}``). A gate's
+    ``also`` cases union their kernels; the first error wins; the timed-run kernels are None
+    unless every case recorded them."""
     files = [files] if isinstance(files, (str, Path)) else list(files)
-    kernels, errors, cmds, envs = set(), [], [], {}
+    kernels, measured, errors, cmds, envs = set(), set(), [], [], {}
     for f in files:
         doc = json.loads(Path(f).read_text())
         part = doc.get("result") or {}
@@ -208,7 +266,17 @@ def load_collector_side(files) -> dict:
         cmds.append(f"probe.{doc.get('probe')} {part.get('op')} {part.get('row')}")
         envs.update(part.get("env") or {})
         kernels.update(part.get("kernels") or [])
-    return {"kernels": sorted(kernels), "error": next((e for e in errors if e), None), "cmd": cmds, "env": envs or None}
+        if measured is not None and part.get("measured_kernels") is not None:
+            measured.update(part["measured_kernels"])
+        else:
+            measured = None
+    return {
+        "kernels": sorted(kernels),
+        "measured": None if measured is None else sorted(measured),
+        "error": next((e for e in errors if e), None),
+        "cmd": cmds,
+        "env": envs or None,
+    }
 
 
 def serving_records(
@@ -271,9 +339,23 @@ def diff(
             f"(tp={serving['runtime'].get('tp')} kv={serving['runtime'].get('kv_cache_dtype')})",
             file=sys.stderr,
         )
+    col_measured = (
+        None
+        if cap["measured"] is None
+        else sorted({n for k in cap["measured"] if (n := probe_driver.normalize_kernel(k))})
+    )
     srv_kernels, phase_scoped = select_serving(serving, phase)
     srv_backends, _ = probe_driver.label_kernels(srv_kernels, sm)
-    g = grade(col_kernels, srv_kernels, target_roles, cap.get("error"), lambda k: probe_driver.kernel_role(k, sm))
+    role_of = lambda k: probe_driver.kernel_role(k, sm)
+    g = grade(
+        col_kernels,
+        srv_kernels,
+        target_roles,
+        cap.get("error"),
+        role_of,
+        col_measured,
+        select_serving(serving, None)[0],
+    )
     files = [capture_files] if isinstance(capture_files, (str, Path)) else list(capture_files)
     report = {
         "verdict": g["verdict"],
@@ -295,8 +377,9 @@ def diff(
         "missing_roles": g["missing_roles"],
         "collector_only_signal": g["only_col"],
         "kernel_drift": g["kernel_drift"],
+        "tactic_drift": g["tactic_drift"],
         "role_evidence": g["role_evidence"],
-        "aux_collector_only_roles": g["aux_collector_only_roles"],
+        "aux_drift": g["aux_drift"],
         "unlabeled_kernels": g["unlabeled_kernels"],
         "serving_record": {
             "id": serving["id"],

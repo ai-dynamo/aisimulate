@@ -170,6 +170,7 @@ def test_traced_child_runs_the_code_and_records_its_kernels(monkeypatch, tmp_pat
     assert done.value.code == 0 and marker.read_text() == "ok"
     (record,) = [json.loads(p.read_text()) for p in (tmp_path / "kernels").glob("child_*.json")]
     assert record["kernels"] == ["sparse_mla_kernel"] and record["timed"] is False and record["status"] == 0
+    assert record["measured"] is None
 
 
 def test_only_kernels_inside_the_timed_range_count(monkeypatch, tmp_path):
@@ -188,7 +189,31 @@ def test_only_kernels_inside_the_timed_range_count(monkeypatch, tmp_path):
     ]
     _fake_torch(monkeypatch, events)
     prof = types.SimpleNamespace(events=lambda: events)
-    assert _traced_child.kernel_names(prof) == (["fmhaSm100fKernel"], True)
+    assert _traced_child.kernel_names(prof) == (["fmhaSm100fKernel"], True, None)
+
+
+def test_the_measured_range_keeps_only_the_timed_runs(monkeypatch, tmp_path):
+    """The warmups' one-time work (an autotuner's random inputs) is timed-range work the row never
+    pays per call; the measured range inside it keeps the replayed kernels alone."""
+    from collector import helper
+    from collector.probes import _traced_child
+
+    assert helper.TRACE_MEASURED_RANGE == _traced_child.MEASURED_RANGE
+    events = [
+        _Event(helper.TRACE_TIMED_RANGE, "cpu", start=10.0, end=20.0),
+        _Event("distribution_elementwise_grid_stride_kernel", start=11.0),  # warmup: autotune inputs
+        _Event("fmhaSm100fKernel", start=12.0),
+        _Event(helper.TRACE_MEASURED_RANGE, "cpu", start=15.0, end=19.0),
+        _Event(helper.TRACE_MEASURED_RANGE, start=15.5, end=18.0, annotation=True),
+        _Event("fmhaSm100fKernel", start=16.0),
+    ]
+    _fake_torch(monkeypatch, events)
+    prof = types.SimpleNamespace(events=lambda: events)
+    assert _traced_child.kernel_names(prof) == (
+        ["distribution_elementwise_grid_stride_kernel", "fmhaSm100fKernel"],
+        True,
+        ["fmhaSm100fKernel"],
+    )
 
 
 @pytest.mark.parametrize("child_timed, expect", [(True, ["child_attn"]), (False, ["child_attn", "parent_gemm"])])
@@ -203,6 +228,7 @@ def test_trace_case_includes_the_kernels_of_measurement_children(monkeypatch, tm
         child_dir = Path(os.environ[helper.TRACE_CHILD_DIR_ENV])
         child_dir.mkdir(parents=True, exist_ok=True)
         record = {"kernels": ["child_attn"], "timed": child_timed, "status": 0}
+        record["measured"] = ["child_attn"] if child_timed else None
         (child_dir / "child_1.json").write_text(json.dumps(record))
 
     entry = types.SimpleNamespace(perf_filename="mla_perf.txt", extra_perf_filenames=(), run_kwargs=None)
@@ -212,6 +238,7 @@ def test_trace_case_includes_the_kernels_of_measurement_children(monkeypatch, tm
     monkeypatch.delenv(helper.TRACE_CHILD_DIR_ENV, raising=False)
     out = trace_case.run({"backend": "sglang", "op": "mla_context_module"}, tmp_path)
     assert out["kernels"] == expect and out["timed_only"] is child_timed and out["measurement_children"] == 1
+    assert out["measured_kernels"] == (["child_attn"] if child_timed else None)
     assert helper.TRACE_CHILD_DIR_ENV not in os.environ  # restored after the probe
 
 
@@ -228,6 +255,17 @@ def test_planned_row_narrows_a_sweep_field_to_a_subset_of_its_planned_values():
     case_row = trace_case.planned_row("vllm", "gdn", 100, **gdn)
     assert [1] in [list(x) for x in case_row if isinstance(x, (list, tuple))]
     assert [4096] in [list(x) for x in case_row if isinstance(x, (list, tuple))]
+
+
+def test_planned_row_picks_one_row_of_a_case_planned_as_several():
+    moe = dict(moe_type="nvfp4", model_name="nvidia/DeepSeek-V3.1-NVFP4", hidden_size=7168, inter_size=2048)
+    moe.update(topk=8, num_experts=256, tp=1, ep=1, distribution="balanced", num_tokens="1+4096")
+    with pytest.raises(ValueError, match="runs as 2 rows; name one with row"):
+        trace_case.planned_row("trtllm", "moe", 100, **moe)  # min_latency_mode False and True
+    default, min_latency = (trace_case.planned_row("trtllm", "moe", 100, row=i, **moe) for i in ("0", 1))
+    assert False in default and True in min_latency and list(default[1]) == [1, 4096]
+    with pytest.raises(ValueError, match="no row 2"):
+        trace_case.planned_row("trtllm", "moe", 100, row=2, **moe)
 
 
 def test_trace_case_sets_env_arguments_for_the_run_only(monkeypatch, tmp_path):
@@ -249,9 +287,34 @@ def test_trace_case_sets_env_arguments_for_the_run_only(monkeypatch, tmp_path):
 
 
 def test_trace_case_refuses_a_release_the_op_does_not_pin(monkeypatch, tmp_path):
-    """vLLM gemm is pinned to 0.31.0 next to a 0.30.0 default: traced in the default image, the
+    """vLLM gemm has a family pin next to the 0.30.0 default: traced in the default image, the
     gate compared another release's kernels than the table's."""
     _fake_torch(monkeypatch, [_Event("gemm_kernel")])
     monkeypatch.setattr(trace_case, "installed_version", lambda backend: "0.30.0")
-    with pytest.raises(RuntimeError, match=r"requires exactly 0\.31\.0, found 0\.30\.0"):
+    with pytest.raises(RuntimeError, match=r"requires exactly (?!0\.30\.0)\d+\.\d+\.\d+, found 0\.30\.0"):
         trace_case.run({"backend": "vllm", "op": "gemm", "m": "1"}, tmp_path)
+
+
+def test_measured_timing_gives_one_kernel_table_per_timed_point(monkeypatch):
+    """A timed gate compares the per-launch device time of each benchmark_with_power call (one
+    per swept point) with serving's at the matching shape."""
+    from collector import helper
+    from collector.probes import _traced_child
+
+    events = [
+        _Event(helper.TRACE_MEASURED_RANGE, "cpu", start=10.0, end=20.0),
+        _Event("fc_kernel", start=11.0, end=13.0),
+        _Event("fc_kernel", start=14.0, end=16.5),
+        _Event("Memcpy DtoD (Device -> Device)", start=17.0),
+        _Event("fc_kernel", start=25.0, end=26.0),  # between the windows: the next warm-up
+        _Event(helper.TRACE_MEASURED_RANGE, "cpu", start=30.0, end=40.0),
+        _Event(helper.TRACE_MEASURED_RANGE, start=30.5, end=39.0, annotation=True),
+        _Event("fc_kernel", start=31.0, end=41.0),
+    ]
+    _fake_torch(monkeypatch, events)
+    prof = types.SimpleNamespace(events=lambda: events)
+    assert _traced_child.measured_timing(prof) == [
+        {"fc_kernel": {"us": 4.5, "launches": 2}},
+        {"fc_kernel": {"us": 10.0, "launches": 1}},
+    ]
+    assert _traced_child.measured_timing(types.SimpleNamespace(events=lambda: events[1:5])) is None

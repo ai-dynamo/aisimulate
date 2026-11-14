@@ -145,6 +145,11 @@ def vision_dummy_forward(model, model_dir: str, rec: dict, attr_names=("visual",
         rec["vision_probe"] = {"error": f"{type(e).__name__}: {e}"[:400]}
 
 
+# decode steps run before the profiled ones, and profiled ones (steady-state decode timing)
+DECODE_WARM_STEPS = 3
+DECODE_TIMED_STEPS = 4
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -200,6 +205,11 @@ def main() -> None:
         help="capture Python call stacks per kernel (verbose kineto; "
         "slower and it has broken tvm_ffi kernels); kernels+spans "
         "are captured either way",
+    )
+    ap.add_argument(
+        "--framework-dummy",
+        action="store_true",
+        help="keep SGLang's own near-zero low-bit dummy weights (A/B only; default refills them densely, _dense_dummy)",
     )
     args = ap.parse_args()
 
@@ -349,7 +359,10 @@ def main() -> None:
                     initialize_mamba_selective_state_update_backend()
             except Exception as _e:
                 rec.setdefault("init_warnings", []).append(f"mamba_ssu_backend: {type(_e).__name__}")
-            for _fn in ("initialize_fp8_gemm_config", "initialize_fp4_gemm_config"):
+            # all three, as scheduler.py:1010-1013 (0.5.23) does: without the bf16 one the
+            # probe served SM100 bf16 linears on cuBLAS while serving runs the CuTe DSL lane
+            # ("auto" -> cutedsl, unquant.py initialize_bf16_gemm_config) (2026-11-08)
+            for _fn in ("initialize_fp8_gemm_config", "initialize_bf16_gemm_config", "initialize_fp4_gemm_config"):
                 try:
                     _f = getattr(__import__("sglang.benchmark.one_batch", fromlist=[_fn]), _fn)
                     _f(sa) if _inspect.signature(_f).parameters else _f()
@@ -363,6 +376,13 @@ def main() -> None:
             except Exception:
                 pass
 
+            # dense low-bit dummy weights: the kernel times are the timing reference of the
+            # path gates (_dense_dummy explains why SGLang's own dummy draw is not)
+            rec["probe_framework_dummy"] = bool(args.framework_dummy)
+            if not args.framework_dummy:
+                import _dense_dummy
+
+                _dense_dummy.install_sglang(rec)
             ret, _tok = load_model(sa, PortArgs.init_new(sa), 0, 0)
             # 0.5.16 wraps ModelRunner in _TorchBenchRunner(.torch_runner)
             model_runner = getattr(ret, "torch_runner", ret)
@@ -599,9 +619,16 @@ def main() -> None:
             trace["prefill_kernels"] = kernel_table(p1)
             trace["prefill_api"] = api_kernel_map(p1)
             try:
+                # decode in steady state: unprofiled steps first, then several profiled ones (a
+                # single step right after the prefill timed a slow just-after-heavy-work state)
                 next_ids, batch = out[0], out[-1]
+                for _ in range(DECODE_WARM_STEPS):
+                    next_ids, _ = ret.decode(next_ids, batch)
+                torch.cuda.synchronize()
+                rec["probe_decode_steps"] = {"warm": DECODE_WARM_STEPS, "timed": DECODE_TIMED_STEPS}
                 with profile(**_prof_kw) as p2:
-                    ret.decode(next_ids, batch)
+                    for _ in range(DECODE_TIMED_STEPS):
+                        next_ids, _ = ret.decode(next_ids, batch)
                     torch.cuda.synchronize()
                 trace["decode_kernels"] = kernel_table(p2)
                 trace["decode_api"] = api_kernel_map(p2)

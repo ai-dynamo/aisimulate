@@ -22,23 +22,21 @@ the workflow you are on (`collector/opharness/workflows/<workflow>.md`).
 ## Where things live
 
 A serving-probe campaign is one system: `campaigns/<name>/` holds its plan, golden renders,
-bundles and shard plans, raws, `records.jsonl` and `matrix-<fw>-<version>.yaml`. Records carry
+bundles and shard plans, raws and `records.jsonl`. Records carry
 the SM their raw ran on and are labeled with that SM's rules (`sms:` in
-`components/kernel_taxonomy.yaml`). Gate verdicts are `results/pathdiff/<sm>/<fw>-<ver>/`,
-case plans `results/<sm>/cases/`, rule-7 rechecks `results/<sm>/rechecks/`. A gate in
+`components/kernel_taxonomy.yaml`). Gate verdicts are `results/pathdiff/<sm>/<fw>-<ver>/`. A gate in
 `components/gates.yaml` may carry `no_serving: {<sm>: <why>}`; customizations in
 `targets.yaml` may carry `sms: [sm120]` to apply on those SMs only.
 
 ## Commands
 
 ```
-python3 components/workflow_check.py <workflow> --param fw=vllm --param version=0.30.0 --param sm=sm100
 python3 components/probe_driver.py --campaign <c> --system b200_sxm --gates --op <op> --emit-shards --url-base <share>
 python3 components/gates.py plan --sm sm100 --op <op> --serving <campaign dir> --out <dir>  # one plan per (backend, release)
-python3 components/probe_driver.py --campaign <c> --import-raws <job result dir> --records --matrix  # per job
-python3 components/gates.py grade --sm sm100 --op <op> --results <job result dirs>      # verdicts per gate
-python3 components/case_inventory.py --fw <fw> --version <ver> --sm <sm> --base <rev>    # CPU plan diff (no image)
-python3 components/case_inventory.py --fw <fw> --skips [--ops a,b]                      # rule-7 recheck skeleton
+python3 components/probe_driver.py --campaign <c> --import-raws <job result dir> --records  # per job
+python3 components/gates.py grade --sm sm100 --op <op> --results <job result dirs>      # verdicts per gate; exit 0 = aligned
+python3 components/run_diff.py tables <packaged tables> --base <shipped data> [--detail] # new tables vs the previous release
+python3 components/run_diff.py failures <job result dirs>                                # failed tasks per shard
 collect.py --backend <fw> --ops probe.trace_case --case-filter op=<op>,<field>=<value>,...  # one planned case, in the image
 ```
 
@@ -48,9 +46,10 @@ says (skips.py entries, the op plan's dispatch, deviation notes, fixes), never
 into a findings file; cite the run (pipeline id, system, version) at the code
 instead of committing its evidence.
 
-Smoke, collection and before/after diffs are not opharness components: use
-`collect.py --smoke` / `--limit` / `--case-filter` through the collection pipeline
-(the `aic-auto-collect` skill) and `tools/perf_database/parquet_diff.py`.
+Collection and the plan diff are not opharness components: use `collect.py`
+(`--limit`, `--case-filter`, `--plan-only`, `--plan-table`) through the collection
+pipeline (the `aic-auto-collect` skill). `tools/perf_database/parquet_diff.py`
+summarizes a data PR for review; `run_diff.py` compares a release with the one before.
 
 Serving probes and traces run inside the framework image of the collection pipeline;
 a tp>1 serving probe needs a job with that many GPUs (`AISIM_GPU_NUM`).

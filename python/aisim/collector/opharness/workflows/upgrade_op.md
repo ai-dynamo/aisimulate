@@ -1,28 +1,23 @@
 # Workflow: upgrade an op (framework version or collector change)
 
-Entry: one op family, one framework, a new pin. Exit: the family's tables are
-recollected where its kernels changed (reuse declared for the rest), and the
-collector's cells are shown to run what serving runs on the new pin.
+Entry: one op family, a new pin per framework. Exit: the family's tables are
+recollected where its kernels changed (reuse declared for the rest), the
+collector's cells are shown to run what serving runs on the new pin, and every
+difference from the previous release's tables is explained.
 
 Collection itself follows `docs/perf-model/collector/upgrade.md` and the
-collector overview's "Every pin bump" row; this table adds the serving side.
-`workflow_check.py upgrade_op` checks the steps marked Check.
-
-Steps 2-8 run one op at a time across the frameworks: the commands take `--op <op>` and
-every check `--param op=<op>`; an op is aligned or triaged on every backend before the next
-op starts.
+collector overview's "Every pin bump" row; this table adds the three checks of
+the README. One op family moves at a time, across the three frameworks.
 
 | # | Step | Who | How |
 |---|------|-----|-----|
-| 1 | Bump the pin | owner | `collector/framework_manifest.yaml`: the default, or a family pin for the ops in scope. Check: `pin_is` |
-| 2 | Plan diff | script | `components/case_inventory.py --fw --version --sm --base <rev>` on any CPU. A case or op leaving the plan without a `collector/skips.py` entry is a regression before any GPU hour. Check: `case_set_no_regression` |
-| 3 | Source check | AI | diff the framework between the two pins for the family's selector, kernels and metadata on every SM in scope; cite file and symbol for anything the collector replicates |
-| 4 | Serving identity | script | per system in scope: `probe_driver.py --system <system> --campaign <name> --gates --op <op> --emit-shards --url-base <share>` (the serving records the op's gates read, every backend, at each gate's release) -> `gates.py plan --serving <campaign dir>` (step 6) -> the collection pipeline, one job per (backend, release) -> `--import-raws <job dir> --records --matrix` per job; the campaign's matrix diffed against the previous pin's campaign for the same models is the identity report |
-| 5 | Smoke | script | `collect.py --smoke` / `--limit` / `--case-filter` for the family's ops through the collection pipeline, on one system per SM generation |
-| 6 | Path alignment | script | per SM: `components/gates.py plan --sm <sm> --op <op> --serving <campaign dir> --out <dir>` (the same jobs as step 4) -> `gates.py grade --sm <sm> --op <op> --results <job dirs>`: each gate's planned case, traced by `probe.trace_case` in its release's image, vs the serving record of the same SM and release. Check: `gates_aligned` |
-| 7 | Triage | AI | new fails vs the previous run of the same (backend, version). A model the backend cannot serve or a block that cannot run -> a `collector/skips.py` entry with its reason; a collector bug -> a fix; a path the table measures differently -> a deviation note at that code |
-| 8 | Re-check skips and notes | AI | rule 7: `components/case_inventory.py --fw --skips [--ops]` prints the record skeleton; every in-scope entry is kept by a source check or a run, or deleted -> `results/<sm>/rechecks/<fw>-<ver>.yaml`. Check: `skips_rechecked` |
-| 9 | Collect | script | recollect the families whose kernels changed; declare reuse (`reuse.yaml` with `approved_by`) for the rest |
+| 1 | Bump the pin | owner | `collector/framework_manifest.yaml`: the default, or a family pin for the ops in scope; the collector modules' `__compat__` follow |
+| 2 | Source check | AI | per framework, diff the two releases for the family's selector, kernels, fusions, graph mode, autotuning and metadata on **every SM with shipped data**, not only the SMs the gates run on. Re-read in the same pass every `collector/skips.py` entry and deviation note of the family (rule 7; `collect.py --plan-only` lists each entry with the cases it leaves out): keep it with its source, or delete it. Fix what the check finds, with a file-and-symbol citation, before any GPU job |
+| 3 | Path gates | script | per SM generation: `probe_driver.py --system <system> --campaign <name> --gates --op <op> --emit-shards --url-base <share>` -> `gates.py plan --sm <sm> --op <op> --serving <campaign dir> --out <dir>` -> the collection pipeline, one job per (backend, release) -> `probe_driver.py --import-raws <job dir> --records` -> `gates.py grade --sm <sm> --op <op> --results <job dirs>`. Done when it exits 0. Before the first job, `gates.py paths --sm <sm> --op <op>` (no GPU) lists every path the family's plans collect and the gate on it: a path step 2 found changed and no gate names gets a `gates.yaml` row, or `--derive` on the three commands when its cases name a roster checkpoint |
+| 4 | Collect | script | the family's full plan on every system. After the first window, `run_diff.py failures <result dirs>` on what has landed: a key bucket that fails as a whole is fixed or left out in `collector/skips.py` before the rest of the run pays for it (the 2026-11 run met its SM89 and SM120 failures only here: the gates ran on SM90 and SM100) |
+| 5 | Run diff | script | `run_diff.py tables <packaged tables> --base <shipped data> --detail` and `run_diff.py failures <result dirs>`. A table whose compute-bound cases slowed while its launch-bound cases held is recollected on another node before anything else is concluded from it |
+| 6 | Triage | AI | every lead of step 5 and every new failure group against the previous release ends as one of: a fix; a `collector/skips.py` entry with its reason (a model the backend cannot serve, a block that cannot run); a deviation note at the code (a path the table measures differently); an unavailable key reported in the PR; or a sentence in the commit naming the collector change that explains it |
+| 7 | Integrate | script | the tables with their `collection_meta.yaml`, the data checks, and the unit and golden tests against the data |
 
 ## Across SMs
 

@@ -10,7 +10,7 @@ and generator changes for the vLLM 0.30.0, SGLang 0.5.21 and TensorRT-LLM
 1.3.0rc29 pins cite as provenance. The op-probe harness (`opharness`) produced
 them by booting the real serving framework per model and recording the
 kernels and backends it selected. The harness lives in
-`python/aisimulate/collector/opharness/`.
+`python/aisim/collector/opharness/`.
 
 Citations in the code name either a finding key or a results file below. Grep
 a finding key, such as `sm100_probe_failures_recheck_2026_10_04`, to reach its

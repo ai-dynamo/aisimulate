@@ -140,6 +140,10 @@ TRACE_CHILD_DIR_ENV = "AIS_TRACE_CHILD_DIR"
 # range, so the trace keeps the measured kernels and drops the module build and the cache
 # fill before them (the DSA decode case fills its indexer cache with a kernel serving fuses).
 TRACE_TIMED_RANGE = "ais::timed"
+# Inside it, the timed runs alone: what latency_ms averages. The first calls' one-time work
+# (JIT, autotune inputs, lazy caches) stays out, so every kernel in this range is per-call
+# work the row pays; the opharness gates check its auxiliary kernels against serving.
+TRACE_MEASURED_RANGE = "ais::measured"
 
 
 def trace_child_argv(argv: list[str]) -> list[str]:
@@ -624,17 +628,24 @@ def benchmark_with_power(
         # ═══════════════════════════════════════════════════════════════════
         start_event = dev_mod.Event(enable_timing=True)
         end_event = dev_mod.Event(enable_timing=True)
-        start_event.record()
-        for _ in range(actual_num_runs):
-            if use_graph:
-                g.replay()
-            else:
-                # Fallback: Direct execution
-                # This matches SGLang/VLLM pattern where kernel_func handles internal loops
-                for _ in range(repeat_n):
-                    kernel_func()
-        end_event.record()
-        dev_mod.synchronize()
+        measured = torch.profiler.record_function(TRACE_MEASURED_RANGE) if timed is not None else None
+        if measured is not None:
+            measured.__enter__()
+        try:
+            start_event.record()
+            for _ in range(actual_num_runs):
+                if use_graph:
+                    g.replay()
+                else:
+                    # Fallback: Direct execution
+                    # This matches SGLang/VLLM pattern where kernel_func handles internal loops
+                    for _ in range(repeat_n):
+                        kernel_func()
+            end_event.record()
+            dev_mod.synchronize()
+        finally:
+            if measured is not None:
+                measured.__exit__(None, None, None)
         _close_phase("timed")
 
         # Check for throttling

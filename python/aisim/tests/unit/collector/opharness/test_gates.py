@@ -42,7 +42,19 @@ def test_every_gate_names_one_planned_case(gates, gate_id):
     assert planned_on, f"{gate_id}: select {gate['select']} matches no single planned case on SM90 or SM100"
     for _name, select in cases:
         op = select.pop("op", gate["op"])
-        gates.case_filter(backend, op, select, gate.get("env"))  # raises when it does not fit the pipeline
+        # raises when it does not fit the pipeline
+        gates.case_filter(backend, op, select, gate.get("env"), gate.get("row"))
+    # the traced case resolves to one row on every SM it is planned on (a case the plan runs
+    # as several rows needs the gate's `row`); rows that build framework objects (SGLang and
+    # TRT-LLM MLA) cannot be built on a CPU and are checked when the probe runs
+    from collector.probes import trace_case
+
+    for sm in planned_on:
+        row = {} if gate.get("row") is None else {"row": gate["row"]}
+        try:
+            trace_case.planned_row(backend, gate["op"], sm, **dict(gate["select"]), **row)
+        except ModuleNotFoundError:
+            continue
 
 
 def test_shard_plans_parse_as_pipeline_plans(gates, tmp_path):
@@ -54,15 +66,15 @@ def test_shard_plans_parse_as_pipeline_plans(gates, tmp_path):
 
 
 def test_a_gate_runs_at_the_release_its_op_is_collected_with(gates):
-    """vLLM gemm/moe/kda/attention are pinned to 0.31.0 next to the 0.30.0 default: their gates
-    were traced in the default image and graded against default-release serving records. Each
-    (backend, release) is its own job; an also case shares its gate's release."""
+    """vLLM families pinned apart from the 0.30.0 default (gemm, moe, attention, mla, ... at
+    0.32.0) would be traced in the default image and graded against default-release serving
+    records if a gate ran at the default. Each (backend, release) is its own job; an also case
+    shares its gate's release."""
     plans = gates.shard_plans("sm90", "vllm")
     gemm_release = gates.op_version("vllm", "gemm")
-    assert gemm_release != gates.op_version("vllm", "dsa_context_module")  # true while the families differ
     assert set(plans) == {("vllm", gates.gate_version(g)) for g in gates.gates_in_scope("vllm", "sm90")}
     gemm = {s["name"] for s in plans[("vllm", gemm_release)]["shards"]}
-    assert "gemm_fp8block_DeepSeek-V3.2" in gemm and "dsa_ctx_bf16_DeepSeek-V3.2" not in gemm
+    assert "gemm_fp8block_DeepSeek-V3.2" in gemm
     for g in gates.load()["gates"]:
         assert {gates.op_version(g["backend"], op) for op in gates._ops(g)} == {gates.gate_version(g)}, g["gate"]
     # the pipeline runs a shard plan on the default image unless told otherwise: every release
@@ -151,3 +163,100 @@ def test_a_gate_reads_only_its_own_backends_trace(gates, tmp_path):
     assert gates._trace(dirs, name, "vllm", "0.32.0").parent.parent.name == "vllm-0.32.0"
     assert gates._trace(dirs, name, "vllm", "0.33.0").parent.parent.name.startswith("vllm-")
     assert gates._trace(dirs[:1], name, "vllm", "0.32.0") is None
+
+
+def test_a_gate_reads_only_traces_from_its_own_sm(gates, tmp_path):
+    """Shard names repeat across systems: grading sm90 once read the B200 trace of the same shard."""
+    name = "gemm_bf16_Llama-3.1-8B"
+    for system, sm in (("b200_sxm", 100), ("h100_sxm", 90), ("h100_failed", None)):
+        shard = tmp_path / system / f"{gates.SHARD_OP}__{name}"
+        shard.mkdir(parents=True)
+        result = {"framework_version": "0.32.0", **({"sm": sm} if sm is not None else {})}
+        (shard / "probe_trace_case.json").write_text(json.dumps({"args": {"backend": "vllm"}, "result": result}))
+    dirs = sorted(tmp_path.iterdir())
+    assert gates._trace(dirs, name, "vllm", "0.32.0", 90).parent.parent.name == "h100_sxm"
+    assert gates._trace(dirs, name, "vllm", "0.32.0", 100).parent.parent.name == "b200_sxm"
+    # a trace that died before recording its SM is used only when no attributed one exists
+    assert gates._trace(dirs, name, "vllm", "0.32.0", 103).parent.parent.name == "h100_failed"
+    assert gates._trace([tmp_path / "b200_sxm"], name, "vllm", "0.32.0", 90) is None
+
+
+def test_every_registry_op_has_a_gate_or_a_reason(gates):
+    """Coverage is read from the registries, not from the table: an op (or a planned phase of
+    it) with no gate needs a reason under ``ungated``."""
+    assert {"gemm", "moe"} <= set(gates.registry_ops("vllm")) and "dsv41_module" in gates.registry_ops("sglang")
+    assert {backend: gates.uncovered(backend) for backend in ("vllm", "sglang", "trtllm")} == {
+        "vllm": [],
+        "sglang": [],
+        "trtllm": [],
+    }
+
+
+def test_an_op_or_phase_without_a_gate_is_uncovered(gates, tmp_path):
+    """A rebuilt gate set once kept 19 of 32 gates (kda decode among the lost) and reported 19/19."""
+    table = tmp_path / "gates.yaml"
+    row = lambda name, op, **select: {"gate": name, "backend": "vllm", "op": op, "select": select}
+    doc = {"ungated": {"compute_scale": "no serving instance", "kda:verify": "no speculative decoding"}}
+    doc["gates"] = [row("gemm_bf16", "gemm"), row("kda_ctx", "kda", phase="context")]
+    table.write_text(yaml.safe_dump(doc))
+    ops = ["gemm", "kda", "compute_scale", "brand_new_op"]
+    assert gates.uncovered("vllm", table, ops) == ["kda:generation", "brand_new_op"]
+    doc["gates"].append(row("kda_gen", "kda", phase="generation"))
+    table.write_text(yaml.safe_dump(doc))
+    assert gates.uncovered("vllm", table, ops) == ["brand_new_op"]
+    # another backend's gates cover nothing here
+    assert gates.uncovered("sglang", table, ["gemm"]) == ["gemm"]
+
+
+def test_a_missing_trace_removes_the_verdict_of_an_earlier_run(gates, tmp_path, monkeypatch):
+    """A gate without a trace is graded missing-trace; the verdict file an earlier run left must
+    not keep saying aligned."""
+    sys.path.insert(0, str(COMPONENTS))
+    import probe_driver
+
+    monkeypatch.setattr(probe_driver, "ROOT", tmp_path)
+    gate = next(g for g in gates.gates_in_scope("vllm", "sm100") if not (g.get("no_serving") or {}).get("sm100"))
+    stale = gates.verdict_dir("sm100", "vllm", gates.gate_version(gate)) / f"{gate['gate']}.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(json.dumps({"verdict": "aligned"}))
+    monkeypatch.setattr(gates, "gates_in_scope", lambda *a, **k: [gate])
+    assert gates.grade("sm100", [tmp_path / "no_results"]) == {("vllm", gate["gate"]): "missing-trace"}
+    assert not stale.exists()
+
+
+def test_paths_are_read_from_the_op_plan(gates):
+    """A path is the cases of one op that share a phase, the plan's dtype fields and its
+    dispatch; a gate covers the path its case is on, and nothing else."""
+    rows = gates.paths("sm100", "sglang", "moe,kda")
+    moe = {(r["dtypes"], r["dispatch"]): r for r in rows if r["op"] == "moe"}
+    assert len({dispatch for _dtypes, dispatch in moe}) > 1  # SGLang's MoE plan picks the runner
+    assert all(r["cases"] > 0 for r in rows)
+    gated = [r for r in moe.values() if r["gates"]]
+    assert gated and all("derived" not in r for r in gated)
+    kda = {r["phase"]: r for r in rows if r["op"] == "kda"}
+    assert kda["verify"]["ungated"] and "derived" not in kda["verify"]
+    assert kda["context"]["gates"] and kda["generation"]["gates"]
+
+
+def test_a_derived_gate_names_one_planned_case_of_its_path(gates):
+    """A path no row names gets a gate when its cases name a roster checkpoint: one planned
+    case, on that path, whose filter fits the pipeline; rows are in scope only on request."""
+    from collector.op_plans import OP_PLANS
+
+    rows = gates.paths("sm100", "vllm")
+    derived = [r for r in rows if r.get("derived")]
+    assert derived
+    names = [r["derived"]["gate"] for r in derived]
+    assert len(set(names)) == len(names) and not set(names) & {g["gate"] for g in gates.load()["gates"]}
+    for r in derived:
+        g = r["derived"]
+        (i,) = gates._matching("vllm", g["op"], 100, g["select"])
+        case = gates._planned("vllm", g["op"], 100).cases[i]
+        assert (getattr(case, "phase", None), OP_PLANS[g["op"]].dtypes(case)) == (r["phase"], r["dtypes"])
+        assert g["repo"] in (getattr(case, "model_path", None), getattr(case, "model_name", None))
+        gates.case_filter("vllm", g["op"], g["select"])
+    # a case that names no model has no derived gate: its path needs a row or a reason
+    assert not any(r.get("derived") for r in rows if r["op"] in ("gemm", "attention_context"))
+    in_scope = {g["gate"] for g in gates.gates_in_scope("vllm", "sm100")}
+    with_derived = {g["gate"] for g in gates.gates_in_scope("vllm", "sm100", derive=True)}
+    assert not in_scope & set(names) and with_derived == in_scope | set(names)

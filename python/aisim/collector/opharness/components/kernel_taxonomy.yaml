@@ -22,9 +22,9 @@ rules:
   - {backend: flashmla, role: attention,
      match: "flash_fwd_splitkv_mla|flash_fwd_mla_combine|fwd_kvcache_mla|get_mla_metadata|flash_mla"}
   - {backend: dsa_nsa, role: attention,
-     match: "sparse_attn_fwd_kernel|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow|^_scatter_topk(_single_req)?_kernel$"}
+     match: "sparse_attn_fwd_kernel|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow|^_scatter_topk(_single_req)?_kernel$|^sparse_mla_index_remap_kernel$"}
   - {backend: triton, role: attention,
-     match: "_flash_attn_fwd_with_block_score|^_decode_score_kernel"}
+     match: "_flash_attn_fwd_with_block_score|^_decode_score(_paged)?_kernel"}
   - {backend: trtllm_mha, role: attention,
      match: "^fmha_v2_flash_attention|^kernel_mha$|masked_multihead_attention_kernel"}
   - {backend: triton, role: attention,
@@ -73,12 +73,24 @@ rules:
      match: "^tinygemm_kernel|^cutlass::Kernel2"}
   - {backend: triton_fused_moe, role: moe_gemm,
      match: "^fused_moe_kernel$"}
+  # triton_kernels' MoE matmul: _matmul_ogs_<layout>_... before, _matmul_<layout>_... (e.g.
+  # _matmul_NNT_bf16xbf16xmxfp4_swiglu) in the releases SGLang 0.5.23 and TRT-LLM 1.4.0rc2 ship
   - {backend: triton_fused_moe, role: moe_gemm,
-     match: "^_matmul_ogs_|^fused_moe_oss::"}
+     match: "^_matmul_ogs_|^_matmul_[NT]{3}_|^fused_moe_oss::"}
   - {backend: sgl_kernel, role: moe_infra,
      match: "^(sgl_kernel::)?moe_(align_block_size|sum_reduce)|^count_and_sort_expert_tokens|^moe_align_block_size"}
+  # SGLang's Triton versions of the two above (sglang 0.5.23 python/sglang/kernels/ops/moe/):
+  # the one-launch align for top-k numel <= 64 (moe_align_small_numel.py) and the top-k
+  # sum-reduce (fused_moe_triton_kernels.py, moe_sum_reduce_triton)
+  - {backend: sgl_kernel, role: moe_infra,
+     match: "^_moe_align_small_numel_kernel$|^_moe_sum_reduce_kernel$"}
   - {backend: vllm_kernel, role: moe_infra,
      match: "^vllm::moe::"}
+  # triton_kernels' MoE gather/scatter helpers around _matmul_*: the gather row indices
+  # and the top-k combine (TRT-LLM 1.4.0rc2 TRITON MoE serving gpt-oss-120b on H200 runs
+  # both in prefill and decode, moe gate 2026-11-08)
+  - {backend: triton_fused_moe, role: moe_infra,
+     match: "^_create_row_idxs$|^_reduce_forward$"}
   - {backend: trtllm_internal, role: moe_infra,
      match: "cutlass_kernels::(expandInputRows|finalizeMoeRouting|doActivation|blockExpertPrefixSum|mergeExpertPrefixSum|globalExpertPrefixSum|computeStrides|fusedBuildExpertMaps)"}
   - {backend: framework_native, role: routing,
@@ -143,23 +155,23 @@ rules:
   - {backend: torch, role: infra,
      match: "^cunn_SoftMaxForward|^cunn_|^distribution_elementwise_grid_stride_kernel"}
   - {backend: framework_native, role: norm_rope,
-     match: "^fused_rope_kernel|^fused_rope_store_kernel"}
+     match: "^(sglang::)?fused_rope_kernel|^(sglang::)?fused_rope_store_kernel"}
   - {backend: framework_native, role: kvcache,
-     match: "^fused_store_indexer_cache|kernels::fusedCatFp8Kernel|^store_kv_index_kernel"}
+     match: "^(sglang::)?fused_store_indexer_cache|kernels::fusedCatFp8Kernel|^(sglang::)?store_kv_index_kernel"}
   - {backend: torch, role: infra,
      match: "^softmax_warp_forward|^softmax_warp_backward|^cunn_SoftMaxForwardSmem"}
   - {backend: dsa_nsa, role: attention,
-     match: "^flash_c4_(prefill|decode)$|^flash_c128_(prefill|decode)$"}
+     match: "^(sglang::)?flash_c4_(prefill|decode)$|^(sglang::)?flash_c128_(prefill|decode)$"}
   - {backend: sgl_kernel, role: dsa_indexer,
-     match: "^topk_plan$|^topk_small_batch_kernel$|^topk_main_kernel$|^topk_transform(_prefill)?_kernel$|^fast_hadamard_transform_kernel$|^fused_q_indexer_rope_hadamard_quant$|^fused_k_indexer_norm_rope_store$|^fused_norm_rope_indexer$"}
+     match: "^(sglang::)?topk_plan$|^(sglang::)?topk_small_batch(_cluster)?_kernel$|^(sglang::)?topk_main_kernel$|^(sglang::)?topk_transform(_prefill)?_kernel$|^(sglang::)?fast_hadamard_transform_kernel$|^(sglang::)?fused_q_indexer_rope_hadamard_quant$|^(sglang::)?fused_k_indexer_norm_rope_store$|^(sglang::)?fused_norm_rope_indexer$"}
   - {backend: sgl_kernel, role: norm_rope,
-     match: "^fused_qknorm_warp$|^fused_gemma_qknorm_rope_kernel$|^fused_q_norm_rope$|^fused_(k_)?norm_rope_flashmla$|^deepseek_rope_kernel$"}
+     match: "^(sglang::)?fused_qknorm_warp$|^(sglang::)?fused_gemma_qknorm_rope_kernel$|^(sglang::)?fused_q_norm_rope$|^(sglang::)?fused_(k_)?norm_rope_flashmla$|^(sglang::)?deepseek_rope_kernel$"}
   - {backend: sgl_kernel, role: kvcache,
-     match: "^store_kvcache$|^concat_mla_absorb_q_kernel$|^concat_mla_k_kernel$|^write_c4_prefill$|^get_mla_kv_buffer_kernel$"}
+     match: "^(sglang::)?store_kvcache(_kernel)?$|^(sglang::)?concat_mla_absorb_q_kernel$|^(sglang::)?concat_mla_k_kernel$|^(sglang::)?write_c4_prefill$|^(sglang::)?get_mla_kv_buffer_kernel$"}
   - {backend: sgl_kernel, role: quant,
-     match: "^per_tensor_quant_fp8_kernel$|^per_token_quant_fp8_kernel$"}
+     match: "^(sglang::)?per_tensor_quant_fp8_kernel$|^(sglang::)?per_token_quant_fp8_kernel$"}
   - {backend: sgl_kernel, role: activation,
-     match: "^act_kernel$|^silu_mul_clamp_kernel$"}
+     match: "^(sglang::)?act_kernel$|^(sglang::)?silu_mul_clamp_kernel$"}
   - {backend: sgl_kernel, role: infra,
      match: "^clamp_position_kernel$"}
   - {backend: framework_native, role: infra,
@@ -231,7 +243,7 @@ rules:
   - {backend: fla_triton, role: linear_attention, sms: [sm89],
      match: "^chunk_scaled_dot_kkt_fwd_kernel$|^merge_16x16_to_64x64_inverse_kernel$"}
   - {backend: trtllm_fmha, role: attention, sms: [sm100, sm103],
-     match: "^fmhaSm10[03][af]?Kernel_Qkv(Bfloat16|E4m3|Fp16)|^tensorrt_llm::kernels::fmhaReductionKernel$"}
+     match: "^fmhaSm10[03][af]?Kernel_Qkv(Bfloat16|E4m3|Fp16)|^tensorrt_llm::(_v1::)?kernels::fmhaReductionKernel$"}
   - {backend: torch, role: gemm, sms: [sm89],
      match: "^sm86_xmma_fprop_implicit_gemm"}
   - {backend: infra, role: infra, sms: [sm89],
@@ -250,7 +262,72 @@ rules:
      match: "flashinfergemmkernelsdense_blockscaled_gemm_sm10|flashinferquantizationkernelsmxfp8_quantize|^vllm::cvt_fp16_to_fp4"}
   - {backend: infra, role: infra, sms: [sm89],
      match: "^trtllm::fused_qk_norm_rope$|kv_cache_manager_v2::copyBatchBlockOffsetsToDevice|^_finish_reasons_kernel$"}
+  # E2m1 output: the NVFP4 FC1 that writes FC2's FP4 input (vLLM 0.32.0 serving DeepSeek-V3.1-NVFP4
+  # on B200 runs it in prefill and decode; moe gate 2026-11-08)
   - {backend: trtllm_gen_moe, role: moe_gemm, sms: [sm100, sm103],
-     match: "^bmm_(MxE4m3|Bfloat16|E4m3)_(MxE2m1|E2m1E2m1|E4m3E4m3)|^moe::dev::"}
+     match: "^bmm_(MxE4m3|Bfloat16|E4m3|E2m1)_(MxE2m1|E2m1E2m1|E4m3E4m3)|^moe::dev::"}
   - {backend: torch_sdpa, role: attention, sms: [sm89],
      match: "^pytorch_flash::flash_fwd_kernel$"}
+  # CuTe DSL dense GEMM / activation quant on Blackwell (2026-11-08, gemm gates at the new pins):
+  # SGLang's TGV bf16 GEMM (unquant.py cutedsl lane), FlashInfer's NVFP4 activation quant, and
+  # TRT-LLM's CuTe DSL FP4 dense GEMM with its block-size quant (NVFP4GemmUnifiedRunner tactic)
+  - {backend: cutlass, role: gemm, sms: [sm100, sm103],
+     match: "^kernel_cutlass_kernel_TgvGemmCuteExtKernel|^kernel_cutlass_kernel_tensorrt_llm_torchkernelsblackwelldense_blockscaled_gemm"}
+  - {backend: flashinfer, role: quant, sms: [sm100, sm103],
+     match: "^kernel_cutlass_kernel_flashinferquantizationkernelsnvfp4_quantize"}
+  - {backend: trtllm_internal, role: quant,
+     match: "^tensorrt_llm::_v1::kernels::quantize_with_block_size"}
+  # vLLM's DeepSeek-V4 CuTe DSL ops (models/deepseek_v4/nvidia/ops: dequant_gather_k,
+  # fused_indexer_q, sparse_attn_compress) all define `device_kernel`, so they normalize to
+  # one name once the tensor-spec suffix is dropped
+  - {backend: vllm_kernel, role: dsa_indexer,
+     match: "^kernel_cutlass_device_kernel$"}
+  # TRT-LLM rc2 (tensorrt_llm::_v1::kernels): the DeepSeek-V4 compressor, its Q norm and
+  # RoPE, the FP8 KV scatter and the top-k local-to-global remap; the FP8 MLA input copy
+  - {backend: trtllm_internal, role: attention,
+     match: "^tensorrt_llm::(_v1::)?kernels::compressor::"}
+  - {backend: trtllm_internal, role: norm_rope,
+     match: "^tensorrt_llm::(_v1::)?kernels::(deepseekV4QNorm(Fused)?Kernel|mlaRoPEInplaceKernel|inverseRopeFp8QuantKernel(Pipelined)?)$"}
+  - {backend: trtllm_internal, role: kvcache,
+     match: "^_quant_scatter_kernel$"}
+  - {backend: trtllm_internal, role: dsa_indexer,
+     match: "^_deepseek_v4_local_to_global_kernel$"}
+  - {backend: trtllm_internal, role: quant,
+     match: "^tensorrt_llm::(_v1::)?kernels::quantizeCopyInputToFp8Kernel$"}
+  - {backend: torch, role: infra,
+     match: "searchsorted_cuda_kernel"}
+  # SM100 DSA / DeepSeek-V4: FlashInfer's fused RoPE + FP8 Q quantization, SGLang 0.5.23's
+  # wo_a activation quant and MLA KV-set + Q concat, cuBLAS GEMV, and TRT-LLM rc2's CuTe DSL
+  # Blackwell paged MQA logits
+  - {backend: flashinfer, role: norm_rope,
+     match: "^flashinfer::RopeQuantizeKernel"}
+  - {backend: sgl_kernel, role: quant,
+     match: "^(sglang::)?fp8_wo_a_group_major_quant_ue8m0_kernel$"}
+  - {backend: sgl_kernel, role: kvcache,
+     match: "^(sglang::)?set_mla_kv_concat_q_kernel$"}
+  - {backend: cublas, role: gemm,
+     match: "^gemv2[NT]_kernel"}
+  - {backend: trtllm_internal, role: dsa_indexer, sms: [sm100, sm103],
+     match: "^kernel_cutlass_kernel_tensorrt_llm_torchattentionkernelsblackwellpaged_mqa_logit"}
+  # TRT-LLM rc2 DeepSeek-V4 on Blackwell: the fused KV norm + RoPE + quant cache write, and the
+  # CuTe DSL blockwise FP8 GEMM
+  - {backend: trtllm_internal, role: kvcache,
+     match: "^tensorrt_llm::(_v1::)?kernels::mlaKvNormRopeQuant(Context|Generation)Kernel$"}
+  - {backend: cutlass, role: gemm, sms: [sm100, sm103],
+     match: "^kernel_cutlass_kernel_tensorrt_llm_torchkernelsblackwellblockwise_gemm"}
+  # MiniMax-M3 MSA: SGLang 0.5.23's decode block top-k; TRT-LLM rc2's Triton reference
+  # (block max score, sparse softmax), FP8/BF16 paged scatter and block selection; the
+  # fmha_sm100 MSA package (k2q CSR build, sparse forward + combine) as TRT-LLM and vLLM
+  # vendor it, and their CuTe DSL index scorers; cuBLAS small-N GEMM
+  - {backend: sgl_kernel, role: attention,
+     match: "^(sglang::)?minimax_decode_topk_block_kernel"}
+  - {backend: triton, role: attention,
+     match: "^_block_max_score_kernel$|^_sparse_softmax_kernel$"}
+  - {backend: trtllm_internal, role: kvcache,
+     match: "^_fused_paged_scatter_kernel$"}
+  - {backend: trtllm_internal, role: attention,
+     match: "^tensorrt_llm::(_v1::)?kernels::minimaxM3SelectBlocks\\d*Kernel$|^kernel_cutlass_kernel_srcsm100fwd|^kernel_cutlass_kernel_tensorrt_llm_torchattentionkernelsblackwellminimax_m3"}
+  - {backend: vllm_kernel, role: attention,
+     match: "^k2q_(build_row_map|hist|row_prefix|scatter|tile_prefix_smem)_kernel$|^kernel_cutlass_kernel_srcblackwell_prefill|^kernel_cutlass_kernel_vllmmodelsminimax_m3nvidiaops"}
+  - {backend: cublas, role: gemm,
+     match: "^gemmSN_[NT]{2}_kernel"}
