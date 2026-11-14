@@ -6,8 +6,8 @@
 Invoked by nightly CI before `scripts/release/build_release_artifacts.py`. Takes one
 argument -- a PEP 440 suffix like '.dev202609170000001234' -- and rewrites:
   - [project].version in python/aisim/pyproject.toml (PEP 440 form)
-  - [package].version in crates/core/Cargo.toml and
-    [workspace.package].version in Cargo.toml (SemVer form: dash instead of
+  - [workspace.package].version in Cargo.toml, inherited by the core crate,
+    and explicit core versions in historical manifests (SemVer form: dash instead of
     dot, so '0.15.0-dev.202609170000001234' -- cargo rejects the PEP 440 spelling)
 
 The suffix is the UTC creation date followed by a ten-digit workflow run
@@ -23,12 +23,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 PYPROJECT = Path("python/aisim/pyproject.toml")
-# Each Cargo manifest below has exactly one line-anchored `version = "..."`
-# (external deps use inline tables, which the regex skips). The publish=false
-# test crate pins no version on its path dep, so it needs no stamping.
+# Stamp the workspace and historical explicit core versions. Inherited package
+# versions must stay inherited; never stamp a dependency's version in their place.
 CARGO_MANIFESTS = [Path("Cargo.toml"), Path("crates/core/Cargo.toml")]
 
 VERSION_LINE_RE = re.compile(r'^(\s*version\s*=\s*")([^"]+)(")\s*$', re.MULTILINE)
@@ -72,7 +72,12 @@ def main() -> int:
     if not project.is_file():
         project = root / "python/aisimulate/pyproject.toml"
     stamped = [rewrite(project, args.suffix)]
-    stamped += [rewrite(root / path, semver(args.suffix)) for path in CARGO_MANIFESTS]
+    for path in CARGO_MANIFESTS:
+        manifest = root / path
+        package = tomllib.loads(manifest.read_text()).get("package", {})
+        if package.get("version") == {"workspace": True}:
+            continue
+        stamped.append(rewrite(manifest, semver(args.suffix)))
     print(f"apply_dev_version: {', '.join(stamped)}", file=sys.stderr)
     return 0
 

@@ -26,6 +26,8 @@ Both artifacts use version `0.15.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
 distribution.
 
+The core crate inherits `[workspace.package].version` from the root `Cargo.toml` through `version.workspace = true`. Nightly stamping updates that workspace version without replacing the inheritance declaration; current release tooling also supports historical sources with an explicit core version.
+
 For published versions, wheel platform tags, source installation, and internal
 nightly consumption, see the [installation guide](../getting-started/installation.md). The product
 version in a manifest does not establish publication on an index.

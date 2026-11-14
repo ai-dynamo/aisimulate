@@ -168,7 +168,7 @@ def test_aisim_source_versions_are_synchronized():
 
     workspace_version = workspace["workspace"]["package"]["version"]
     assert project["project"]["version"] == workspace_version
-    assert core["package"]["version"] == workspace_version
+    assert core["package"]["version"] == {"workspace": True}
     assert workspace["workspace"]["members"] == ["crates/core"]
     assert project["tool"]["maturin"]["manifest-path"] == "../../crates/core/Cargo.toml"
 

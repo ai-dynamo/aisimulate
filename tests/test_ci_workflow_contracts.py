@@ -672,6 +672,39 @@ def test_restored_workflows_are_active_at_repository_root() -> None:
     assert not (WORKFLOW_ROOT / "build-platform-wheels-copied-pr.yml").exists()
 
 
+def test_runner_canary_checks_both_production_architectures_with_step_home() -> None:
+    workflow = _workflow("runner-canary.yml")
+    assert set(workflow["on"]) == {"workflow_dispatch", "push"}
+    assert workflow["on"]["push"]["branches"] == ["pull-request/*"]
+    assert workflow["permissions"] == {"contents": "read"}
+    production = workflow["jobs"]["canary"]
+    pools = production["strategy"]["matrix"]["include"]
+    assert {(pool["runner"], pool["machine"], pool["scratch"]) for pool in pools} == {
+        ("prod-aisim-default-amd64-v1", "x86_64", "true"),
+        ("prod-aisim-default-arm64-v1", "aarch64", "true"),
+    }
+    assert production["runs-on"] == "${{ matrix.runner }}"
+    # container.env alone is overwritten by the runner's /github/home default.
+    assert production["env"]["HOME"] == production["container"]["env"]["HOME"] == "/__w/aisim/aisim"
+    commands = _run_commands(production)
+    assert 'test "${HOME}" = /__w/aisim/aisim' in commands
+    assert 'test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"' in commands
+    assert 'test "$(uname -m)" = "${EXPECTED_MACHINE}"' in commands
+    assert "test -w /scratch" in commands
+    shared = workflow["jobs"]["shared"]
+    assert shared["runs-on"] == "dynamo-cpu-4gi-amd64"
+    assert "container" not in shared  # Shared admission does not permit container pods.
+
+
+def test_workflow_runner_selectors_match_registered_pools_and_runbook() -> None:
+    labels = yaml.safe_load((REPOSITORY_ROOT / ".github/actionlint.yaml").read_text())["self-hosted-runner"]["labels"]
+    for name in ("prod-aisim-default-amd64-v1", "prod-aisim-default-arm64-v1", "dynamo-cpu-4gi-amd64"):
+        assert name in labels
+        assert f"`{name}`" in (REPOSITORY_ROOT / "docs/ci/README.md").read_text()
+    for path in WORKFLOW_ROOT.glob("*.yml"):
+        assert "prod-aisimulate-default-" not in path.read_text(), path
+
+
 def test_full_ci_owns_migrated_expensive_suites() -> None:
     jobs = _workflow("ci.yml")["jobs"]
 
@@ -3196,7 +3229,10 @@ def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
 @pytest.mark.parametrize("suffix", [".dev20260917", ".dev202609170000001234"])
 @pytest.mark.parametrize("base_version", [None, "0.12.0"], ids=["current", "historical"])
 @pytest.mark.parametrize("package", ["aisim", "aisimulate"])
-def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version, package):
+@pytest.mark.parametrize("inherit_version", [True, False], ids=["workspace-version", "explicit-version"])
+def test_current_release_tools_stamp_and_validate_historical_manifests(
+    tmp_path, suffix, base_version, package, inherit_version
+):
     current_version = _current_product_version()
     base_version = base_version or current_version
     for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisim/pyproject.toml", "scripts/pyproject.toml"):
@@ -3206,6 +3242,11 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
             (REPOSITORY_ROOT / name)
             .read_text()
             .replace(f'version = "{current_version}"', f'version = "{base_version}"')
+        )
+    core_manifest = tmp_path / "crates/core/Cargo.toml"
+    if not inherit_version:
+        core_manifest.write_text(
+            core_manifest.read_text().replace("version.workspace = true", f'version = "{base_version}"')
         )
     if package == "aisimulate":
         for name in ("crates/core/Cargo.toml", "python/aisim/pyproject.toml"):
@@ -3218,6 +3259,7 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
                 .replace("aisim.supervision", "aisimulate.supervision")
                 .replace("aisim.legacy_cli", "aisimulate.legacy_cli")
             )
+    original_core = core_manifest.read_bytes()
     for args in (
         ["init", "-q"],
         ["add", "."],
@@ -3242,7 +3284,11 @@ def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"{base_version}{suffix}" in (tmp_path / "python/aisim/pyproject.toml").read_text()
-    assert f"{base_version}-dev.{suffix[4:]}" in (tmp_path / "crates/core/Cargo.toml").read_text()
+    assert f"{base_version}-dev.{suffix[4:]}" in (tmp_path / "Cargo.toml").read_text()
+    if inherit_version:
+        assert core_manifest.read_bytes() == original_core
+    else:
+        assert f"{base_version}-dev.{suffix[4:]}" in core_manifest.read_text()
 
 
 def test_manual_fpe_uses_current_harness_and_selected_inventory_for_every_job():

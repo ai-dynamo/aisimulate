@@ -26,7 +26,10 @@ def _project_version(path: Path) -> str:
 
 
 def _crate_version(path: Path) -> str:
-    return str(tomllib.loads(path.read_text())["package"]["version"])
+    version = tomllib.loads(path.read_text())["package"]["version"]
+    if version == {"workspace": True}:
+        version = tomllib.loads((REPOSITORY_ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+    return str(version)
 
 
 def _rust_u32_constant(path: Path, name: str) -> int:
