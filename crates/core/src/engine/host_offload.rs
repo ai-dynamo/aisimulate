@@ -23,5 +23,6 @@ pub(crate) use registry::{G2Binding, G2Registry, HostClient};
 pub(crate) use tier::tests::{C, per_rank};
 pub(crate) use tier::{
     CompletedTransfer, ExternalPlan, HostBlockKey, HostBlockMeta, HostEviction, HostLink,
-    HostPolicy, HostTier, HostTierConfig, LoadOutcome, Lookup, StoreOutcome, TransferId,
+    HostPolicy, HostTier, HostTierConfig, LoadOutcome, Lookup, ReversedTouch, StoreOutcome,
+    TransferId,
 };

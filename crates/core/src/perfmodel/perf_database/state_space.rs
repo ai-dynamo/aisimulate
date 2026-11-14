@@ -919,13 +919,13 @@ mod tests {
 
     fn data_root(rel: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems/data")
+            .join("../../python/aisim/src/aisim_core/systems/data")
             .join(rel)
     }
 
     fn h100_sxm_mem_bw() -> f64 {
         let yaml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems/h100_sxm.yaml");
+            .join("../../python/aisim/src/aisim_core/systems/h100_sxm.yaml");
         SystemSpec::load(&yaml)
             .expect("h100_sxm.yaml must parse")
             .gpu

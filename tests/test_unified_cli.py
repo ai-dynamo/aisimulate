@@ -14,21 +14,21 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-import aisimulate.main as cli
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.output import (
+import aisim.main as cli
+from aisim.config.cli import CorePredictionConfig
+from aisim.output import (
     format_prediction_stdout,
     prepare_output_directory,
     write_prediction_report,
     write_prediction_stdout,
     write_telemetry,
 )
-from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
-from aisimulate.predict import PredictionExecutionError, PredictionResult, run_prediction
-from aisimulate.supervision import main as supervised_main
-from aisimulate.sweeper.config import Candidate
-from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
-from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplayReport, RunnerCapabilities
+from aisim.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
+from aisim.predict import PredictionExecutionError, PredictionResult, run_prediction
+from aisim.supervision import main as supervised_main
+from aisim.sweeper.config import Candidate
+from aisim.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
+from aisim.sweeper.replay import ReplayOutputRequirements, ReplayReport, RunnerCapabilities
 
 
 class _RecommendationResult:
@@ -667,7 +667,7 @@ def test_predict_discloses_kv_precision_without_detail(
             )
 
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: MemoryFactory(runner))
-    monkeypatch.setattr("aisimulate.predict.get_model_config_from_model_path", lambda _: {"raw_config": raw})
+    monkeypatch.setattr("aisim.predict.get_model_config_from_model_path", lambda _: {"raw_config": raw})
     config = _prediction_config().model_dump(mode="json", exclude_none=True)
     worker = config["engine"]["workers"]["aggregated"]
     config["engine"]["workers"] = {role: deepcopy(worker) for role in roles}
@@ -758,7 +758,7 @@ def test_predict_reports_missing_data_after_shared_api_execution(tmp_path, monke
     output = tmp_path / "out"
 
     assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 1
-    assert f"aisimulate predict failed: {expected}" in capsys.readouterr().err
+    assert f"aisim predict failed: {expected}" in capsys.readouterr().err
     assert runner.closed
     coverage = json.loads((output / "fpm-coverage.json").read_text())
     assert coverage["status"] == "incomplete"
@@ -811,17 +811,136 @@ def test_predict_marks_zero_completion_invalid(tmp_path, monkeypatch, capsys, ou
     assert runner.closed
 
 
-def test_run_prediction_wraps_runner_failure() -> None:
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_run_prediction_wraps_runner_failure(error_type, tmp_path, monkeypatch, capsys) -> None:
     class _FailingRunner(_Runner):
         def run(self, spec, *, output_requirements=None):
             self.spec = spec
-            raise RuntimeError("boom")
+            raise error_type("boom")
 
     runner = _FailingRunner()
-    with pytest.raises(PredictionExecutionError, match="RuntimeError: boom"):
+    with pytest.raises(PredictionExecutionError, match=f"{error_type.__name__}: boom"):
         run_prediction(_prediction_config(), stack="engine", runner_factory=_Factory(runner))
     # The runner is closed even when the run raises.
     assert runner.closed is True
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    assert cli.main(["predict", "--config", str(path), "--output-dir", str(tmp_path / "out")]) == 1
+    assert f"{error_type.__name__}: boom" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_predict_unsupported_vision_family_is_input_error(tmp_path, monkeypatch, capsys, mode):
+    from aisim.runner import _image_traffic_fields
+    from aisim_core.sdk import utils
+    from aisim_core.sdk.common import VisionEncoderConfig
+    from aisim_core.sdk.errors import UnsupportedVisionFamilyError
+
+    # Minimal unqualified Pixtral geometry exercises the actual SDK refusal,
+    # without downloading a checkpoint or requiring performance measurements.
+    encoder = VisionEncoderConfig(
+        depth=1,
+        hidden_size=16,
+        num_heads=2,
+        intermediate_size=32,
+        patch_size=14,
+        temporal_patch_size=1,
+        spatial_merge_size=2,
+        out_hidden_size=16,
+        resize_mode="pixtral",
+    )
+
+    class ImageRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            if images := spec.workload.get("images"):
+                with monkeypatch.context() as patch:
+                    patch.setattr(
+                        utils,
+                        "get_model_config_from_model_path",
+                        lambda _: {
+                            "architecture": "Mistral3ForConditionalGeneration",
+                        },
+                    )
+                    patch.setattr(utils, "get_vision_encoder_config_from_model_info", lambda _: encoder)
+                    _image_traffic_fields(spec.backend_deployment, images)
+            return super().run(spec, output_requirements=output_requirements)
+
+    class ImageFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("sglang", "agg"), ("sglang", "disagg")),
+                supports_sglang_host_loop=True,
+            )
+
+    raw = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": "sglang",
+            "context_length": 4096,
+            "mode": mode,
+            "workers": {
+                role: {
+                    "kv_cache": {"block_size": 1, "bytes_per_token": 16, "capacity": {"type": "fixed", "blocks": 4096}}
+                }
+                for role in (["aggregated"] if mode == "aggregated" else ["prefill", "decode"])
+            },
+        },
+        "traffic": {
+            "source": {
+                "type": "synthetic",
+                "input_tokens": 128,
+                "output_tokens": 2,
+                "images": {"height": 70, "width": 70},
+            },
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+    }
+    api_runner = ImageRunner()
+    with pytest.raises(UnsupportedVisionFamilyError, match="vision family is not supported"):
+        run_prediction(
+            CorePredictionConfig.model_validate(raw), stack="engine", runner_factory=ImageFactory(api_runner)
+        )
+    assert api_runner.closed
+
+    runner = ImageRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: ImageFactory(runner))
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "images"
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["predict", "--config", str(path), "--output-dir", str(output)])
+    assert raised.value.code == 2
+    assert "Mistral3ForConditionalGeneration vision family is not supported" in capsys.readouterr().err
+    assert not (output / "prediction.json").exists()
+    assert runner.closed
+
+    del raw["traffic"]["source"]["images"]
+    path.write_text(yaml.safe_dump(raw))
+    assert cli.main(["predict", "--config", str(path), "--output-dir", str(tmp_path / "text")]) == 0
+    assert (tmp_path / "text" / "prediction.json").exists()
+
+
+@pytest.mark.parametrize("notes", [[], ["cleanup failed"], ["first cleanup failed", "second cleanup failed"]])
+def test_recommend_reports_exception_notes_after_primary_error(tmp_path, monkeypatch, capsys, notes):
+    error = RuntimeError("primary failure")
+    for note in notes:
+        error.add_note(note)
+
+    def fail(*args):
+        raise error
+
+    monkeypatch.setattr(cli, "_recommend", fail)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    path = tmp_path / "recommend.yaml"
+    path.write_text("{}")
+    assert cli.main(["recommend", "--config", str(path)]) == 1
+    assert capsys.readouterr().err == (
+        "aisim recommend failed: RuntimeError: primary failure\n" + "".join(f"{note}\n" for note in notes)
+    )
 
 
 def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
@@ -1038,7 +1157,7 @@ def test_predict_adapter_compilation_failure_preserves_previous_output(tmp_path,
 
 
 def test_predict_supervision_brackets_runner_lifecycle(tmp_path, monkeypatch) -> None:
-    from aisimulate import supervision
+    from aisim import supervision
 
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
@@ -1212,9 +1331,9 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
 
 @pytest.mark.filterwarnings("error")
 def test_recommend_runner_incompatibility_is_cli_config_error(tmp_path, monkeypatch, capsys) -> None:
-    from aisimulate.recommend import _run_recommendation
+    from aisim.recommend import _run_recommendation
 
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", _run_recommendation)
     config_path = tmp_path / "recommendation.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -1610,8 +1729,8 @@ def test_recommendation_exports_completed_results_after_invalid_suggestion(
 ) -> None:
     from vizier import pyvizier as vz
 
-    from aisimulate.recommend import _run_recommendation
-    from aisimulate.sweeper.sampler import SeededBayesianBranchSampler
+    from aisim.recommend import _run_recommendation
+    from aisim.sweeper.sampler import SeededBayesianBranchSampler
 
     # Exercise the real sampler validation, search, ranking and CLI exporters.
     # Only replace the upstream proposals and the expensive replay runner.
@@ -1629,7 +1748,7 @@ def test_recommendation_exports_completed_results_after_invalid_suggestion(
         monkeypatch.setattr(self._designer, "suggest", suggest)
 
     monkeypatch.setattr(SeededBayesianBranchSampler, "__init__", initialize)
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", _run_recommendation)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
     config = {
         "engine": {
@@ -1801,7 +1920,7 @@ def test_recommendation_outputs_each_concrete_prediction_once(
     partial = _RecommendationResult(candidates)
     partial.counts.resource_limited = resource_limited
     monkeypatch.setattr(
-        "aisimulate.recommend.run_recommendation",
+        "aisim.recommend.run_recommendation",
         lambda *args, **kwargs: partial,
     )
 
@@ -1898,7 +2017,7 @@ def test_recommendation_invokes_selected_output_adapter(tmp_path, monkeypatch, c
         recommendation_kwargs.update(kwargs)
         return result
 
-    monkeypatch.setattr("aisimulate.recommend.run_recommendation", run_recommendation)
+    monkeypatch.setattr("aisim.recommend.run_recommendation", run_recommendation)
 
     output = tmp_path / "out"
     assert cli.main(
@@ -1981,7 +2100,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
 def test_recommendation_writes_an_empty_result_before_returning_failure(
     tmp_path, monkeypatch, capsys, resource_limited
 ) -> None:
-    import aisimulate.recommend as recommendation_module
+    import aisim.recommend as recommendation_module
 
     monkeypatch.setattr(
         cli.CoreRecommendationConfig,
@@ -2274,7 +2393,7 @@ def test_detail_schema_rejects_incomplete_or_unsupported_sections(section):
 def test_detail_partial_memory_preserves_unavailable_role_reason(kv_mode):
     from jsonschema import ValidationError, validate
 
-    from aisimulate.detail import build_prediction_details, format_prediction_details
+    from aisim.detail import build_prediction_details, format_prediction_details
 
     available = {
         "status": "available",
@@ -2383,7 +2502,7 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
 def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys, profile) -> None:
     import os
 
-    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisim.runner import EngineReplayRunnerFactory
 
     class SnapshotFactory(_Factory):
         def capabilities(self):
@@ -2416,7 +2535,7 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
         # This unit test calls the internal child entry point directly. Model
         # its supervisor context; public-process supervision is tested separately.
         monkeypatch.setenv(
-            "_AISIMULATE_SUPERVISED_BUDGET",
+            "_AISIM_SUPERVISED_BUDGET",
             json.dumps(
                 {
                     "supervisor_pid": os.getpid(),
@@ -2460,7 +2579,7 @@ def test_time_source_tables_are_bounded_but_json_keeps_complete_evidence():
 
     from jsonschema import validate
 
-    from aisimulate.detail import build_prediction_details, format_prediction_details
+    from aisim.detail import build_prediction_details, format_prediction_details
 
     operations = [
         {
@@ -2562,7 +2681,7 @@ def performance_record():
     ],
 )
 def test_performance_detail_rejects_malformed_nested_records(performance_record, path, value):
-    from aisimulate.detail import build_prediction_details
+    from aisim.detail import build_prediction_details
 
     record = performance_record
     for key in path[:-1]:
@@ -2581,7 +2700,7 @@ def test_performance_detail_rejects_missing_fields_and_preserves_valid_records(p
 
     from jsonschema import validate
 
-    from aisimulate.detail import performance_diagnostics
+    from aisim.detail import performance_diagnostics
 
     for path in [(), ("phases", 0), ("phases", 0, "operations", 0), ("phases", 0, "operations", 0, "fallbacks", 0)]:
         record = performance_record
@@ -2618,7 +2737,7 @@ def test_performance_detail_rejects_missing_fields_and_preserves_valid_records(p
 def test_diagnostic_string_contract_rejects_whitespace_in_schema_and_adapter(performance_record, path):
     from jsonschema import Draft202012Validator
 
-    from aisimulate.detail import build_prediction_details, performance_diagnostics
+    from aisim.detail import build_prediction_details, performance_diagnostics
 
     if path == ("unavailable_reason",):
         performance_record.update(status="unavailable", phases=[], unavailable_reason="unsupported")
@@ -2658,7 +2777,7 @@ def test_diagnostic_string_contract_rejects_whitespace_in_schema_and_adapter(per
 def test_performance_sol_states_match_schema(performance_record, sol, reason, ratio, valid):
     from jsonschema import Draft202012Validator
 
-    from aisimulate.detail import performance_diagnostics
+    from aisim.detail import performance_diagnostics
 
     operation = performance_record["phases"][0]["operations"][0]
     operation.update(sol=sol, sol_unavailable_reason=reason, latency_to_sol_ratio=ratio)
@@ -2705,7 +2824,7 @@ def test_invalid_analytical_epd_table_includes_banner():
     }
     output = format_prediction_stdout(summary, "table")
     assert output.startswith("INVALID prediction (no_completed_requests): No requests completed.\n")
-    assert "AISimulate analytical EPD" in output
+    assert "AISim analytical EPD" in output
 
 
 def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):
@@ -2864,3 +2983,50 @@ def test_failed_telemetry_serialization_removes_partial_artifacts(tmp_path):
     with pytest.raises(ValueError):
         write_telemetry(tmp_path, payload)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("detail", ["memory", "all"])
+@pytest.mark.parametrize("afd_roles", [("aggregated",), ("prefill",), ("decode",), ("prefill", "decode")])
+def test_native_afd_detail_reaches_final_cli_consumer(tmp_path, capsys, detail, afd_roles):
+    roles = ("aggregated",) if afd_roles == ("aggregated",) else ("prefill", "decode")
+    config = {
+        "engine": {
+            "mode": "aggregated" if roles == ("aggregated",) else "disaggregated",
+            "model": "Qwen/Qwen3-30B-A3B",
+            "hardware": "h200_sxm",
+            "backend": "sglang",
+            "backend_version": "0.5.14",
+            "context_length": 2048,
+            "workers": {
+                role: {
+                    "type": "afd",
+                    "afd": {
+                        "n_a_nodes": 1,
+                        "n_f_nodes": 1,
+                        "tp_a": 1,
+                        "a_batch_size": 4,
+                        "num_microbatches": 2,
+                    },
+                }
+                if role in afd_roles
+                else {
+                    "parallelism": {"tensor": 2},
+                    "kv_cache": {"capacity": {"type": "fixed", "blocks": 8192}},
+                    "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                }
+                for role in roles
+            },
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 16, "output_tokens": 4},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 4},
+        },
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "--config", str(path), "--detail", detail, "--output-dir", str(output)]) == 0
+    result = json.loads((output / "prediction.json").read_text())
+    assert result.get("summary", result)["completed_requests"] == 4
+    assert "Traceback" not in capsys.readouterr().err

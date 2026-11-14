@@ -2468,7 +2468,8 @@ where
             return Ok(());
         }
         if let Some(token_id) = signal.token_id {
-            self.admission.defer_output_token(signal.uuid, token_id)?;
+            self.admission
+                .defer_output_token(signal.uuid, token_id, self.now_ms)?;
             // Generalized-engine completion effects become visible at the
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
@@ -2810,7 +2811,7 @@ where
         Ok(uuid)
     }
 
-    /// Start passes on every idle prefill worker that can make progress at the current timestamp.
+    /// Yields to admission between passes so reactions can join unstarted work.
     fn drive_prefill_workers(&mut self) -> Result<bool> {
         let mut changed = false;
         loop {
@@ -2820,10 +2821,13 @@ where
             }
             changed = true;
             self.handle_prefill_engine_effects(effects)?;
+            if self.admission.holds_passes() {
+                return Ok(changed);
+            }
         }
     }
 
-    /// Start passes on every idle decode worker that can make progress at the current timestamp.
+    /// Yields to admission between passes so reactions can join unstarted work.
     fn drive_decode_workers(&mut self) -> Result<bool> {
         let mut changed = false;
         loop {
@@ -2839,6 +2843,9 @@ where
             }
             changed = true;
             self.handle_decode_engine_effects(effects)?;
+            if self.admission.holds_passes() {
+                return Ok(changed);
+            }
         }
     }
 
@@ -3086,6 +3093,19 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> Result<()> {
+        // Empty source wakeups must not start engine work between native events.
+        let cluster_in_flight = self.cluster_in_flight();
+        if self.admission.wakeup_step(self.now_ms, cluster_in_flight)?
+            && self.drive_started
+            && self
+                .next_timestamps()
+                .1
+                .is_none_or(|next_ms| next_ms > self.now_ms)
+        {
+            // A final empty wakeup must not suppress a due periodic sample.
+            self.apply_telemetry_ticks()?;
+            return Ok(());
+        }
         #[cfg(test)]
         {
             self.stats.semantic_drain_count += 1;
@@ -3128,8 +3148,23 @@ where
             changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.release_tokenized()?;
+            // Submit arrivals released at this boundary before a worker commits
+            // its next pass. The engine still enforces async batch eligibility.
+            changed |= self.drive_pending_actions()?;
+            if self.admission.holds_passes() {
+                continue;
+            }
             changed |= self.drive_prefill_workers()?;
+            // Prefill reactions must reach placement before decode starts.
+            if self.admission.holds_passes() {
+                continue;
+            }
             changed |= self.drive_decode_workers()?;
+            // Settle current feedback before observers run, without moving native
+            // tick boundaries for feedback that emerges in a later drain iteration.
+            if self.admission.holds_passes() {
+                continue;
+            }
             let removed_prefill = self
                 .prefill_engine
                 .try_remove_drained()
@@ -4117,6 +4152,16 @@ where
             return Ok(ReplayStepOutcome::Settled {
                 now_ms: self.now_ms,
             });
+        }
+        if self.admission.is_external()
+            && self.cluster_in_flight() == 0
+            && self.only_idle_events_remain()
+            && self.prefill_engine.is_drained()
+            && self.decode_engine.is_drained()
+            && self.flow.action_queues.is_empty()
+            && self.flow.requests_by_handoff.is_empty()
+        {
+            self.admission.check_not_stalled()?;
         }
 
         loop {
