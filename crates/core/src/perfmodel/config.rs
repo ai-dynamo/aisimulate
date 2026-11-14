@@ -134,7 +134,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 30 (AFD): append four communication variants and the typed source-ordered
 //   pool execution plan; P2P fabric selectors and independent F-node width
 //   are part of the same positional wire-format change.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 30;
+// - 31 (Mamba mixed-step accounting): Mamba2Op gained tail-appended
+//   `state_dtype` and `token_width`. The serde defaults cover JSON only;
+//   schema-30 bincode payloads are rejected.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 31;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

@@ -237,7 +237,8 @@ mod tests {
         // v26: attention / MLA / DSA ops gained tail-appended decode-CP dcp_size.
         // v29: EngineSpec carries the optional vision section (SGLang VL host loop).
         // v30: append native AFD communication ops and source-ordered pool plan.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 30);
+        // v31: Mamba2Op gained tail-appended state_dtype and token_width.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 31);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }

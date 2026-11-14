@@ -59,6 +59,19 @@ marks every row of this checkpoint `FAIL` with `ENCODER_UNSUPPORTED`,
 because the export declares a vision encoder that AISim does not
 model; the SDK tests cover the text path.
 
+A Mamba2 operation reads measured `mamba2_perf` rows only in `SILICON` and
+`HYBRID` modes, and it uses the analytic SOL estimate on a table miss. A
+measured decode row prices one token per request. A qualified Mamba2
+operation records its state dtype. Under MTP, its decode `token_width` is
+above one, because it verifies several tokens per request. No measured row
+covers that step, so the operation always uses the SOL estimate. The
+estimate counts every verified token and the state traffic of each request,
+and its source is `sol`. With `token_width` one, the operation reads the
+measured row as before. The collected state-scan rows use a BF16 state, so a
+qualified scan operation with a `float32` state also uses the SOL estimate.
+Convolution rows do not depend on the state dtype. No collected data
+qualifies Mamba2 timing under MTP.
+
 The bundled `nvidia/Qwen3.5-397B-A17B-NVFP4-V2` export has the same text
 configuration as `nvidia/Qwen3.5-397B-A17B-NVFP4` and a different
 quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN)

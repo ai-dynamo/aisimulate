@@ -37,7 +37,7 @@ use crate::session::{
     ContextOpFilter, OpListPlan, QueryMemo, context_op_runtime, generation_op_runtime,
     get_mix_step_ops, query_context_op, query_generation_op, run_context_ops,
     run_context_ops_planned, run_context_ops_with, run_generation_ops_step,
-    run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
+    run_generation_ops_step_beamed_with, run_generation_ops_step_planned, run_telemetry_decode_ops,
 };
 use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
 
@@ -519,8 +519,8 @@ struct MixStepPlan {
     /// Slot of each context operation, which runs in the shared or the
     /// context-attention pass.
     context_slot: Vec<usize>,
-    /// Slot of each generation-attention operation; the decode-attention
-    /// pass runs no other generation operation.
+    /// Slot of each generation-attention or qualified Mamba operation; the
+    /// decode pass runs no other generation operation.
     generation_slot: Vec<Option<usize>>,
 }
 
@@ -546,7 +546,9 @@ impl MixStepPlan {
         }
         let generation_slot = generation
             .iter()
-            .map(|op| op.is_generation_attention().then(|| slot_of(op)))
+            .map(|op| {
+                (op.is_generation_attention() || op.is_qualified_mamba()).then(|| slot_of(op))
+            })
             .collect();
         Self {
             names: names.into(),
@@ -936,6 +938,8 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
+        Self::validate_mamba_ops(&spec.context_ops, None, true)?;
+        Self::validate_mamba_ops(&spec.generation_ops, Some(nextn.saturating_add(1)), true)?;
         super::readiness::validate_glm53_kv(
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
@@ -1030,6 +1034,84 @@ impl Engine {
             vision: spec.vision,
             tp_size: spec.engine.parallel.tp_size,
         })
+    }
+
+    /// Mixed steps price only top-level qualified Mamba ops per phase, so a
+    /// qualified op inside a composite is rejected. Generation Mamba queries
+    /// carry `requests * (nextn + 1)` flattened tokens and the op divides by
+    /// its own width (`decode_width`); the two must agree. Whole-model FPM
+    /// `sol_ops` use a separate path and are not walked.
+    fn validate_mamba_ops(
+        ops: &[Op],
+        decode_width: Option<u32>,
+        top_level: bool,
+    ) -> Result<(), AicError> {
+        let invalid = |name: &str, why: String| {
+            Err(AicError::InvalidEngineConfig(format!(
+                "Mamba op {name}: {why}"
+            )))
+        };
+        for op in ops {
+            match op {
+                Op::Mamba2(m) => {
+                    let qualified = op.is_qualified_mamba();
+                    if !matches!(
+                        m.state_dtype.as_str(),
+                        "unrecorded" | "float16" | "bfloat16" | "float32"
+                    ) {
+                        return invalid(
+                            &m.name,
+                            format!("unsupported state_dtype {:?}", m.state_dtype),
+                        );
+                    }
+                    if m.token_width == 0 || (!qualified && m.token_width != 1) {
+                        return invalid(
+                            &m.name,
+                            format!(
+                                "token_width {} must be positive, and 1 for an unrecorded state_dtype",
+                                m.token_width
+                            ),
+                        );
+                    }
+                    if qualified && !top_level {
+                        return invalid(
+                            &m.name,
+                            "a qualified op cannot be nested in a composite".into(),
+                        );
+                    }
+                    if let Some(width) = decode_width
+                        && qualified
+                        && m.token_width != width
+                    {
+                        return invalid(
+                            &m.name,
+                            format!(
+                                "qualified op has token_width {} but speculative nextn+1 is {width}",
+                                m.token_width
+                            ),
+                        );
+                    }
+                }
+                Op::TokenScale(o) => {
+                    Self::validate_mamba_ops(std::slice::from_ref(&o.op), decode_width, false)?
+                }
+                Op::Dsv41Stage(o) => Self::validate_mamba_ops(&o.children, decode_width, false)?,
+                Op::Overlap(o) => {
+                    Self::validate_mamba_ops(&o.group_a, decode_width, false)?;
+                    Self::validate_mamba_ops(&o.group_b, decode_width, false)?;
+                }
+                Op::Fallback(o) => {
+                    Self::validate_mamba_ops(
+                        std::slice::from_ref(&o.primary),
+                        decode_width,
+                        false,
+                    )?;
+                    Self::validate_mamba_ops(&o.fallback, decode_width, false)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn reject_sd_round_ops(ops: &[Op]) -> Result<(), AicError> {
@@ -2240,6 +2322,12 @@ impl Engine {
         // a guard — callers always pass isl >= 1. Clamp to avoid a Rust
         // div-by-zero panic on degenerate input Python would crash on.
         let isl = isl.max(1);
+        if ctx_tokens > 0 && prefix >= isl {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "isl must be greater than 0 after removing prefix, but got {}",
+                isl as i64 - prefix as i64
+            )));
+        }
 
         // ---- Pass 1: combined non-attention work ----
         // Speculative progress model: every decode request verifies one
@@ -2258,6 +2346,34 @@ impl Engine {
         }
         let mut shared_non_attention = 0.0;
         for op in &self.context_ops {
+            if op.is_qualified_mamba() {
+                // Each prefill chunk reads and writes its recurrent state once.
+                // Decode Mamba is priced in pass 3 at its own request shape.
+                // `ctx_tokens` packs `floor(ctx/isl)` complete requests (each
+                // `isl - prefix` new tokens) plus one trailing partial extend.
+                // shortcut: sum uniform timing rows until variable-length batches are
+                // calibrated; this can overcount launch overhead for ragged batches.
+                for (batch, tokens) in [
+                    (ctx_tokens / isl, isl.saturating_sub(prefix)),
+                    (1, ctx_tokens % isl),
+                ] {
+                    if batch == 0 || tokens == 0 {
+                        continue;
+                    }
+                    let result = query_context_op(
+                        op,
+                        &self.db,
+                        batch,
+                        tokens,
+                        prefix,
+                        seq_imbalance_correction_scale,
+                        None,
+                    )?;
+                    shared_non_attention += result.latency_ms;
+                    on_op(MixedPass::SharedNonAttention, op, result);
+                }
+                continue;
+            }
             // Only target operations share a forward across prefill and
             // verification. The draft has its own phase-specific graph.
             if op.is_context_attention() || op.name().starts_with("draft_") {
@@ -2282,17 +2398,13 @@ impl Engine {
         // Python's `np.ceil(isl/0)` is +inf and the division yields 0 — skip.
         let mut context_attention = 0.0_f64;
         if ctx_tokens > 0 {
-            if prefix >= isl {
-                return Err(AicError::InvalidEngineConfig(format!(
-                    "isl must be greater than 0 after removing prefix, but got {}",
-                    isl as i64 - prefix as i64
-                )));
-            }
             let batch2 = ctx_tokens.div_ceil(isl);
             let scale2 = isl.div_ceil(ctx_tokens) as f64;
             let mut attn = 0.0;
             for op in &self.context_ops {
-                if !op.is_context_attention() && !op.name().starts_with("draft_") {
+                if op.is_qualified_mamba()
+                    || (!op.is_context_attention() && !op.name().starts_with("draft_"))
+                {
                     continue;
                 }
                 // Draft prefill uses the same whole-prefill amortization
@@ -2318,7 +2430,7 @@ impl Engine {
             context_attention = attn / scale2;
         }
 
-        // ---- Pass 3: decode attention ----
+        // ---- Pass 3: decode attention and qualified Mamba ----
         let mut decode_attention = 0.0_f64;
         if gen_tokens > 0 {
             let bs = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
@@ -2326,7 +2438,10 @@ impl Engine {
             // isl_pass3 = isl + osl//2 and a single step (osl=2, i=0).
             let s = isl + osl / 2 + 1;
             for op in &self.generation_ops {
-                if !op.is_generation_attention() && !op.name().starts_with("draft_") {
+                if !op.is_generation_attention()
+                    && !op.name().starts_with("draft_")
+                    && !op.is_qualified_mamba()
+                {
                     continue;
                 }
                 // The draft's TokenScale maps this verification-width
@@ -3182,6 +3297,11 @@ impl Engine {
             AicError::InvalidEngineConfig(format!("evaluate_ops_json: invalid op list JSON: {e}"))
         })?;
         Self::reject_sd_round_ops(&ops)?;
+        Self::validate_mamba_ops(
+            &ops,
+            (!is_context).then(|| self.nextn.saturating_add(1)),
+            true,
+        )?;
         let mut out = PerOpFold::new(if is_context { "context" } else { "generation" });
         for op in &ops {
             let r = if is_context {
@@ -3290,6 +3410,11 @@ impl Engine {
             ))
         })?;
         Self::reject_sd_round_ops(&ops)?;
+        Self::validate_mamba_ops(
+            &ops,
+            (!is_context).then(|| self.nextn.saturating_add(1)),
+            true,
+        )?;
         let sol_db = self.db.sol_full_view();
         let mut out = PerOpSolFold::default();
         for op in &ops {
@@ -3853,20 +3978,15 @@ impl Engine {
         if has_decode {
             let n_decode = sched.num_decode_requests.max(1);
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
-            let runtime = generation_op_runtime(n_decode, 1, kv_per_req, 1.0, 0, None);
             operations.begin(Some(self.generation_plan.slot_names()));
-            total += run_generation_ops_step_planned(
+            total += run_telemetry_decode_ops(
                 &self.generation_ops,
-                None,
                 &self.db,
                 n_decode,
-                1,
                 kv_per_req,
-                1.0,
-                false,
-                |index, op, result| {
+                |index, op, runtime, result| {
                     let slot = Some(self.generation_plan.name_slot(index));
-                    operations.add("generation", slot, op, result, 1.0, || runtime);
+                    operations.add("generation", slot, op, result, 1.0, || *runtime);
                 },
             )?;
         }
@@ -4190,6 +4310,299 @@ pub(crate) mod tests {
             generation_ops(),
         );
         Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    /// FP16 Mamba2 op with a 1 MiB state; decode verifies four tokens (MTP3).
+    fn qualified_mamba(prefill: bool, token_width: u32) -> Op {
+        Op::Mamba2(crate::operators::Mamba2Op {
+            name: if prefill {
+                "context_ssm"
+            } else {
+                "generation_ssm"
+            }
+            .into(),
+            scale_factor: 1.0,
+            kernel_source: if prefill {
+                "vllm_mamba_chunk_scan_combined_varlen"
+            } else {
+                "vllm_flashinfer_selective_state_update"
+            }
+            .into(),
+            phase: if prefill { "context" } else { "generation" }.into(),
+            d_model: 4096,
+            d_state: 128,
+            d_conv: 4,
+            nheads: 64,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+            state_dtype: "float16".into(),
+            token_width,
+        })
+    }
+
+    #[test]
+    fn qualified_mamba_mixed_steps_preserve_prefill_and_decode_shapes() {
+        let mut engine = build_engine(Some(3));
+        engine.context_ops = vec![qualified_mamba(true, 1)];
+        engine.generation_ops = vec![qualified_mamba(false, 4)];
+        engine.context_plan = OpListPlan::new(&engine.context_ops);
+        engine.generation_plan = OpListPlan::new(&engine.generation_ops);
+        engine.mix_plan = MixStepPlan::new(&engine.context_ops, &engine.generation_ops);
+        // Per token 18,560 activation bytes. Each prefill chunk reads and writes
+        // its 1 MiB state; two width-four decodes add 10,634,240 bytes.
+        let ms = |bytes: f64| bytes / engine.db.system_spec.gpu.mem_bw * 1000.0;
+        let close = |got: f64, bytes: f64| (got - ms(bytes)).abs() < 1e-12;
+        let decode_bytes = 10_634_240.0;
+        let packed = |prefill_tokens: u32, prefills: u32, decodes: u32| {
+            engine
+                .forward_pass_time_ms(&[ForwardPassMetrics {
+                    scheduled_requests: crate::ScheduledRequestMetrics {
+                        num_prefill_requests: prefills,
+                        sum_prefill_tokens: prefill_tokens,
+                        num_decode_requests: decodes,
+                        sum_decode_kv_tokens: decodes * 8,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }])
+                .unwrap()
+        };
+        // (ctx, isl, prefix, prefill requests, new tokens): a partially cached
+        // chunk, a complete cached request plus a partial extend, a budget that
+        // splits two requests, and no prefill.
+        for (ctx, isl, prefix, requests, new_tokens) in [
+            (512, 4096, 1024, 1, 512),
+            (6000, 4096, 3000, 2, 3000),
+            (8128, 4096, 1024, 2, 7104),
+            (0, 4096, 1024, 0, 0),
+        ] {
+            let bytes =
+                f64::from(new_tokens) * 18_560.0 + f64::from(requests) * 2_097_152.0 + decode_bytes;
+            let mixed = engine
+                .mixed_step_latency(ctx, 2, isl, 1, prefix, 1.0, 1.0)
+                .unwrap();
+            assert!(close(mixed, bytes), "chunk={ctx}, prefix={prefix}");
+            let (shared, context, decode) = engine
+                .mixed_step_breakdown_per_op(ctx, 2, isl, 1, prefix, 1.0, 1.0)
+                .unwrap();
+            let sum: f64 = shared
+                .iter()
+                .chain(&context)
+                .chain(&decode)
+                .map(|row| row.1)
+                .sum();
+            assert!((sum - mixed).abs() < 1e-12);
+            assert!(
+                close(packed(new_tokens, requests, 2), bytes),
+                "telemetry chunk={ctx}"
+            );
+        }
+        // Telemetry carries request counts: two prefills of 17 tokens are two
+        // state pairs (9 + 8 tokens), never a third request from the average.
+        assert!(close(
+            packed(17, 2, 1),
+            17.0 * 18_560.0 + 2.0 * 2_097_152.0 + 5_317_120.0
+        ));
+        assert!(close(packed(16, 1, 0), 16.0 * 18_560.0 + 2_097_152.0));
+        assert!(close(
+            engine.decode_step_latency(2, 16, 1, 1.0).unwrap(),
+            decode_bytes
+        ));
+        // A draft-named Mamba op is priced once.
+        if let Op::Mamba2(op) = &mut engine.context_ops[0] {
+            op.name = "draft_context_ssm".into();
+        }
+        let draft_named = engine
+            .mixed_step_latency(16, 2, 16, 1, 0, 1.0, 1.0)
+            .unwrap();
+        assert!(close(
+            draft_named,
+            16.0 * 18_560.0 + 2_097_152.0 + decode_bytes
+        ));
+        assert!(
+            engine
+                .mixed_step_latency(4096, 2, 4096, 4097, 4097, 1.0, 1.0)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn ad_hoc_op_queries_validate_mamba_fields() {
+        let engine = build_engine(None);
+        let with = |state_dtype: &str, token_width: u32| match qualified_mamba(false, token_width) {
+            Op::Mamba2(mut m) => {
+                m.state_dtype = state_dtype.into();
+                serde_json::to_string(&vec![Op::Mamba2(m)]).unwrap()
+            }
+            _ => unreachable!(),
+        };
+        // A valid qualified op prices. The SOL entry point has no Mamba
+        // decomposition, but it rejects invalid fields first.
+        engine
+            .evaluate_ops_json(&with("float16", 1), false, 2, 16, 0, 1.0, None)
+            .unwrap();
+        for (ops, message) in [
+            (with("fp16", 1), "unsupported state_dtype"),
+            (with("float16", 0), "must be positive"),
+            (with("unrecorded", 4), "unrecorded"),
+            (with("float16", 4), "token_width 4"),
+        ] {
+            let err = engine
+                .evaluate_ops_json(&ops, false, 2, 16, 0, 1.0, None)
+                .unwrap_err();
+            assert!(err.to_string().contains(message), "{err}");
+            let err = engine
+                .evaluate_ops_sol_json(&ops, false, 2, 16, 0, 1.0, None)
+                .unwrap_err();
+            assert!(err.to_string().contains(message), "{err}");
+        }
+    }
+
+    #[test]
+    fn qualified_mamba_decode_reads_rows_only_at_width_one() {
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        let root = tempfile::tempdir().expect("tmpdir");
+        write_energy_systems_root(root.path());
+        let data = root.path().join("data/test/1.0");
+        std::fs::create_dir_all(&data).expect("mkdir data");
+        // One measured decode row for two requests at qualified_mamba's shape.
+        write_parquet(
+            &data.join("mamba2_perf.parquet"),
+            &[
+                Col::Str(
+                    "kernel_source",
+                    vec!["vllm_flashinfer_selective_state_update"],
+                ),
+                Col::Str("phase", vec!["generation"]),
+                Col::I64("batch_size", vec![2]),
+                Col::I64("seq_len", vec![1]),
+                Col::I64("d_model", vec![4096]),
+                Col::I64("d_state", vec![128]),
+                Col::I64("d_conv", vec![4]),
+                Col::I64("nheads", vec![64]),
+                Col::I64("head_dim", vec![64]),
+                Col::I64("n_groups", vec![4]),
+                Col::I64("chunk_size", vec![128]),
+                Col::F64("latency", vec![0.25]),
+            ],
+        );
+        let db = Arc::new(PerfDatabase::load(root.path(), "testsys", "test", "1.0").expect("load"));
+        let ms = |bytes: f64| bytes / db.system_spec.gpu.mem_bw * 1000.0;
+        let decode_only = |nextn: Option<u32>, width: u32, requests: u32, dtype: &str| {
+            let mut op = qualified_mamba(false, width);
+            if let Op::Mamba2(m) = &mut op {
+                m.state_dtype = dtype.into();
+            }
+            let spec = EngineSpec::new(fixture_engine_config(nextn), vec![], vec![op]);
+            let engine = Engine::build(spec, Arc::clone(&db)).unwrap();
+            let metrics = ForwardPassMetrics {
+                scheduled_requests: crate::ScheduledRequestMetrics {
+                    num_decode_requests: requests,
+                    sum_decode_kv_tokens: requests * 8,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let estimate = engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap();
+            let op = &estimate.ranks[0].operations[0];
+            (
+                estimate.latency_ms.unwrap(),
+                op.latency_ms,
+                op.source.clone(),
+            )
+        };
+        // Width one keeps the measured row.
+        let (total, op_ms, source) = decode_only(None, 1, 2, "float16");
+        assert_eq!((total, op_ms, source.as_str()), (0.25, 0.25, "silicon"));
+        // The 16-bit row does not price an FP32 state: one 2 MiB read and
+        // one 2 MiB write per request.
+        let (total, _, source) = decode_only(None, 1, 2, "float32");
+        let bytes = 2.0 * (18_560.0 + 2.0 * 2_097_152.0);
+        assert!((total - ms(bytes)).abs() < 1e-12, "fp32: {total}");
+        assert_eq!(source, "sol");
+        // Width four verifies four tokens per request: activations for
+        // 4 tokens (18,560 B each) plus one state read and four 1 MiB writes.
+        for requests in [2_u32, 3] {
+            let bytes = f64::from(requests) * (4.0 * 18_560.0 + 5.0 * 1_048_576.0);
+            let (total, op_ms, source) = decode_only(Some(3), 4, requests, "float16");
+            assert!(
+                (total - ms(bytes)).abs() < 1e-12,
+                "{requests} requests: {total}"
+            );
+            assert_eq!((op_ms, source.as_str()), (total, "sol"));
+        }
+        // A mixed step selects the same decode source for the same op.
+        for (nextn, width, source) in [(None, 1, "silicon"), (Some(3), 4, "sol")] {
+            let spec = EngineSpec::new(
+                fixture_engine_config(nextn),
+                vec![qualified_mamba(true, 1)],
+                vec![qualified_mamba(false, width)],
+            );
+            let engine = Engine::build(spec, Arc::clone(&db)).unwrap();
+            let metrics = ForwardPassMetrics {
+                scheduled_requests: crate::ScheduledRequestMetrics {
+                    num_prefill_requests: 1,
+                    sum_prefill_tokens: 16,
+                    num_decode_requests: 2,
+                    sum_decode_kv_tokens: 16,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let estimate = engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap();
+            let decode = estimate.ranks[0]
+                .operations
+                .iter()
+                .find(|op| op.name == "generation_ssm")
+                .unwrap();
+            assert_eq!(decode.source, source, "width {width}");
+        }
+    }
+
+    #[test]
+    fn mamba_ops_are_validated_at_build() {
+        let db = build_engine(None).db;
+        let build = |nextn: Option<u32>, op: Op| {
+            let mut ops = generation_ops();
+            ops.push(op);
+            Engine::build(
+                EngineSpec::new(fixture_engine_config(nextn), context_ops(), ops),
+                db.clone(),
+            )
+        };
+        let with = |state_dtype: &str, token_width: u32| match qualified_mamba(false, token_width) {
+            Op::Mamba2(mut m) => {
+                m.state_dtype = state_dtype.into();
+                Op::Mamba2(m)
+            }
+            _ => unreachable!(),
+        };
+        // Width one matches a non-speculative engine; MTP3 needs width four.
+        build(None, qualified_mamba(false, 1)).unwrap();
+        build(Some(3), qualified_mamba(false, 4)).unwrap();
+        build(None, with("unrecorded", 1)).unwrap();
+        let nested = Op::Overlap(crate::operators::op::OverlapOp::new(
+            "pair",
+            vec![qualified_mamba(false, 1)],
+            vec![],
+        ));
+        for (nextn, op, message) in [
+            (Some(3), qualified_mamba(false, 1), "token_width 1"),
+            (None, with("fp16", 1), "unsupported state_dtype"),
+            (None, with("float16", 0), "must be positive"),
+            (None, with("unrecorded", 4), "unrecorded"),
+            (None, nested, "nested"),
+        ] {
+            let err = build(nextn, op).unwrap_err().to_string();
+            assert!(err.contains(message), "{err}");
+        }
     }
 
     fn runtime(batch_size: u32, isl: u32, osl: u32) -> RuntimeConfig {
@@ -7794,6 +8207,8 @@ pub(crate) mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            state_dtype: "unrecorded".into(),
+            token_width: 1,
         })];
         let ops_json = serde_json::to_string(&ops).unwrap();
         let err = engine

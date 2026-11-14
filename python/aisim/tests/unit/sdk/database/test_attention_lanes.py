@@ -247,7 +247,7 @@ def test_engine_spec_schema_version_is_thirty():
     """AFD appends after the main vision and GLM wire layouts."""
     from aisim.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 30
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 31
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():
