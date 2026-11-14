@@ -888,7 +888,7 @@ def _materialize_engine_execution_spec(
         # Reject ordinary-role PP before either role estimates capacity.
         for raw, role in ((raw_prefill, "prefill"), (raw_decode, "decode")):
             if role not in deployment.afd_roles:
-                _reject_role_pipeline_parallelism(deployment.parallel_config, raw, role)
+                _reject_role_pipeline_parallelism(deployment.parallel_config, raw, role, deployment.backend)
         prefill = _materialize_deployment_role(deployment, spec, raw_prefill, "prefill", memory_diagnostics)
         decode = _materialize_deployment_role(deployment, spec, raw_decode, "decode", memory_diagnostics)
         _require_parallel_match(
@@ -1307,14 +1307,18 @@ def materialize_engine_launch_config(
 
 
 def _reject_role_pipeline_parallelism(
-    parallel_config: Mapping[str, JSONValue], role_config: Mapping[str, JSONValue], role: str
-) -> None:
+    parallel_config: Mapping[str, JSONValue], role_config: Mapping[str, JSONValue], role: str, backend: str
+) -> tuple[int | None, int | None]:
+    """Reject unpriced pipeline widths.
+
+    Returns a deployment width the rank does not state yet, and the role's resolved width.
+    """
     # `rank: null` falls back to the flat role fields during materialization.
     rank = role_config.get("rank")
     if rank is None:
         rank = role_config
     if not isinstance(rank, Mapping):
-        return
+        return None, None
     timing = rank.get("timing_model")
     timing_config = timing.get("config") if isinstance(timing, Mapping) else None
     if not isinstance(timing_config, Mapping):
@@ -1330,7 +1334,48 @@ def _reject_role_pipeline_parallelism(
             for value in (timing_config.get("pp", 1), timing_config.get("pp_size", 1))
             if value != UNKNOWN_IDENTITY
         ),
+        backend=backend,
     )
+    # Only AIC timing reads a pipeline width; any other model would replay the
+    # stages as one.
+    if timing is not None and not (
+        isinstance(timing, Mapping) and timing.get("type") == "external" and timing.get("provider") in ("aic", "ais")
+    ):
+        widths = (
+            parallel_config.get("pp" if role == "aggregated" else f"{role}_pp", 1),
+            role_config.get("aic_pp_size", 1),
+            rank.get("aic_pp_size", 1),
+        )
+        if any(width not in (None, 1) for width in widths):
+            kind = timing.get("type") if isinstance(timing, Mapping) else timing
+            raise ValueError(f"pipeline parallelism on {role} requires an AIC timing model, not {kind!r} timing")
+        return None, None
+    # The AIC timing width must agree with the deployment's, which it inherits when unstated.
+    deployment = parallel_config.get("pp" if role == "aggregated" else f"{role}_pp")
+    if deployment is not None:
+        deployment = _positive_int(deployment, f"{role} pipeline width")
+    stated = {
+        _positive_int(value, f"{role} {name}")
+        for name, value in (
+            ("aic_pp_size", role_config.get("aic_pp_size")),
+            ("rank aic_pp_size", rank.get("aic_pp_size")),
+            ("timing pp", timing_config.get("pp")),
+            ("timing pp_size", timing_config.get("pp_size")),
+        )
+        if value is not None and value != UNKNOWN_IDENTITY
+    }
+    if len(stated | ({deployment} if deployment is not None else set())) > 1:
+        raise ValueError(
+            f"{role} pipeline widths conflict: deployment {deployment!r}, timing {sorted(stated, key=repr)!r}"
+        )
+    width = next(iter(stated), deployment)
+    # Native replay runs an unknown timing width as one stage, so it cannot price a wider role.
+    if width not in (None, 1) and any(timing_config.get(name) == UNKNOWN_IDENTITY for name in ("pp", "pp_size")):
+        raise ValueError(
+            f"pipeline parallelism on {role} requires a timing model that records its pipeline width, "
+            f"not {UNKNOWN_IDENTITY!r}"
+        )
+    return (deployment if deployment not in (None, 1) and not stated else None), width
 
 
 def _materialize_engine_role(
@@ -1348,9 +1393,14 @@ def _materialize_engine_role(
     # New generic schemes use caller-authored capacity; leave the existing
     # Ngram/NextN capacity paths unchanged.
     requested_rank = role_config.get("rank", role_config)
-    _reject_role_pipeline_parallelism(parallel_config, role_config, role)
+    pipeline, pipeline_width = _reject_role_pipeline_parallelism(parallel_config, role_config, role, deployment_backend)
+    # A nested rank carries the inherited width itself; the flat form and `rank: null` keep it on the role.
+    if pipeline is not None and not isinstance(role_config.get("rank"), Mapping):
+        role_config["aic_pp_size"] = pipeline
     if isinstance(requested_rank, Mapping):
         requested_rank = dict(requested_rank)
+        if pipeline is not None:
+            requested_rank["aic_pp_size"] = pipeline
         if "rank" in role_config:
             role_config["rank"] = requested_rank
         else:
@@ -1447,10 +1497,17 @@ def _materialize_engine_role(
         if state_cache is not None:
             role_config["state_cache"] = state_cache.model_dump(mode="json", exclude_none=True)
         else:
+            # A width only the timing model states still sizes the capacity estimate. It stays a
+            # capacity input, so the timing config does not gain a second width.
+            timing_only_width = pipeline_width not in (None, 1) and role_config.get("aic_pp_size") is None
+            if timing_only_width:
+                role_config["aic_pp_size"] = pipeline_width
             role_config = materialize_aic_num_gpu_blocks(
                 role_config,
                 **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
             )
+            if timing_only_width:
+                role_config.pop("aic_pp_size", None)
             if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
                 role_memory["status"] = "available"
                 if "num_gpu_blocks" in role_memory:

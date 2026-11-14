@@ -131,6 +131,8 @@ pub use core::{
 };
 #[doc(hidden)]
 pub use engine::ReplayRoleFactory;
+#[cfg(feature = "python")]
+pub(crate) use engine::pipeline_speedup_ratio;
 #[doc(hidden)]
 pub use engine::run_engine_handoff_conformance;
 pub use engine::{

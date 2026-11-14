@@ -46,7 +46,7 @@ engine:
 | `workers.<role>.parallelism.preset` | Not applicable | `default` | Recommend only. `default` searches the generated parallelism space; a list pins candidate shapes; `false` or `{}` disables presets so the individual fields below define the space. See [search space](../../sweeper/search-space.md). |
 | `workers.<role>.parallelism.replicas` | `1` | Searched | Number of workers in this role. |
 | `workers.<role>.parallelism.tensor` | `1` | Searched | Attention tensor parallelism. |
-| `workers.<role>.parallelism.pipeline` | `1` | Searched | Pipeline stages. Engine replay requires `1`, including the [AFD+PD companion](analytical.md#afd). |
+| `workers.<role>.parallelism.pipeline` | `1` | Searched | Pipeline stages. Engine replay requires `1`, including the [AFD+PD companion](analytical.md#afd), except for an SGLang disaggregated `prefill` worker (see [Pipeline-parallel SGLang prefill](#pipeline-parallel-sglang-prefill)). |
 | `workers.<role>.parallelism.attention_data` | `1` | Searched | Attention data-parallel ranks per worker. |
 | `workers.<role>.parallelism.moe_tensor` | `1` | Searched | MoE tensor parallelism. Repartitions the worker's GPUs and does not add GPUs. |
 | `workers.<role>.parallelism.moe_expert` | `1` | Searched | MoE expert parallelism. Repartitions the worker's GPUs and does not add GPUs. |
@@ -118,8 +118,9 @@ differently and do not add more. A deployment's GPU count is the sum over its
 roles. In `recommend`, `optimization.constraints` bounds this sum.
 
 Engine replay reports each role's GPUs per worker as
-`tensor × attention_data × prefill_context`. Engine replay rejects pipeline
-parallelism greater than one before capacity estimation. GPU-hours sum each
+`tensor × attention_data × prefill_context`, times `pipeline` on an SGLang
+disaggregated prefill worker. Engine replay rejects pipeline parallelism
+greater than one on every other role before capacity estimation. GPU-hours sum each
 role's worker-seconds times this count, divided by 3600. Aggregated workers use
 the `decode_gpus_per_worker` and `decode_worker_seconds` report fields. Neither
 DCP nor MoE EP adds another multiplier.
@@ -178,6 +179,24 @@ you raise it.
 > `max_batched_tokens` does not change SGLang replay results, except when
 > `host_loop` is enabled or images are encoded on the worker (without a
 > separate encoder pool). In those cases it is the worker's `chunked_prefill_size`.
+
+<a id="pipeline-parallel-sglang-prefill"></a>
+
+### Pipeline-parallel SGLang prefill
+
+An SGLang disaggregated `prefill` worker accepts `parallelism.pipeline` above
+one with an AIC timing model. SGLang's PP event loop feeds the next chunk of a
+prompt into the first stage while the previous chunk runs on later stages, so
+replay retires passes at the per-stage rate: the timing provider prices the
+whole forward and replay divides it by `pipeline`. Each chunk still crosses the
+remaining `pipeline - 1` stages in order, a stage taking it once the stage
+before has finished it and the stage itself has finished the chunk ahead. The
+KV handoff starts when the prompt's last chunk leaves the last stage: after
+`pipeline - 1` more passes for equal chunks, and later when a short last chunk
+follows a longer one. The worker counts
+`tensor × attention_data × prefill_context × pipeline` GPUs. Fixed and
+polynomial timing price one stage, so they reject `pipeline` above one, as do
+other roles and backends, before capacity estimation.
 
 With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a

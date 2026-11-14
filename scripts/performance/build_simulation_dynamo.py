@@ -92,18 +92,22 @@ def patch_handoff_timing(core: Path, dynamo: Path) -> dict:
         "kv_bytes_per_token": "Option<usize>",
         "bandwidth_gb_s": "Option<f64>",
     }
-    if fields not in (legacy, legacy | {"state_bytes": "usize"}):
+    state_bytes = {"state_bytes": "usize"}
+    pipeline_fill = {"pipeline_fill_ms": "f64"}
+    if fields not in (legacy, legacy | state_bytes, legacy | state_bytes | pipeline_fill):
         raise ValueError("unreviewed AISim handoff API; update the pinned adapter")
     patched = original
     if "state_bytes" in fields:
         anchor = b"        kv_bytes_per_token: timing.kv_bytes_per_token,\n"
         if original.count(anchor) != 1:
             raise ValueError("pinned handoff conversion anchor is not unique")
-        patched = original.replace(
-            anchor,
-            anchor
-            + (b"        // Modified by AISim CI: this legacy DTO models token KV only.\n        state_bytes: 0,\n"),
-        )
+        added = b"        // Modified by AISim CI: this legacy DTO models token KV only.\n        state_bytes: 0,\n"
+        if "pipeline_fill_ms" in fields:
+            added += (
+                b"        // Modified by AISim CI: the pinned Dynamo has no pipeline-parallel prefill.\n"
+                b"        pipeline_fill_ms: 0.0,\n"
+            )
+        patched = original.replace(anchor, anchor + added)
         path.write_bytes(patched)
     return {
         "path": str(path.relative_to(dynamo)),
@@ -111,6 +115,7 @@ def patch_handoff_timing(core: Path, dynamo: Path) -> dict:
         "after_sha256": hashlib.sha256(patched).hexdigest(),
         "token_only_state_bytes": 0,
         "api_has_state_bytes": "state_bytes" in fields,
+        "api_has_pipeline_fill_ms": "pipeline_fill_ms" in fields,
     }
 
 

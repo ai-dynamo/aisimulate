@@ -2473,15 +2473,59 @@ fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
 }
 
 #[test]
+fn pp_prefill_fill_delays_linked_handoffs_without_holding_the_links() {
+    // Two prompts finish in one PP4 prefill forward and share one sending and one
+    // receiving link. Each handoff waits the fill once; the fill must not be link
+    // work, so the linked delay grows by the same fill as an unlinked handoff.
+    let last_handoff_ms = |linked: bool, fill_passes: f64| {
+        let mut config = sglang_disagg_config();
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        config.prefill_args.pipeline_fill_passes = fill_passes;
+        if linked {
+            config.prefill_args.kv_transfer_bandwidth = Some(1.0);
+            config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
+        }
+        let requests = (0..2u32)
+            .map(|i| DirectRequest {
+                tokens: (1000 * i..1000 * i + 128).collect(),
+                ..request(u128::from(i) + 1, 128, 2, 0.0)
+            })
+            .collect();
+        let (_, stats) = run_trace_collect(&config, requests, None, 1.0);
+        (1..=2u128)
+            .map(|uuid| stats.handoff_ms[&Uuid::from_u128(uuid)])
+            .fold(f64::MIN, f64::max)
+    };
+    let unlinked_fill = last_handoff_ms(false, 3.0) - last_handoff_ms(false, 0.0);
+    let linked_fill = last_handoff_ms(true, 3.0) - last_handoff_ms(true, 0.0);
+    assert!(unlinked_fill > 0.0);
+    assert!(
+        (linked_fill - unlinked_fill).abs() < 1e-9,
+        "linked={linked_fill} unlinked={unlinked_fill}"
+    );
+}
+
+#[test]
+fn a_transfer_with_only_pipeline_fill_completes_when_the_fill_ends() {
+    let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
+    let handoff_id = HandoffId::new(Uuid::from_u128(1));
+    links.submit(handoff_id, 0.0, 0, 0, 0.0, 3.0);
+    assert_eq!(links.next_event_ms(), Some(3.0));
+    links.complete_due(3.0);
+    assert_eq!(links.completed, [handoff_id]);
+}
+
+#[test]
 fn same_instant_transfers_compute_rates_once() {
     let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
-    links.submit(HandoffId::new(Uuid::from_u128(1)), 1.0, 0, 0, 0.0);
+    links.submit(HandoffId::new(Uuid::from_u128(1)), 1.0, 0, 0, 0.0, 0.0);
     assert_eq!(links.next_event_ms(), Some(1.0));
     let before = links.transfers.rate_refreshes.get();
     // Independent pairs submitted later at one instant.
     for pair in 1..=64u32 {
         let handoff_id = HandoffId::new(Uuid::from_u128(u128::from(pair) + 1));
-        links.submit(handoff_id, 2.0, pair as usize, pair as usize, 0.5);
+        links.submit(handoff_id, 2.0, pair as usize, pair as usize, 0.5, 0.5);
     }
     assert_eq!(links.next_event_ms(), Some(1.0));
     // The step to the shared instant reuses the earlier rates; the new
@@ -2491,6 +2535,33 @@ fn same_instant_transfers_compute_rates_once() {
     links.advance(1.0);
     assert_eq!(links.completed, [HandoffId::new(Uuid::from_u128(1))]);
     assert_eq!(links.transfers.rate_refreshes.get() - before, 2);
+}
+
+#[test]
+fn pipeline_fill_does_not_hold_shared_transfer_links() {
+    // Two handoffs share a source and destination link. The second still has
+    // 3 ms of pipeline fill, which is compute: the first transfer runs alone
+    // until then, and the second then moves its 2 ms of KV.
+    let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
+    let (first, second) = (
+        HandoffId::new(Uuid::from_u128(1)),
+        HandoffId::new(Uuid::from_u128(2)),
+    );
+    links.submit(first, 2.0, 0, 0, 0.0, 0.0);
+    links.submit(second, 2.0, 0, 0, 0.0, 3.0);
+    assert_eq!(links.next_event_ms(), Some(2.0));
+    links.advance(2.0);
+    assert_eq!(links.completed, [first]);
+    links.complete_due(5.0);
+    assert_eq!(links.completed, [first, second]);
+
+    // Overlapping fills still share the links once both transfers start.
+    let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
+    links.submit(first, 2.0, 0, 0, 0.0, 1.0);
+    links.submit(second, 2.0, 0, 0, 0.0, 1.0);
+    links.complete_due(5.0);
+    assert_eq!(links.completed, [first, second]);
+    assert!(links.next_event_ms().is_none());
 }
 
 #[test]
@@ -2508,7 +2579,14 @@ fn an_uncontended_transfer_finishes_exactly_at_its_standalone_delay() {
         for _ in 0..1_000 {
             let mut links = TransferLinks::new(Some(1.7), destination_gbps).unwrap();
             let (now_ms, delay_ms) = (1.0e6 * unit(), 1.0e3 * unit());
-            links.submit(HandoffId::new(Uuid::from_u128(1)), delay_ms, 0, 0, now_ms);
+            links.submit(
+                HandoffId::new(Uuid::from_u128(1)),
+                delay_ms,
+                0,
+                0,
+                now_ms,
+                now_ms,
+            );
             assert_eq!(links.next_event_ms(), Some(now_ms + delay_ms));
         }
     }
@@ -2532,7 +2610,7 @@ fn a_sub_ulp_transfer_residual_completes_at_the_current_time() {
         let mut links = TransferLinks::new(Some(1.0), Some(0.7)).unwrap();
         let handoff_id = HandoffId::new(Uuid::from_u128(1));
         let start_ms = 1.0e6 * unit();
-        links.submit(handoff_id, 1.0e3 * unit(), 0, 0, start_ms);
+        links.submit(handoff_id, 1.0e3 * unit(), 0, 0, start_ms, start_ms);
         let event_ms = links.next_event_ms().unwrap();
         let before_ms = event_ms.next_down();
         links.advance(before_ms);

@@ -2420,6 +2420,210 @@ mod source_holds {
     }
 
     #[test]
+    fn pp_prefill_handoff_waits_for_the_remaining_stages() {
+        // A PP4 prefill worker retires passes at the per-stage rate; the
+        // prompt's last forward still crosses three more stages before its KV
+        // can leave, each stage behind the chunk ahead of it.
+        let mut filled = args();
+        filled.speedup_ratio = 1.0;
+        filled.pipeline_fill_passes = 3.0;
+        let mut core = SglangCore::new(filled);
+        let request_id = Uuid::from_u128(311);
+        let handoff_id = HandoffId::from(Uuid::from_u128(411));
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: request(request_id),
+        })
+        .unwrap();
+
+        let first = execute(&mut core, 0.0);
+        assert!(
+            first.lifecycle_events.is_empty(),
+            "an unfinished prompt holds no source"
+        );
+        let first_ms = core.last_forward_ms().unwrap();
+        let terminal = execute(&mut core, first.end_ms);
+        let forward_ms = terminal.end_ms - first.end_ms;
+        assert!(forward_ms > 0.0);
+        let [
+            SchedulerLifecycleEvent::SourceHeld {
+                transfer_timing, ..
+            },
+        ] = terminal.lifecycle_events.as_slice()
+        else {
+            panic!("expected one held source: {:?}", terminal.lifecycle_events);
+        };
+        assert!((transfer_timing.pipeline_fill_ms - 3.0 * first_ms.max(forward_ms)).abs() < 1e-9);
+
+        // Without later stages the handoff carries no fill.
+        let mut core = SglangCore::new(MockEngineArgs {
+            speedup_ratio: 1.0,
+            ..args()
+        });
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: request(request_id),
+        })
+        .unwrap();
+        let first = execute(&mut core, 0.0);
+        let terminal = execute(&mut core, first.end_ms);
+        let [
+            SchedulerLifecycleEvent::SourceHeld {
+                transfer_timing, ..
+            },
+        ] = terminal.lifecycle_events.as_slice()
+        else {
+            panic!("expected one held source: {:?}", terminal.lifecycle_events);
+        };
+        assert_eq!(transfer_timing.pipeline_fill_ms, 0.0);
+    }
+
+    #[test]
+    fn host_loop_pp_prefill_handoff_waits_for_the_observed_forward() {
+        // Under the host loop the hold follows the observation one iteration later;
+        // its fill is counted in the forward that finished the prompt, not the
+        // forward running when it is observed.
+        let mut core = SglangCore::new(
+            MockEngineArgs::builder()
+                .engine_type(EngineType::Sglang)
+                .num_gpu_blocks(16)
+                .block_size(4)
+                .max_num_seqs(Some(2))
+                .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
+                .speedup_ratio(1.0)
+                .pipeline_fill_passes(3.0)
+                .sglang(Some(SglangArgs {
+                    page_size: Some(4),
+                    chunked_prefill_size: Some(16),
+                    host_loop: true,
+                    ..Default::default()
+                }))
+                .build()
+                .unwrap(),
+        );
+        let request_id = Uuid::from_u128(312);
+        let handoff_id = HandoffId::from(Uuid::from_u128(412));
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: DirectRequest {
+                max_output_tokens: 1,
+                ..request(request_id)
+            },
+        })
+        .unwrap();
+
+        let launched = execute(&mut core, 0.0);
+        let forward_ms = core.last_forward_ms().unwrap();
+        assert!(forward_ms > 0.0);
+        let observed = execute(&mut core, launched.end_ms);
+        let held = observed
+            .lifecycle_events
+            .iter()
+            .find_map(|event| match event {
+                SchedulerLifecycleEvent::SourceHeld {
+                    request_id: held,
+                    transfer_timing,
+                    ..
+                } if *held == request_id => Some(transfer_timing),
+                _ => None,
+            })
+            .expect("the observed extend holds its source");
+        assert!((held.pipeline_fill_ms - 3.0 * forward_ms).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pp_prefill_fill_runs_each_chunk_through_the_stages_in_order() {
+        // A 20-token prompt runs as a 16-token chunk and a 4-token chunk on PP4. The short
+        // chunk leaves stage 0 soon after the long one but cannot overtake it in the three
+        // later stages, so the KV is ready later than three of the short chunk's forwards.
+        for host_loop in [false, true] {
+            let mut core = SglangCore::new(
+                MockEngineArgs::builder()
+                    .engine_type(EngineType::Sglang)
+                    .num_gpu_blocks(16)
+                    .block_size(4)
+                    .max_num_seqs(Some(2))
+                    .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
+                    .speedup_ratio(1.0)
+                    .pipeline_fill_passes(3.0)
+                    .sglang(Some(SglangArgs {
+                        page_size: Some(4),
+                        chunked_prefill_size: Some(16),
+                        host_loop,
+                        ..Default::default()
+                    }))
+                    .build()
+                    .unwrap(),
+            );
+            let request_id = Uuid::from_u128(313);
+            core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+                handoff_id: HandoffId::from(Uuid::from_u128(413)),
+                request: DirectRequest {
+                    tokens: (0..20).collect(),
+                    max_output_tokens: 1,
+                    ..request(request_id)
+                },
+            })
+            .unwrap();
+
+            // Each pass: when it ended and how long the forward it ran or launched took.
+            let mut passes = Vec::new();
+            let held = loop {
+                assert!(passes.len() < 8, "the prompt never held its source");
+                let pass = execute(&mut core, passes.last().map_or(0.0, |&(end_ms, _)| end_ms));
+                passes.push((pass.end_ms, core.last_forward_ms().unwrap_or(0.0)));
+                let held = pass.lifecycle_events.iter().find_map(|event| match event {
+                    SchedulerLifecycleEvent::SourceHeld {
+                        request_id: held,
+                        transfer_timing,
+                        ..
+                    } if *held == request_id => Some(*transfer_timing),
+                    _ => None,
+                });
+                if let Some(held) = held {
+                    break held;
+                }
+            };
+            // When each forward left stage 0: the host loop observes it one pass later.
+            let forwards: Vec<(f64, f64)> = if host_loop {
+                passes
+                    .windows(2)
+                    .map(|pair| (pair[1].0, pair[0].1))
+                    .collect()
+            } else {
+                passes.clone()
+            };
+            let [(first_end_ms, first_ms), (last_end_ms, last_ms)] = forwards.as_slice() else {
+                panic!("expected two chunk forwards: {passes:?}");
+            };
+            assert!(first_ms > last_ms && *last_ms > 0.0, "{forwards:?}");
+            let mut stage_free_ms = [0.0_f64; 3];
+            let mut ready_ms = 0.0;
+            for &(end_ms, stage_ms) in &forwards {
+                ready_ms = end_ms;
+                for free_ms in &mut stage_free_ms {
+                    ready_ms = ready_ms.max(*free_ms) + stage_ms;
+                    *free_ms = ready_ms;
+                }
+            }
+            // The last stage finishes the long chunk, then the short one.
+            assert!((ready_ms - (first_end_ms + 3.0 * first_ms + last_ms)).abs() < 1e-9);
+            let held_ms = passes.last().unwrap().0;
+            assert!(
+                (held_ms - last_end_ms).abs() < 1e-9,
+                "host_loop {host_loop}"
+            );
+            assert!(
+                (held.pipeline_fill_ms - (ready_ms - held_ms)).abs() < 1e-9,
+                "host_loop {host_loop}: {} vs {}",
+                held.pipeline_fill_ms,
+                ready_ms - held_ms
+            );
+            assert!(held.pipeline_fill_ms > 3.0 * last_ms + 1e-9);
+        }
+    }
+
+    #[test]
     fn host_loop_prefill_rank_hands_off_when_the_next_iteration_observes_the_extend() {
         // Replay caps a prefill-rank request at one output token; under the host
         // loop the finished extend joins SGLang's inflight queue instead of the

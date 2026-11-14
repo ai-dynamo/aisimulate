@@ -26,6 +26,9 @@ const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8_192;
 const DEFAULT_CLIP_MAX_NEW_TOKENS: usize = 4_096;
 const DEFAULT_SCHEDULE_CONSERVATIVENESS: f64 = 1.0;
 const DEFAULT_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 32.0;
+/// Later pipeline stages one rank tracks. A stage holds at least one layer, so this is far
+/// above any served model's depth; it bounds the per-stage state a rank allocates.
+pub(crate) const MAX_PIPELINE_FILL_PASSES: f64 = 1024.0;
 
 fn serialize_scheduler_limit<S: serde::Serializer>(
     value: &usize,
@@ -1029,6 +1032,10 @@ pub struct EngineConfig {
     /// Additional divisor applied to decode latency.
     #[serde(default = "default_one")]
     pub decode_speedup_ratio: f64,
+    /// Later pipeline stages a prefill forward still crosses after its pass retires (PP size - 1
+    /// on a PP prefill worker, whose passes retire at the per-stage rate); delays the KV handoff.
+    #[serde(default)]
+    pub pipeline_fill_passes: f64,
     /// MTP/EAGLE draft-token count. One verification forward can emit up to
     /// `aic_nextn + 1` output tokens.
     pub aic_nextn: Option<usize>,
@@ -1140,6 +1147,8 @@ struct EngineConfigWire {
     #[serde(default = "default_one")]
     decode_speedup_ratio: f64,
     #[serde(default)]
+    pipeline_fill_passes: f64,
+    #[serde(default)]
     aic_nextn: Option<usize>,
     #[serde(default)]
     aic_nextn_accept_rates: Option<String>,
@@ -1222,6 +1231,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             enable_chunked_prefill: wire.enable_chunked_prefill,
             speedup_ratio: wire.speedup_ratio,
             decode_speedup_ratio: wire.decode_speedup_ratio,
+            pipeline_fill_passes: wire.pipeline_fill_passes,
             aic_nextn: wire.aic_nextn,
             aic_nextn_accept_rates: wire.aic_nextn_accept_rates,
             aic_mtp_seed: wire.aic_mtp_seed,
@@ -1270,6 +1280,7 @@ impl Default for EngineConfig {
             enable_chunked_prefill: true,
             speedup_ratio: 1.0,
             decode_speedup_ratio: 1.0,
+            pipeline_fill_passes: 0.0,
             aic_nextn: None,
             aic_nextn_accept_rates: None,
             aic_mtp_seed: default_aic_mtp_seed(),
@@ -1541,6 +1552,16 @@ impl EngineConfig {
         ensure!(
             self.decode_speedup_ratio.is_finite() && self.decode_speedup_ratio >= 0.0,
             "decode_speedup_ratio must be finite and non-negative"
+        );
+        ensure!(
+            self.pipeline_fill_passes.is_finite()
+                && self.pipeline_fill_passes >= 0.0
+                && self.pipeline_fill_passes.fract() == 0.0,
+            "pipeline_fill_passes must be a non-negative whole number"
+        );
+        ensure!(
+            self.pipeline_fill_passes <= MAX_PIPELINE_FILL_PASSES,
+            "pipeline_fill_passes must be at most {MAX_PIPELINE_FILL_PASSES}"
         );
         if let Some(nextn) = self.aic_nextn {
             normalize_conditional_accept_rates(nextn, self.aic_nextn_accept_rates.as_deref())?;
@@ -3233,5 +3254,41 @@ mod tests {
             ..EngineConfig::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn pipeline_fill_passes_must_be_a_whole_stage_count() {
+        for stages in [0.0, 1.0, 3.0] {
+            let config = EngineConfig {
+                pipeline_fill_passes: stages,
+                ..EngineConfig::default()
+            };
+            config.validate().unwrap();
+        }
+        for stages in [-1.0, 0.5, f64::NAN, f64::INFINITY] {
+            let config = EngineConfig {
+                pipeline_fill_passes: stages,
+                ..EngineConfig::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("pipeline_fill_passes must be a non-negative whole number"),
+                "{stages}"
+            );
+        }
+        let config = EngineConfig {
+            pipeline_fill_passes: MAX_PIPELINE_FILL_PASSES + 1.0,
+            ..EngineConfig::default()
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("pipeline_fill_passes must be at most 1024")
+        );
     }
 }
