@@ -6,7 +6,7 @@
 //! Whole-model `fpm_forward` perf tables (Python `forward_model="fpm"`).
 //!
 //! Rust port of the loader half of
-//! `python/aisimulate/src/aisimulate_core/sdk/operations/fpm_forward.py`: the formal
+//! `python/aisim/src/aisim_core/sdk/operations/fpm_forward.py`: the formal
 //! collector pair
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //! /data/reviewed-fpm.metadata.json
 //! ```
 //!
-//! The parquet may be supplied outside the AISimulate repository and is
+//! The parquet may be supplied outside the AISim repository and is
 //! validated (sidecar schema/sha256/row_count, per-row workload checks,
 //! duplicate physical row keys), healed of
 //! `kv_seed_regime == "fake_fallback"` values (fabricated-KV measurements
@@ -863,7 +863,11 @@ fn load_pair(
     // Resolved once here; per-row reads treat null the same as absence.
     let kv_seed_col = reader.col_optional("kv_seed_regime");
     let dcp_col = reader.col_optional("dcp");
-    let row_policy_col = reader.col_optional("measurement_policy");
+    let row_policy_col = if sidecar.schema_version == FPM_FORWARD_POWER_SCHEMA_VERSION {
+        Some(reader.col("measurement_policy")?)
+    } else {
+        reader.col_optional("measurement_policy")
+    };
     let repeats_col = reader.col_optional("measurement_repeats");
     if measurement_policy.row_median_policy().is_some()
         && (row_policy_col.is_none() || repeats_col.is_none())
@@ -921,7 +925,7 @@ fn load_pair(
     let mut rows: Vec<FpmRow> = Vec::new();
     for (index, row) in reader.rows()?.enumerate() {
         let row = row?;
-        if (median_columns.is_some() || native_cuda_columns.is_some())
+        if (median_columns.is_some() || native_cuda_columns.is_some() || power_col.is_some())
             && row.str_optional(row_policy_col)? != Some(measurement_policy.name())
         {
             return Err(structural(format!(
@@ -1881,7 +1885,7 @@ pub(crate) mod tests {
         if has_measurement {
             schema.insert_str(
                 schema.rfind('}').unwrap(),
-                "REQUIRED BINARY measurement_policy (UTF8);\nREQUIRED INT64 measurement_repeats;\n",
+                "OPTIONAL BINARY measurement_policy (UTF8);\nREQUIRED INT64 measurement_repeats;\n",
             );
         }
         let schema = if has_execution {
@@ -2090,10 +2094,17 @@ pub(crate) mod tests {
             col.close().unwrap();
         }
         if has_measurement {
-            let values = str_col(&|r| r.measurement.map(|m| m.0).unwrap_or("").to_owned());
+            let values: Vec<ByteArray> = rows
+                .iter()
+                .filter_map(|r| r.measurement.map(|m| ByteArray::from(m.0)))
+                .collect();
+            let def_levels: Vec<i16> = rows
+                .iter()
+                .map(|r| i16::from(r.measurement.is_some()))
+                .collect();
             let mut col = rg.next_column().unwrap().unwrap();
             col.typed::<ByteArrayType>()
-                .write_batch(&values, None, None)
+                .write_batch(&values, Some(&def_levels), None)
                 .unwrap();
             col.close().unwrap();
             let values: Vec<i64> = rows
@@ -3784,10 +3795,36 @@ pub(crate) mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, row)| RowSpec {
+                measurement: Some((FPM_FORWARD_POWER_MEASUREMENT_POLICY, 1)),
                 power_w: Some(PowerCell::Double(Some(300.0 + 10.0 * index as f64))),
                 ..row
             })
             .collect()
+    }
+
+    #[test]
+    fn schema_eight_requires_a_matching_policy_on_every_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rows = powered_rows();
+        for row in &mut rows {
+            row.measurement = None;
+        }
+        write_pair(tmp.path(), &rows);
+        let err = loaded_table(tmp.path()).cells().unwrap_err().to_string();
+        assert!(err.contains("\"measurement_policy\" missing"), "{err}");
+
+        for policy in [None, Some(FPM_FORWARD_MEASUREMENT_POLICY), Some("unknown")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = powered_rows();
+            // A valid first row must not hide a null or mislabeled later row.
+            rows[7].measurement = policy.map(|p| (p, 1));
+            write_pair(tmp.path(), &rows);
+            let err = loaded_table(tmp.path()).cells().unwrap_err().to_string();
+            assert!(
+                err.contains("row 7 measurement_policy must match sidecar"),
+                "{policy:?}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -3924,6 +3961,7 @@ pub(crate) mod tests {
             let rows: Vec<RowSpec> = default_rows()
                 .into_iter()
                 .map(|row| RowSpec {
+                    measurement: Some((FPM_FORWARD_POWER_MEASUREMENT_POLICY, 1)),
                     power_w: Some(cell),
                     ..row
                 })
@@ -3945,6 +3983,7 @@ pub(crate) mod tests {
         let rows: Vec<RowSpec> = default_rows()
             .into_iter()
             .map(|row| RowSpec {
+                measurement: Some((FPM_FORWARD_POWER_MEASUREMENT_POLICY, 1)),
                 power_w: Some(PowerCell::Double(None)),
                 ..row
             })
@@ -4056,6 +4095,7 @@ pub(crate) mod tests {
             total_kv_read_tokens: kv,
             latency_ms: lat,
             kv_seed_regime: Some(seed),
+            measurement: Some((FPM_FORWARD_POWER_MEASUREMENT_POLICY, 1)),
             power_w: Some(PowerCell::Double(power)),
             ..RowSpec::default()
         };

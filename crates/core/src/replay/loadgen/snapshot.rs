@@ -4,7 +4,7 @@
 //! Request-boundary snapshots, not physical engine checkpoints.
 //! The behavioral reference is AIPerf's trajectory_source.py at
 //! https://github.com/ai-dynamo/aiperf/tree/7db2ba37a62aa80c882bc90eaf61cc8073e2387b.
-//! Sampling and token allocation below are AISimulate-owned algorithms.
+//! Sampling and token allocation below are AISim-owned algorithms.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

@@ -1,0 +1,877 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Strict reader for Dynamo PR11509 native self-benchmark rank artifacts."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from aisim.fpm_contract import (
+    FPM_BENCHMARK_RESULT_GLOB,
+    FPM_NATIVE_BENCHMARK_POWER_RESULT_SCHEMA_VERSION,
+    FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
+    FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS,
+    FPM_POWER_MAX_KV_DRIFT_FRAC,
+    FPM_POWER_MIN_WINDOW_S,
+    FPM_POWER_WINDOW_REL_TOL,
+)
+from aisim_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+from .planner import FPMCell
+from .types import KVWARM_STRATEGIES
+
+logger = logging.getLogger(__name__)
+
+COLLECTOR_PROVENANCE_FILENAME = "collector-provenance.json"
+
+
+@dataclass(frozen=True, slots=True)
+class NativePointMeasurement:
+    point: dict[str, Any]
+    rank_wall_times: tuple[tuple[int, float], ...]
+    # Keep native row provenance for diagnostics, without reinterpreting the
+    # formal database's historical prefill kv_seed_regime contract.
+    kv_seed_regime: str | None = None
+    # Mean power per GPU (W) over the point's power window; None when the
+    # window is unavailable, gated, or absent (schema-2 artifacts).
+    power_w: float | None = None
+
+
+# Distinguishes "no artifact seen yet" from a legitimately absent (legacy)
+# kvwarm block during cross-rank consistency checking.
+_KVWARM_UNSEEN = object()
+
+
+def _validate_seed_regime(row: dict[str, Any], path: Path) -> str | None:
+    regime = row.get("kv_seed_regime")
+    if regime is None:
+        return None  # Historical artifacts did not report a row-level regime.
+    if not isinstance(regime, str) or not regime:
+        raise ValueError(f"native kv_seed_regime must be a non-empty string: {path}")
+    # Dynamo's _kvwarm_seed_regime reports these point-injection stamps:
+    # https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py#L4721
+    stamps = {
+        "real_prefix": "prefill_real_seed",
+        "fake_prefix": "prefill_fake_prefix",
+        "real_kv": "kvwarm_real_kv",
+        "fake_fallback": "kvwarm_fake_fallback",
+    }
+    reasons = set(row["point"].get("sample_reasons") or [])
+    observed_stamps = reasons.intersection(stamps.values())
+    if regime in stamps and observed_stamps != {stamps[regime]}:
+        raise ValueError(f"native kv_seed_regime disagrees with point injection stamps: {path}")
+    if regime in {"real_prefix", "fake_prefix"} and row["point"]["point_type"] != "prefill":
+        raise ValueError(f"native prefix seed regime requires prefill: {path}")
+    # Real-seed staging stamps the path before checking whether any KV needs
+    # seeding; an uncached prefill can therefore retain real_prefix provenance.
+    # https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py#L4298
+    if regime == "fake_prefix" and row["point"]["total_kv_read_tokens"] <= 0:
+        raise ValueError(f"native fake prefix seed regime requires cached prefill: {path}")
+    if regime not in stamps and observed_stamps:
+        raise ValueError(f"native kv_seed_regime disagrees with point injection stamps: {path}")
+    return regime
+
+
+def _validate_kvwarm_contract(cell: FPMCell, kvwarm: object, path: Path) -> dict[str, Any] | None:
+    """Validate that engine protocol evidence matches the rendered strategy."""
+
+    if cell.workload_kind != "decode":
+        if kvwarm is not None and not isinstance(kvwarm, dict):
+            raise TypeError(f"native kvwarm block is not a mapping: {path}")
+        return kvwarm
+    requires_warm = cell.parallel_strategy in KVWARM_STRATEGIES
+    if kvwarm is None:
+        if requires_warm:
+            raise ValueError(
+                f"native decode result lacks required KV warm-up metadata for strategy "
+                f"{cell.parallel_strategy!r}: {path}"
+            )
+        return None
+    if not isinstance(kvwarm, dict):
+        raise TypeError(f"native kvwarm block is not a mapping: {path}")
+    enabled = kvwarm.get("enabled")
+    warm_eligible = kvwarm.get("warm_eligible")
+    skip_reason = kvwarm.get("skip_reason")
+    if not isinstance(enabled, bool):
+        raise TypeError(f"native kvwarm.enabled must be a boolean: {path}")
+    if not isinstance(warm_eligible, bool):
+        raise TypeError(f"native kvwarm.warm_eligible must be a boolean: {path}")
+    if warm_eligible and skip_reason is not None:
+        raise ValueError(f"native warm-eligible result must not declare kvwarm.skip_reason: {path}")
+    if not warm_eligible and (not isinstance(skip_reason, str) or not skip_reason):
+        raise ValueError(f"native warm-ineligible result must declare a non-empty kvwarm.skip_reason: {path}")
+    if requires_warm and (not enabled or not warm_eligible):
+        raise ValueError(
+            f"native KV warm-up protocol mismatch for strategy {cell.parallel_strategy!r}: "
+            f"enabled={enabled!r}, skip_reason={skip_reason!r}: {path}"
+        )
+    return kvwarm
+
+
+@dataclass(frozen=True, slots=True)
+class NativeCollection:
+    points: tuple[NativePointMeasurement, ...]
+    rank_timings: tuple[tuple[int, float, float], ...]
+    backend_version: str
+    collector_attempt_id: str
+    runtime_run_id: str
+    runtime_grid_digest: str
+    # Engine-reported KV warm-up envelope (warm_eligible/skip_reason/...);
+    # None only for artifacts predating the kvwarm-enabled runtime.
+    kvwarm_meta: dict[str, Any] | None = None
+    input_provenance: dict[str, Any] | None = None
+    # Envelope schema shared by every rank artifact; 3 carries power blocks.
+    artifact_schema_version: int = FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION
+
+
+def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> NativePointMeasurement | None:
+    """Prefer the unique ordinary sample over equivalent real-prefix path samples."""
+    ordinary = [m for m in measurements if m.kv_seed_regime == "not_applicable"]
+    if len(ordinary) != 1:
+        return None
+    sample = ordinary[0]
+    if sample.point["point_type"] != "prefill" or sample.point["total_kv_read_tokens"] != 0:
+        return None
+    expected = {key: value for key, value in sample.point.items() if key != "benchmark_id"}
+    expected["sample_reasons"] = list(expected.get("sample_reasons") or [])
+    for measurement in measurements:
+        if measurement is sample:
+            continue
+        if measurement.kv_seed_regime != "real_prefix":
+            return None
+        point = {key: value for key, value in measurement.point.items() if key != "benchmark_id"}
+        point["sample_reasons"] = [
+            reason for reason in (point.get("sample_reasons") or []) if reason != "prefill_real_seed"
+        ]
+        if point != expected:
+            return None
+    return sample
+
+
+def select_native_measurements(collection: NativeCollection, *, cell_id: str) -> list[NativePointMeasurement]:
+    """Select the formal per-coordinate samples from one validated attempt.
+
+    Used by publication and by repeatability source selection, so the original
+    reference timing is identical. Never combine independent repeat attempts.
+    """
+    # The steady-state decode policy clamps every per-sequence context below
+    # the measurable minimum up to it, so several requested plan points can
+    # collapse onto one achieved physical coordinate (e.g. batch=3 with
+    # requested total-kv 3/4/5/6 all measure total-kv 6). Repeated samples of
+    # one coordinate would violate the database's unique-key contract, so keep
+    # exactly one per coordinate: the native (unclamped) sample when present,
+    # otherwise the clamped sample with the lowest benchmark_id.
+    # Real-prefix staging can also emit zero-KV prefill samples beside the
+    # ordinary sample of the same work. Only this provenance difference is
+    # consolidatable: keep the unique ordinary sample with identical remaining
+    # point metadata. Other native collisions remain a hard error. Raw samples
+    # stay intact; neither reduction averages timings nor selects by latency.
+    grouped: dict[tuple[str, int, int, int], list[NativePointMeasurement]] = {}
+    for measurement in collection.points:
+        point = measurement.point
+        key = (
+            str(point["point_type"]),
+            int(point["batch_size"]),
+            int(point["total_prefill_tokens"]),
+            int(point["total_kv_read_tokens"]),
+        )
+        grouped.setdefault(key, []).append(measurement)
+    selected: list[NativePointMeasurement] = []
+    dropped_clamped = 0
+    dropped_zero_kv = 0
+    for key, measurements in grouped.items():
+        natives = [m for m in measurements if "context_clamped" not in (m.point.get("sample_reasons") or ())]
+        if len(natives) > 1:
+            sample = _zero_kv_prefill_sample(measurements)
+            if sample is not None:
+                selected.append(sample)
+                dropped_zero_kv += len(measurements) - 1
+                continue
+            raise ValueError(
+                f"conflicting FPM measurements for physical coordinate {key} in "
+                f"{cell_id}: {len(natives)} unclamped samples share one key"
+            )
+        if natives:
+            selected.append(natives[0])
+        else:
+            selected.append(min(measurements, key=lambda m: int(m.point["benchmark_id"])))
+        dropped_clamped += len(measurements) - 1
+    if dropped_clamped:
+        logger.info(
+            "FPM %s: consolidated %d context-clamped duplicate sample(s) onto their achieved physical coordinates",
+            cell_id,
+            dropped_clamped,
+        )
+    if dropped_zero_kv:
+        logger.info(
+            "FPM %s: consolidated %d zero-KV prefill provenance duplicate sample(s) onto their ordinary samples",
+            cell_id,
+            dropped_zero_kv,
+        )
+
+    return selected
+
+
+def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
+    """Config-bound curves require engine evidence for execution and real input."""
+    if not cell.execution_identity[0]:
+        return None
+    expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
+    if payload.get("execution_identity") != expected:
+        raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
+    if payload.get("execution_mode") != "eager":
+        raise ValueError(f"V4.1 native data requires verified eager execution: {path}")
+    evidence = payload.get("input_provenance")
+    if not isinstance(evidence, dict) or evidence.get("source") != "tokenizer_text":
+        raise ValueError(f"V4.1 native result requires tokenizer-generated text provenance: {path}")
+    for field in ("text_sha256", "token_ids_sha256"):
+        value = evidence.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(f"V4.1 native result has invalid {field}: {path}")
+    if cell.input_text_sha256 and evidence["text_sha256"] != cell.input_text_sha256:
+        raise ValueError(f"V4.1 native input text differs from the frozen corpus: {path}")
+    if not isinstance(evidence.get("tokenizer_revision"), str) or not evidence["tokenizer_revision"]:
+        raise ValueError(f"V4.1 native result has no tokenizer revision: {path}")
+    counts = [evidence.get(field) for field in ("token_count", "unique_token_count")]
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 2 for value in counts):
+        raise ValueError(f"V4.1 native input corpus must contain multiple tokenizer-generated tokens: {path}")
+    if counts[1] > counts[0]:
+        raise ValueError(f"V4.1 native input corpus token counts are inconsistent: {path}")
+    return evidence
+
+
+def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
+    """Verify archived real request histories and completed-forward witnesses."""
+    manifest = payload["input_provenance"].get("token_stream_manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError(f"V4.1 native result lacks token-stream manifest: {path}")
+    name = manifest.get("file")
+    if not isinstance(name, str) or Path(name).name != name or not name.endswith(".token-streams.jsonl"):
+        raise ValueError(f"V4.1 token-stream path must be an adjacent JSONL file: {path}")
+    raw = path.with_name(name).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != manifest.get("sha256"):
+        raise ValueError(f"V4.1 token-stream manifest SHA mismatch: {path}")
+    lines = raw.splitlines()
+    schema = manifest.get("schema_version", 1)
+    if type(schema) is not int or schema not in (1, 2):
+        raise ValueError(f"V4.1 token-stream schema is unsupported: {path}")
+    warmups = payload.get("warmup_results", [])
+    if not isinstance(warmups, list) or (schema == 1 and warmups):
+        raise ValueError(f"V4.1 warmup histories require token-stream schema 2: {path}")
+    measured = payload["results"]
+    if any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("point"), dict)
+        or type(row["point"].get("benchmark_id")) is not int
+        or row["point"].get("point_type") not in ("prefill", "decode")
+        or not isinstance(row["point"].get("sample_reasons", []), list)
+        for row in measured + warmups
+    ):
+        raise ValueError(f"V4.1 native result has malformed token-stream points: {path}")
+    warmup_ids = set()
+    for row in warmups:
+        point = row.get("point", {})
+        benchmark_id = point.get("benchmark_id")
+        if (
+            type(benchmark_id) is not int
+            or benchmark_id <= len(measured)
+            or benchmark_id in warmup_ids
+            or "eager_warmup" not in point.get("sample_reasons", [])
+        ):
+            raise ValueError(f"V4.1 warmup point is not a distinct native eager replica: {path}")
+        warmup_ids.add(benchmark_id)
+    if schema == 2 and manifest.get("warmup_benchmark_ids") != sorted(warmup_ids):
+        raise ValueError(f"V4.1 native eager warmup coverage mismatch: {path}")
+    if any("eager_warmup" in row["point"].get("sample_reasons", []) for row in measured):
+        raise ValueError(f"V4.1 warmup timing cannot enter measured results: {path}")
+    all_results = measured + warmups
+    if manifest.get("records") != len(lines) or len(lines) != len(all_results):
+        raise ValueError(f"V4.1 token-stream coverage mismatch: {path}")
+    streams = {}
+    for line in lines:
+        stream = json.loads(line)
+        if not isinstance(stream, dict):
+            raise ValueError(f"V4.1 token-stream record must be an object: {path}")
+        benchmark_id = stream.get("benchmark_id")
+        if type(benchmark_id) is not int or benchmark_id in streams:
+            raise ValueError(f"V4.1 token-stream benchmark ID is invalid or duplicated: {path}")
+        expected_role = "warmup" if benchmark_id in warmup_ids else "measurement"
+        if schema == 2 and stream.get("sampling_role") != expected_role:
+            raise ValueError(f"V4.1 token-stream sampling role mismatch: {path}")
+        streams[benchmark_id] = (stream, hashlib.sha256(line).hexdigest())
+    if set(streams) != {row["point"]["benchmark_id"] for row in all_results}:
+        raise ValueError(f"V4.1 token-stream point identity coverage mismatch: {path}")
+    for row in all_results:
+        point = row["point"]
+        witness = row.get("real_kv_witness")
+        stream, digest = streams.get(point["benchmark_id"], ({}, None))
+        batch = _require_int(point, "batch_size")
+        decode = point["point_type"] == "decode"
+        expected_seed = _require_int(point, "total_kv_read_tokens") - (batch if decode else 0)
+        if (
+            not isinstance(witness, dict)
+            or witness.get("same_request") is not True
+            or witness.get("allocated_fake_tokens") != 0
+            or witness.get("completed_seed_tokens") != expected_seed
+            or witness.get("token_stream_sha256") != digest
+        ):
+            raise ValueError(f"V4.1 native result has invalid completed real-KV witness: {path}")
+        requests = stream.get("requests")
+        if not isinstance(requests, list) or len(requests) != batch:
+            raise ValueError(f"V4.1 token-stream request count mismatch: {path}")
+        prompt_total = 0
+        for index, request in enumerate(requests):
+            if not isinstance(request, dict) or request.get("request_index") != index:
+                raise ValueError(f"V4.1 token-stream request order mismatch: {path}")
+            for field in ("prompt_token_ids", "output_token_ids"):
+                ids = request.get(field)
+                if not isinstance(ids, list) or not ids or any(type(token) is not int or token < 0 for token in ids):
+                    raise ValueError(f"V4.1 token-stream has invalid real token IDs: {path}")
+            prompt_length = len(request["prompt_token_ids"])
+            prompt_total += prompt_length
+            if request.get("computed_tokens") != prompt_length + (2 if decode else 0):
+                raise ValueError(f"V4.1 token-stream computed-token witness mismatch: {path}")
+        expected_prompt = expected_seed + (0 if decode else _require_int(point, "total_prefill_tokens"))
+        if prompt_total != expected_prompt:
+            raise ValueError(f"V4.1 token-stream prompt history differs from the measured point: {path}")
+
+
+def _validate_collector_provenance(
+    cell: FPMCell,
+    raw_root: Path,
+    rank_payloads: list[tuple[Path, dict[str, Any]]],
+    *,
+    expected_plan_sha256: str | None,
+    expected_attempt_id: str | None,
+) -> tuple[str, str]:
+    pod_names = set()
+    for path, _payload in rank_payloads:
+        relative = path.relative_to(raw_root)
+        if len(relative.parts) < 2:
+            raise ValueError(f"native rank artifact is not scoped to a collected pod: {path}")
+        pod_names.add(relative.parts[0])
+
+    canonical: dict[str, Any] | None = None
+    for pod_name in sorted(pod_names):
+        path = raw_root / pod_name / COLLECTOR_PROVENANCE_FILENAME
+        if not path.is_file():
+            raise ValueError(f"native result is missing Collector provenance: {path}")
+        payload = json.loads(path.read_text())
+        if not isinstance(payload, dict):
+            raise TypeError(f"Collector provenance must be a mapping: {path}")
+        if payload.get("schema_name") != "aic_fpm_collector_provenance" or payload.get("schema_version") != 1:
+            raise ValueError(f"unsupported Collector provenance schema: {path}")
+        if payload.get("cell_id") != cell.cell_id:
+            raise ValueError(
+                f"Collector provenance cell mismatch: actual={payload.get('cell_id')!r} expected={cell.cell_id!r}"
+            )
+        plan_sha256 = payload.get("plan_sha256")
+        attempt_id = payload.get("attempt_id")
+        if not isinstance(plan_sha256, str) or not plan_sha256:
+            raise ValueError(f"Collector provenance has no plan identity: {path}")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            raise ValueError(f"Collector provenance has no attempt identity: {path}")
+        if expected_plan_sha256 is not None and plan_sha256 != expected_plan_sha256:
+            raise ValueError(
+                f"Collector provenance plan mismatch: actual={plan_sha256!r} expected={expected_plan_sha256!r}"
+            )
+        if expected_attempt_id is not None and attempt_id != expected_attempt_id:
+            raise ValueError(
+                f"Collector provenance attempt mismatch: actual={attempt_id!r} expected={expected_attempt_id!r}"
+            )
+        runtime = payload.get("runtime")
+        if (
+            not isinstance(runtime, dict)
+            or runtime.get("backend") != "vllm"
+            or not isinstance(runtime.get("backend_version"), str)
+            or not runtime["backend_version"]
+        ):
+            raise ValueError(f"Collector provenance has invalid runtime identity: {path}")
+        # Dynamo package/release strings are provenance only. Backend identity
+        # and every attempt binding still have to agree across all ranks.
+        comparable = {
+            **{key: value for key, value in payload.items() if key != "dynamo_version"},
+            "runtime": {key: value for key, value in runtime.items() if key != "dynamo_version"},
+        }
+        if canonical is None:
+            canonical = comparable
+        elif comparable != canonical:
+            raise ValueError(f"Collector provenance differs across pods: {path}")
+
+    assert canonical is not None
+    return str(canonical["runtime"]["backend_version"]), str(canonical["attempt_id"])
+
+
+def _require_int(point: dict[str, Any], key: str) -> int:
+    """Native grid coordinates are integers by contract (PR11509 declares int
+    fields); a float or bool here means a noncompliant engine build or a
+    tampered artifact, and silent truncation would publish a wrong-coordinate
+    database row."""
+
+    value = point.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        # ValueError, matching the module's other point-contract violations.
+        raise ValueError(f"native point field {key!r} must be an integer, got {value!r}")
+    return value
+
+
+def _expected_scheduled(point: dict[str, Any]) -> dict[str, int]:
+    phase = str(point["point_type"])
+    batch = _require_int(point, "batch_size")
+    total_prefill = _require_int(point, "total_prefill_tokens")
+    total_kv = _require_int(point, "total_kv_read_tokens")
+    if batch < 1 or min(total_prefill, total_kv) < 0:
+        raise ValueError(f"native point has invalid totals: {point}")
+    if phase == "prefill":
+        # Every scheduled prefill request contributes at least one token, so a
+        # total below the request count is a physically impossible coordinate.
+        if total_prefill < batch:
+            raise ValueError(f"native prefill point schedules fewer tokens than requests: {point}")
+        return {
+            "num_prefill_requests": batch,
+            "sum_prefill_tokens": total_prefill,
+            "sum_prefill_kv_tokens": total_kv,
+            "num_decode_requests": 0,
+            "sum_decode_kv_tokens": 0,
+        }
+    if phase == "decode":
+        if total_prefill != 0:
+            raise ValueError(f"native decode point carries prefill tokens: {point}")
+        # Every decode request reads at least one KV token of context.
+        if total_kv < batch:
+            raise ValueError(f"native decode point reads fewer KV tokens than requests: {point}")
+        return {
+            "num_prefill_requests": 0,
+            "sum_prefill_tokens": 0,
+            "sum_prefill_kv_tokens": 0,
+            "num_decode_requests": batch,
+            "sum_decode_kv_tokens": total_kv,
+        }
+    raise ValueError(f"unknown native point type: {phase!r}")
+
+
+_POWER_KEYS = frozenset(
+    {"status", "unavailable_reason", "gpu_energy", "window_s", "window_iterations", "kv_drift_tokens"}
+)
+
+
+def _validate_power(point: dict[str, Any], power: object) -> dict[str, Any] | None:
+    """Validate one rank's schema-3 power block; None is a well-formed failure report."""
+    if not isinstance(power, dict) or set(power) != _POWER_KEYS:
+        raise ValueError(f"native FPM power block must have exactly the keys {sorted(_POWER_KEYS)}: {power!r}")
+    window = (power["window_s"], power["window_iterations"], power["kv_drift_tokens"])
+    if power["status"] == "unavailable":
+        reason = power["unavailable_reason"]
+        if not isinstance(reason, str) or not reason.strip() or power["gpu_energy"] != [] or window != (None,) * 3:
+            raise ValueError(f"native FPM power block is a malformed unavailable report: {power!r}")
+        return None
+    if power["status"] != "measured" or power["unavailable_reason"] is not None:
+        raise ValueError(f"native FPM power block has an invalid status: {power!r}")
+    energy = power["gpu_energy"]
+    if not isinstance(energy, list) or not energy:
+        raise ValueError(f"native FPM measured power has no GPU energy: {power!r}")
+    for entry in energy:
+        value = entry.get("energy_wms") if isinstance(entry, dict) else None
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"gpu_uuid", "energy_wms"}
+            or not isinstance(entry["gpu_uuid"], str)
+            or not entry["gpu_uuid"]
+            or isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(f"native FPM power has an invalid GPU energy entry: {entry!r}")
+    window_s, iterations, drift = window
+    if (
+        isinstance(window_s, bool)
+        or not isinstance(window_s, int | float)
+        or not math.isfinite(window_s)
+        or window_s < FPM_POWER_MIN_WINDOW_S
+    ):
+        raise ValueError(f"native FPM measured power window must be at least {FPM_POWER_MIN_WINDOW_S}s: {power!r}")
+    if type(iterations) is not int or iterations < 1:
+        raise ValueError(f"native FPM power window_iterations must be a positive integer: {power!r}")
+    if type(drift) is not int or drift < 0 or (point["point_type"] == "prefill" and drift != 0):
+        raise ValueError(f"native FPM power kv_drift_tokens is invalid for {point['point_type']}: {power!r}")
+    return power
+
+
+def _point_power_w(
+    cell: FPMCell, point: dict[str, Any], powers: list[dict[str, Any] | None]
+) -> tuple[float | None, str]:
+    """Combine every rank's power block of one synchronized point.
+
+    Returns ``(power_w, status)``: W per GPU averaged over all GPUs, or None
+    with the reason. Malformed cross-rank evidence raises.
+    """
+    benchmark_id = point["benchmark_id"]
+    measured = [power for power in powers if power is not None]
+    if len(measured) < len(powers):
+        if measured:
+            logger.warning(
+                "FPM %s benchmark_id=%s: %d of %d ranks measured power; the point has no power",
+                cell.cell_id,
+                benchmark_id,
+                len(measured),
+                len(powers),
+            )
+        return None, "unavailable"
+    uuids = [entry["gpu_uuid"] for power in measured for entry in power["gpu_energy"]]
+    if len(set(uuids)) != len(uuids):
+        raise ValueError(f"native power reports a GPU twice for benchmark_id={benchmark_id}: {sorted(uuids)}")
+    if len(uuids) != cell.topology.total_gpus:
+        raise ValueError(
+            f"native power covers {len(uuids)} GPUs, expected {cell.topology.total_gpus} "
+            f"for benchmark_id={benchmark_id}"
+        )
+    # Every rank ran the same synchronized window (D1); disagreement is a
+    # broken contract, never averaged away.
+    if len({power["window_iterations"] for power in measured}) != 1:
+        raise ValueError(f"native power window_iterations differ across ranks for benchmark_id={benchmark_id}")
+    window_s = max(power["window_s"] for power in measured)
+    if any(not math.isclose(power["window_s"], window_s, rel_tol=FPM_POWER_WINDOW_REL_TOL) for power in measured):
+        raise ValueError(f"native power window_s differs across ranks for benchmark_id={benchmark_id}")
+    # Decode repeats append KV (D2): a large drift keeps latency without power.
+    if any(
+        power["kv_drift_tokens"] > FPM_POWER_MAX_KV_DRIFT_FRAC * point["total_kv_read_tokens"] for power in measured
+    ):
+        return None, "kv_drift"
+    energy_wms = sum(entry["energy_wms"] for power in measured for entry in power["gpu_energy"])
+    return energy_wms / cell.topology.total_gpus / (window_s * 1000.0), "measured"
+
+
+def _validate_fpm(
+    point: dict[str, Any], fpm: object, *, rank: int, schema_version: int
+) -> tuple[float, dict[str, Any] | None]:
+    """Return the FPM's wall time and, for schema 3, its measured power block."""
+    if not isinstance(fpm, dict):
+        raise TypeError("native FPM sample must be a mapping")
+    benchmark_id = _require_int(point, "benchmark_id")
+    if int(fpm.get("counter_id", -1)) != benchmark_id:
+        raise ValueError(
+            f"native FPM counter mismatch: counter_id={fpm.get('counter_id')!r}, benchmark_id={benchmark_id}"
+        )
+    if int(fpm.get("dp_rank", -1)) != rank:
+        raise ValueError(f"native FPM rank mismatch: fpm={fpm.get('dp_rank')!r}, artifact={rank}")
+    wall_time = float(fpm.get("wall_time", 0.0))
+    if not math.isfinite(wall_time) or wall_time <= 0:
+        raise ValueError(f"native FPM has invalid wall_time={wall_time}")
+    scheduled = fpm.get("scheduled_requests")
+    if not isinstance(scheduled, dict):
+        raise TypeError("native FPM scheduled_requests must be a mapping")
+    expected = _expected_scheduled(point)
+    mismatches = {key: (scheduled.get(key), value) for key, value in expected.items() if scheduled.get(key) != value}
+    if mismatches:
+        raise ValueError(f"native FPM workload mismatch: {mismatches}")
+    if schema_version != FPM_NATIVE_BENCHMARK_POWER_RESULT_SCHEMA_VERSION:
+        if "power" in fpm:
+            raise ValueError(f"native FPM carries power in a schema-{schema_version} artifact")
+        return wall_time, None
+    if "power" not in fpm:
+        raise ValueError("native FPM lacks its power block in a schema-3 artifact")
+    return wall_time, _validate_power(point, fpm["power"])
+
+
+def _rank_artifacts(raw_root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    artifacts = []
+    for path in sorted(raw_root.glob(f"**/{FPM_BENCHMARK_RESULT_GLOB}")):
+        payload = json.loads(path.read_text())
+        if not isinstance(payload, dict):
+            raise TypeError(f"native benchmark artifact is not a mapping: {path}")
+        if path.stem.endswith("_merged_worker_probe"):
+            # Dynamo retains post-run RPC evidence separately from timing rows.
+            if payload.get("schema") != "dynamo.fpm.benchmark_worker_probe" or payload.get("schema_version") != 1:
+                raise ValueError(f"unsupported native worker probe sidecar: {path}")
+            continue
+        if payload.get("artifact_type") == "merged" or path.stem.endswith("_merged"):
+            continue
+        artifacts.append((path, payload))
+    return artifacts
+
+
+def validate_native_collection(
+    cell: FPMCell,
+    raw_root: Path,
+    *,
+    expected_plan_sha256: str | None = None,
+    expected_attempt_id: str | None = None,
+) -> NativeCollection:
+    """Validate a complete native rank set and return synchronized measurements."""
+
+    rank_payloads = _rank_artifacts(raw_root)
+    if not rank_payloads:
+        raise ValueError(f"integrated runtime emitted no benchmark results for {cell.cell_id}")
+    backend_version, collector_attempt_id = _validate_collector_provenance(
+        cell,
+        raw_root,
+        rank_payloads,
+        expected_plan_sha256=expected_plan_sha256,
+        expected_attempt_id=expected_attempt_id,
+    )
+    expected_ranks = list(range(cell.topology.dp))
+    seen_ranks: set[int] = set()
+    canonical_points: list[dict[str, Any]] | None = None
+    canonical_groups: list[dict[str, Any]] | None = None
+    run_identity: tuple[str, str] | None = None
+    kvwarm_meta: dict[str, Any] | None = None
+    kvwarm_seen: object = _KVWARM_UNSEEN
+    input_provenance: dict[str, Any] | None = None
+    local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
+    seed_regimes: dict[int, str | None] = {}
+    rank_timings: list[tuple[int, float, float]] = []
+    schema_version: int | None = None
+
+    for path, payload in rank_payloads:
+        version = payload.get("schema_version")
+        if (
+            type(version) is not int
+            or version not in FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS
+            or payload.get("artifact_type") != "rank"
+        ):
+            raise ValueError(f"result is not a PR11509 native rank artifact: {path}")
+        if schema_version is None:
+            schema_version = version
+        elif version != schema_version:
+            raise ValueError(f"native DP ranks have different artifact schema versions: {path}")
+        if (
+            payload.get("status") != "complete"
+            or payload.get("valid") is not True
+            or payload.get("usable") is not True
+            or payload.get("timing_valid") is not True
+            or payload.get("stop_reason") is not None
+            or payload.get("error") is not None
+        ):
+            raise ValueError(f"invalid native terminal result envelope: {path}")
+        if payload.get("skipped_points") != [] or payload.get("missing_phases") != []:
+            raise ValueError(f"native result skipped work: {path}")
+
+        config = payload.get("config")
+        if not isinstance(config, dict) or config.get("mode") != cell.workload_kind:
+            raise ValueError(f"native benchmark mode mismatch: {path}")
+        coverage = payload.get("coverage")
+        rows = payload.get("results")
+        groups = payload.get("iteration_groups")
+        if not isinstance(coverage, dict) or not isinstance(rows, list) or not isinstance(groups, list):
+            raise ValueError(f"native result is missing coverage/results/iteration_groups: {path}")
+        if any(not isinstance(row, dict) or not isinstance(row.get("point"), dict) for row in rows):
+            raise ValueError(f"native result has malformed result points: {path}")
+        evidence = _validate_execution_provenance(cell, payload, path)
+        if evidence is not None:
+            _validate_token_streams(payload, path)
+        if input_provenance is None:
+            input_provenance = evidence
+        elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
+            k: v for k, v in input_provenance.items() if k != "token_stream_manifest"
+        } or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"} != {
+            k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"
+        }:
+            raise ValueError(f"native DP ranks disagree on input provenance: {path}")
+        expected = coverage.get("expected_points")
+        if (
+            not isinstance(expected, int)
+            or expected < 1
+            or coverage.get("completed_points") != expected
+            or coverage.get("skipped_points") != 0
+            or len(rows) != expected
+            or len(groups) != expected
+        ):
+            raise ValueError(f"native benchmark coverage is incomplete: {path}")
+
+        dp = payload.get("dp")
+        if not isinstance(dp, dict) or dp.get("size") != cell.topology.dp or not isinstance(dp.get("rank"), int):
+            raise ValueError(f"native DP metadata mismatch: {path}")
+        rank = int(dp["rank"])
+        if rank in seen_ranks:
+            raise ValueError(f"duplicate native dp_rank={rank}: {path}")
+        seen_ranks.add(rank)
+
+        identity = (payload.get("run_id"), payload.get("grid_digest"))
+        if not all(isinstance(value, str) and value for value in identity):
+            raise ValueError(f"native run identity is missing: {path}")
+        typed_identity = (str(identity[0]), str(identity[1]))
+        if run_identity is None:
+            run_identity = typed_identity
+        elif typed_identity != run_identity:
+            raise ValueError(f"native DP ranks have different run identities: {path}")
+
+        # Engine-reported KV warm-up envelope. Absent on artifacts predating
+        # the kvwarm-enabled runtime (legacy); when present, the regime facts
+        # (warm_eligible/skip_reason) must agree across DP ranks -- they
+        # describe one shared measurement protocol, not per-rank state.
+        kvwarm = _validate_kvwarm_contract(cell, payload.get("kvwarm"), path)
+        kvwarm_regime = (
+            None if kvwarm is None else (kvwarm.get("enabled"), kvwarm.get("warm_eligible"), kvwarm.get("skip_reason"))
+        )
+        if kvwarm_seen is _KVWARM_UNSEEN:
+            kvwarm_seen = kvwarm_regime
+            kvwarm_meta = kvwarm
+        elif kvwarm_regime != kvwarm_seen:
+            raise ValueError(f"native DP ranks disagree on the KV warm-up regime (warm_eligible/skip_reason): {path}")
+
+        timing = payload.get("timing")
+        if not isinstance(timing, dict):
+            raise TypeError(f"native result has no timing object: {path}")
+        elapsed = float(timing.get("benchmark_elapsed_seconds", -1))
+        measured = float(timing.get("measured_iteration_seconds", -1))
+        if (
+            not math.isfinite(elapsed)
+            or not math.isfinite(measured)
+            or min(elapsed, measured) < 0
+            or measured > elapsed + 1e-12
+        ):
+            raise ValueError(f"native result has invalid timing: {path}")
+        rank_timings.append((rank, elapsed, measured))
+
+        points = []
+        seen_ids = set()
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("point"), dict):
+                raise TypeError(f"native result entry is malformed: {path}")
+            point = row["point"]
+            required = {
+                "point_type",
+                "benchmark_id",
+                "total_prefill_tokens",
+                "total_kv_read_tokens",
+                "batch_size",
+            }
+            if not required.issubset(point) or point["point_type"] != cell.workload_kind:
+                raise ValueError(f"native point contract mismatch: {point}")
+            benchmark_id = int(point["benchmark_id"])
+            if benchmark_id in seen_ids:
+                raise ValueError(f"native benchmark IDs are duplicated: {path}")
+            seen_ids.add(benchmark_id)
+            _expected_scheduled(point)
+            fpms = row.get("fpms")
+            if not isinstance(fpms, list) or len(fpms) != 1:
+                raise ValueError(f"native point must contain exactly one local FPM: {path}")
+            _validate_fpm(point, fpms[0], rank=rank, schema_version=version)
+            seed_regime = _validate_seed_regime(row, path)
+            if (
+                seed_regime == "real_kv"
+                and cell.workload_kind == "decode"
+                and kvwarm is not None
+                and (not kvwarm["enabled"] or not kvwarm["warm_eligible"])
+            ):
+                raise ValueError(f"native real KV seed regime disagrees with warm-up eligibility: {path}")
+            if benchmark_id in seed_regimes and seed_regimes[benchmark_id] != seed_regime:
+                raise ValueError(f"native DP ranks disagree on per-point KV seed regime: {path}")
+            seed_regimes[benchmark_id] = seed_regime
+            local_fpms[(benchmark_id, rank)] = fpms[0]
+            points.append(point)
+        # The engine writes results in execution order, and KV warm-up's
+        # point reordering (batch/kv-depth descending for warm-chain reuse,
+        # fake points last) deliberately decouples that order from
+        # benchmark_id -- so validate the ID set, not file positions, then
+        # canonicalize by ID.
+        if seen_ids != set(range(1, expected + 1)):
+            raise ValueError(f"native benchmark IDs are not contiguous: {path}")
+        points.sort(key=lambda item: int(item["benchmark_id"]))
+        if canonical_points is None:
+            canonical_points = points
+        elif points != canonical_points:
+            raise ValueError(f"native DP ranks generated different grids: {path}")
+        if canonical_groups is None:
+            canonical_groups = groups
+        elif groups != canonical_groups:
+            raise ValueError(f"native DP ranks have different synchronized iteration groups: {path}")
+
+    if seen_ranks != set(expected_ranks):
+        raise ValueError(f"native DP rank set mismatch: actual={sorted(seen_ranks)} expected={expected_ranks}")
+    assert canonical_points is not None and canonical_groups is not None and run_identity is not None
+    assert schema_version is not None
+
+    measurements = []
+    measured_iteration_seconds = 0.0
+    power_statuses: dict[str, int] = {}
+    # iteration_groups are written in execution order too; canonicalize by
+    # benchmark_id so the positional pairing with the ID-sorted points holds.
+    for group in canonical_groups:
+        if not isinstance(group, dict):
+            raise TypeError("native iteration group is not a mapping")
+    try:
+        canonical_groups = sorted(canonical_groups, key=lambda group: int(group["benchmark_id"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"native iteration group benchmark_id is invalid: {error}") from error
+    for benchmark_id, (point, group) in enumerate(zip(canonical_points, canonical_groups, strict=True), start=1):
+        if (
+            group.get("benchmark_id") != benchmark_id
+            or group.get("point") != point
+            or group.get("expected_dp_ranks") != expected_ranks
+            or group.get("complete") is not True
+        ):
+            raise ValueError(f"native iteration group contract mismatch for benchmark_id={benchmark_id}")
+        rank_results = group.get("rank_results")
+        if (
+            not isinstance(rank_results, list)
+            or not all(isinstance(item, dict) for item in rank_results)
+            or [item.get("dp_rank") for item in rank_results] != expected_ranks
+        ):
+            raise ValueError(f"native iteration group rank mismatch for benchmark_id={benchmark_id}")
+        wall_times = []
+        powers = []
+        for rank_result in rank_results:
+            rank = int(rank_result["dp_rank"])
+            fpms = rank_result.get("fpms")
+            if not isinstance(fpms, list) or len(fpms) != 1:
+                raise ValueError(f"native iteration group has invalid FPM count for rank={rank}")
+            wall_time, power = _validate_fpm(point, fpms[0], rank=rank, schema_version=schema_version)
+            if fpms[0] != local_fpms[(benchmark_id, rank)]:
+                raise ValueError(f"native local result differs from synchronized group for rank={rank}")
+            wall_times.append((rank, wall_time))
+            powers.append(power)
+        power_w = None
+        if schema_version == FPM_NATIVE_BENCHMARK_POWER_RESULT_SCHEMA_VERSION:
+            power_w, power_status = _point_power_w(cell, point, powers)
+            power_statuses[power_status] = power_statuses.get(power_status, 0) + 1
+        group_wall_time = float(group.get("wall_time", -1))
+        expected_wall_time = max(value for _, value in wall_times)
+        if not math.isfinite(group_wall_time) or not math.isclose(
+            group_wall_time, expected_wall_time, rel_tol=1e-9, abs_tol=1e-12
+        ):
+            raise ValueError(f"native iteration wall_time mismatch for benchmark_id={benchmark_id}")
+        measured_iteration_seconds += group_wall_time
+        measurements.append(
+            NativePointMeasurement(
+                point=dict(point),
+                rank_wall_times=tuple(wall_times),
+                kv_seed_regime=seed_regimes[benchmark_id],
+                power_w=power_w,
+            )
+        )
+
+    # Power-window iterations are not latency samples: each rank's measured
+    # time must still be exactly the sum of the latency-sample group walls.
+    for rank, _elapsed, measured in rank_timings:
+        if not math.isclose(measured, measured_iteration_seconds, rel_tol=1e-9, abs_tol=1e-12):
+            raise ValueError(f"native measured timing mismatch for rank={rank}")
+    if power_statuses:
+        logger.info(
+            "FPM %s: power measured for %d of %d points (%d unavailable, %d above the KV drift bound)",
+            cell.cell_id,
+            power_statuses.get("measured", 0),
+            len(measurements),
+            power_statuses.get("unavailable", 0),
+            power_statuses.get("kv_drift", 0),
+        )
+    return NativeCollection(
+        points=tuple(measurements),
+        rank_timings=tuple(sorted(rank_timings)),
+        backend_version=backend_version,
+        collector_attempt_id=collector_attempt_id,
+        runtime_run_id=run_identity[0],
+        runtime_grid_digest=run_identity[1],
+        kvwarm_meta=kvwarm_meta,
+        input_provenance=input_provenance,
+        artifact_schema_version=schema_version,
+    )

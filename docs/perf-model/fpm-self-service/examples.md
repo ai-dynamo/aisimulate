@@ -28,8 +28,8 @@ output directories and preserve each campaign's evidence.
 
 ## Example A: onboard the collected Kimi K3 TP8+DCP8 profile
 
-This example needs an AISimulate build containing the DCP profile-consumer
-changes from [#284](https://github.com/ai-dynamo/aisimulate/pull/284)
+This example needs an AISim build containing the DCP profile-consumer
+changes from [#284](https://github.com/ai-dynamo/aisim/pull/284)
 (merged commit `982c18f4e8e33c124b5195945db269b83168ed3f`), including `dcp`,
 `text_only`, `unrecorded_quant_modes`, and engine-stack `decode_context`. Verify
 that build separately if your guided-onboarding checkout lacks these options.
@@ -50,7 +50,7 @@ It models **eight GB300 GPUs**: DCP8 reuses the TP8 group.
 
 ### A1. Import the measured pair
 
-Choose a new output directory and an AISimulate build with the
+Choose a new output directory and an AISim build with the
 [`kimi_k3_fpm` pin manifest and materializer](README.md#reuse-a-published-profile).
 The materializer verifies the pinned files and reuses a verified cache on later
 calls. This historical profile is marked `development`: the explicit
@@ -67,7 +67,7 @@ import os
 import shutil
 from pathlib import Path
 
-from aisimulate_core.sdk.fpm_dataset import list_fpm_profiles, materialize_fpm_profile
+from aisim_core.sdk.fpm_dataset import list_fpm_profiles, materialize_fpm_profile
 
 run = Path(os.environ["FPM_RUN"]).resolve()
 key = "gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0"
@@ -127,7 +127,7 @@ import os
 from pathlib import Path
 
 import pyarrow.parquet as pq
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 run = Path(os.environ["FPM_RUN"]).resolve()
 config = ForwardPassPerfModelConfig(
@@ -224,7 +224,7 @@ traffic:
   stop: {requests: 2}
 YAML
 
-aisimulate predict --stack engine -c "$FPM_RUN/predict.yaml" \
+aisim predict --stack engine -c "$FPM_RUN/predict.yaml" \
   --output-dir "$FPM_RUN/prediction-fpm" --capture-per-request
 ```
 
@@ -299,7 +299,7 @@ export FPM_VLLM_VERSION=my-vllm-patch-3
 export FPM_RESOURCE_OVERRIDES=/absolute/path/to/reviewed-resource-overrides.yaml
 mkdir -p "$(dirname "$FPM_RUN")"
 mkdir "$FPM_RUN"
-aisimulate onboard checkpoint --file "$FPM_RUN/onboarding-checkpoint.json"
+aisim onboard checkpoint --file "$FPM_RUN/onboarding-checkpoint.json"
 
 init_args=(
   --model MiniMaxAI/MiniMax-M2.7
@@ -315,7 +315,7 @@ init_args=(
   --gpu-memory-utilization 0.90 --prefill-cudagraph-policy runtime
   --input-tokens 1024 --output-tokens 32 --concurrency 4 --request-count 8
 )
-aisimulate onboard init "${init_args[@]}" --output "$FPM_RUN/draft-request.yaml"
+aisim onboard init "${init_args[@]}" --output "$FPM_RUN/draft-request.yaml"
 ```
 
 `FPM_VLLM_VERSION` is the backend identity label for this campaign. Replace the
@@ -349,10 +349,10 @@ request = yaml.safe_load((run / "draft-request.yaml").read_text())
 update = {"configurations": {"tp4": {"draft_request": request}}}
 (run / "draft-update.json").write_text(json.dumps(update, indent=2) + "\n")
 PY
-FPM_CHECKPOINT_REVISION=$(aisimulate onboard checkpoint \
+FPM_CHECKPOINT_REVISION=$(aisim onboard checkpoint \
   --file "$FPM_RUN/onboarding-checkpoint.json" | \
   python -c 'import json, sys; print(json.load(sys.stdin)["state"]["revision"])')
-aisimulate onboard checkpoint --file "$FPM_RUN/onboarding-checkpoint.json" \
+aisim onboard checkpoint --file "$FPM_RUN/onboarding-checkpoint.json" \
   --expect-revision "$FPM_CHECKPOINT_REVISION" --update "$FPM_RUN/draft-update.json"
 ```
 
@@ -361,12 +361,12 @@ for review. Save edits and show the revised draft; only after explicit acceptanc
 of those values, record it and regenerate the same request at a fresh final path:
 
 ```bash
-FPM_CHECKPOINT_REVISION=$(aisimulate onboard checkpoint \
+FPM_CHECKPOINT_REVISION=$(aisim onboard checkpoint \
   --file "$FPM_RUN/onboarding-checkpoint.json" | \
   python -c 'import json, sys; print(json.load(sys.stdin)["state"]["revision"])')
-aisimulate onboard checkpoint --file "$FPM_RUN/onboarding-checkpoint.json" \
+aisim onboard checkpoint --file "$FPM_RUN/onboarding-checkpoint.json" \
   --expect-revision "$FPM_CHECKPOINT_REVISION" --accept-profile tp4
-aisimulate onboard init "${init_args[@]}" --output "$FPM_RUN/request.yaml"
+aisim onboard init "${init_args[@]}" --output "$FPM_RUN/request.yaml"
 cmp "$FPM_RUN/draft-request.yaml" "$FPM_RUN/request.yaml"
 ```
 
@@ -382,7 +382,7 @@ Generate the plan from the accepted request and preview the intended deployment:
 
 ```bash
 export FPM_COLLECTION="$FPM_RUN/collection"
-aisimulate onboard plan \
+aisim onboard plan \
   --config "$FPM_RUN/request.yaml" --output-dir "$FPM_COLLECTION"
 
 deployment_args=(
@@ -397,7 +397,7 @@ collect_args=(
   --output-dir "$FPM_COLLECTION"
   "${deployment_args[@]}"
 )
-aisimulate onboard collect-fpm "${collect_args[@]}"
+aisim onboard collect-fpm "${collect_args[@]}"
 ```
 
 If useful, add `--dynamo-version YOUR_DYNAMO_BUILD_LABEL` to record collection
@@ -428,7 +428,7 @@ guided preview; it must retain `--plan-only`. Preserve all generated model,
 profile, runtime and output arguments. The collector plan is authoritative for
 admitted cells: for this one-topology aggregated request, expect prefill and
 decode cells, or investigate omissions. The exact grid and point count remain
-runtime-determined. AISimulate bounds context and scheduled new tokens
+runtime-determined. AISim bounds context and scheduled new tokens
 separately; Dynamo generates feasible points from those limits and the initialized
 engine's capture configuration. Runtime graph policy does not force a prefill
 capture limit of 2,048 or assume prefill and decode execute the same graph.
@@ -465,7 +465,7 @@ shared-resource reuse without coupling unrelated publication success. See
 First inspect any existing native evidence without launching workers:
 
 ```bash
-aisimulate onboard collect-fpm "${collect_args[@]}" --check-readiness
+aisim onboard collect-fpm "${collect_args[@]}" --check-readiness
 ```
 
 A fresh campaign returns incomplete/nonzero because it has no measurements.
@@ -473,7 +473,7 @@ When GPU execution is authorized and the environment is prepared, collect the
 bounded smoke and inspect readiness:
 
 ```bash
-aisimulate onboard collect-fpm "${collect_args[@]}" --execute --smoke
+aisim onboard collect-fpm "${collect_args[@]}" --execute --smoke
 
 # Use the resolved paths printed by the first execution.
 export FPM_COLLECTION="$FPM_RUN/collection/runtime-resolved"
@@ -482,7 +482,7 @@ collect_args=(
   --output-dir "$FPM_COLLECTION"
   "${deployment_args[@]}"
 )
-aisimulate onboard collect-fpm "${collect_args[@]}" --check-readiness
+aisim onboard collect-fpm "${collect_args[@]}" --check-readiness
 ```
 
 The first execution probes the actual image's package metadata without GPUs,
@@ -503,7 +503,7 @@ deterministic capability gaps before retrying unchanged work.
 Only once matching readiness is established, run formal collection:
 
 ```bash
-aisimulate onboard collect-fpm "${collect_args[@]}" --execute
+aisim onboard collect-fpm "${collect_args[@]}" --execute
 ```
 
 Omit both `--smoke` and `--limit`. Formal and smoke checkpoints/artifacts are
@@ -600,7 +600,7 @@ at `$FPM_RUN/validation-policy.json`, then prepare point-validity, execution and
 holdout checks without GPU work:
 
 ```bash
-aisimulate onboard validate-collection \
+aisim onboard validate-collection \
   --config "$FPM_COLLECTION/request.yaml" --output-dir "$FPM_COLLECTION" \
   --validation-output-dir "$FPM_RUN/quality" --policy "$FPM_RUN/validation-policy.json"
 ```
@@ -610,7 +610,7 @@ exist. Numerical failures return nonzero even during preparation. When repetitio
 execution is authorized, use the frozen assessment and source deployment:
 
 ```bash
-aisimulate onboard validate-collection \
+aisim onboard validate-collection \
   --config "$FPM_COLLECTION/request.yaml" --output-dir "$FPM_COLLECTION" \
   --validation-output-dir "$FPM_RUN/quality" --resume --execute
 ```
@@ -626,7 +626,7 @@ unestablished; stable numbers alone do not prove comparable execution.
 When the resource profile is pending, finalize from verified native observations:
 
 ```bash
-aisimulate onboard finalize \
+aisim onboard finalize \
   --config "$FPM_COLLECTION/request.yaml" --output-dir "$FPM_COLLECTION" \
   --collection-report "$FPM_RUN/quality/collection-validation.json" \
   --resolved-output-dir "$FPM_RUN/resolved"
@@ -654,7 +654,7 @@ import math
 import os
 from pathlib import Path
 import pyarrow.parquet as pq
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 root = Path(os.environ["FPM_SIM"])
 profile = json.loads((root / "fpm-model-profile.json").read_text())
@@ -701,7 +701,7 @@ For a first trace check, select one complete local AgentX play and preserve its
 request dependencies. Run the existing cold aggregated replay with coverage:
 
 ```bash
-aisimulate onboard validate-fpm \
+aisim onboard validate-fpm \
   --config "$FPM_SIM/request.yaml" --output-dir "$FPM_SIM" \
   --trace /absolute/path/to/selected-play.jsonl \
   --validation-output-dir "$FPM_RUN/replay-validation"
@@ -719,9 +719,9 @@ The generated synthetic examples preserve the same accepted profile, data root,
 worker width and strict direct-FPM selection:
 
 ```bash
-aisimulate predict --config "$FPM_SIM/predict/pilot.yaml" \
+aisim predict --config "$FPM_SIM/predict/pilot.yaml" \
   --output-dir "$FPM_RUN/prediction-fpm" --capture-per-request
-aisimulate recommend --config "$FPM_SIM/recommend/pilot.yaml" \
+aisim recommend --config "$FPM_SIM/recommend/pilot.yaml" \
   --output-dir "$FPM_RUN/recommendation-fpm"
 ```
 
@@ -740,7 +740,7 @@ Retain the original request, plan and `deployment_args`. In the same shell that
 defined `collect_args`, resume with:
 
 ```bash
-aisimulate onboard collect-fpm "${collect_args[@]}" --resume --execute
+aisim onboard collect-fpm "${collect_args[@]}" --resume --execute
 ```
 
 Resume may launch missing or unfinished cells. For failed cells, changed inputs,

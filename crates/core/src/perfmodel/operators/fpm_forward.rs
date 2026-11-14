@@ -1207,7 +1207,7 @@ mod tests {
 
     const SYSTEMS_ROOT: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../python/aisimulate/src/aisimulate_core/systems"
+        "/../../python/aisim/src/aisim_core/systems"
     );
 
     /// A PerfDatabase whose fpm_forward table points at a temp pair; the rest
@@ -2802,6 +2802,7 @@ mod tests {
     // weights (`decode_bracket`, `perf_interp.rs` IDW and in-curve lerp)
     // with the same weight applied to latency and power.
 
+    use crate::perf_database::fpm_forward::FPM_FORWARD_POWER_MEASUREMENT_POLICY;
     use crate::perf_database::fpm_forward::tests::{PowerCell, RowSpec};
 
     /// The same rows as a v8 pair: `power(index)` W per row, `None` = null.
@@ -2815,9 +2816,21 @@ mod tests {
             .collect()
     }
 
-    fn db_for(rows: &[RowSpec]) -> (tempfile::TempDir, PerfDatabase) {
+    /// Writes `rows` as a pair. Schema 8 binds every row to the sidecar
+    /// policy, so powered rows carry the power-window row policy.
+    fn db_for(rows: impl IntoIterator<Item = RowSpec>) -> (tempfile::TempDir, PerfDatabase) {
+        let rows: Vec<RowSpec> = rows
+            .into_iter()
+            .map(|row| RowSpec {
+                measurement: row
+                    .power_w
+                    .is_some()
+                    .then_some((FPM_FORWARD_POWER_MEASUREMENT_POLICY, 1)),
+                ..row
+            })
+            .collect();
         let tmp = tempfile::tempdir().unwrap();
-        write_pair(tmp.path(), rows);
+        write_pair(tmp.path(), &rows);
         let db = db_with_pair(tmp.path());
         (tmp, db)
     }
@@ -2847,8 +2860,8 @@ mod tests {
 
     #[test]
     fn v8_energy_is_power_times_latency_and_v6_energy_is_zero() {
-        let (_v8, powered) = db_for(&with_power(default_rows(), default_power));
-        let (_v6, legacy) = db_for(&default_rows());
+        let (_v8, powered) = db_for(with_power(default_rows(), default_power));
+        let (_v6, legacy) = db_for(default_rows());
         let (decode, prefill) = (op(FpmPhase::Decode), op(FpmPhase::Prefill));
         let w = (2048.0 - 8.0) / (4096.0 - 8.0);
         for (db, is_powered) in [(&powered, true), (&legacy, false)] {
@@ -2881,9 +2894,9 @@ mod tests {
     /// their energy.
     #[test]
     fn unpowered_row_zeroes_energy_of_hits_and_lerps_that_touch_it() {
-        let (_full, full) = db_for(&with_power(default_rows(), default_power));
+        let (_full, full) = db_for(with_power(default_rows(), default_power));
         // Row 6 is decode (8, 4096).
-        let (_partial, partial) = db_for(&with_power(default_rows(), |index| {
+        let (_partial, partial) = db_for(with_power(default_rows(), |index| {
             (index != 6).then(|| default_power(index).unwrap())
         }));
         let decode = op(FpmPhase::Decode);
@@ -2935,7 +2948,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let dec = op(FpmPhase::Decode);
-        let (_full, full) = db_for(&rows(None));
+        let (_full, full) = db_for(rows(None));
         // Both sides: bracket {497, 512} at weight (500 - 497) / 15 = 0.2.
         let both = dec.query_totals(&full, &[500.0, 2048.0]).unwrap();
         close(both.latency_ms, 11.0 + 0.5 * 0.2);
@@ -2945,7 +2958,7 @@ mod tests {
         assert_eq!((one.latency_ms, one.energy_wms), (34.0, 600.0 * 34.0));
 
         // D8: the hi side (512, 2048) unpowered.
-        let (_partial, partial) = db_for(&rows(Some((512, 2048))));
+        let (_partial, partial) = db_for(rows(Some((512, 2048))));
         let dropped = dec.query_totals(&partial, &[500.0, 2048.0]).unwrap();
         assert_eq!(dropped.energy_wms, 0.0);
         assert_eq!(dropped.latency_ms.to_bits(), both.latency_ms.to_bits());
@@ -2962,7 +2975,7 @@ mod tests {
                 })
             })
             .collect();
-        let (_same, same) = db_for(&rows);
+        let (_same, same) = db_for(rows);
         let single = dec.query_totals(&same, &[8.5, 1024.0]).unwrap();
         assert_eq!((single.latency_ms, single.energy_wms), (6.0, 200.0 * 6.0));
     }
@@ -2991,7 +3004,7 @@ mod tests {
             })
         };
         let dec = op(FpmPhase::Decode);
-        let (_full, full) = db_for(&rows(Some(500.0)));
+        let (_full, full) = db_for(rows(Some(500.0)));
         // Bracket {9, 16} floors (9, 18) and (16, 32) at weight 6/7.
         let w = (15.0 - 9.0) / (16.0 - 9.0);
         let both = dec.query_pass_baseline(&full, 15, 40.0).unwrap();
@@ -3000,7 +3013,7 @@ mod tests {
         let exact = dec.query_pass_baseline(&full, 16, 40.0).unwrap();
         assert_eq!((exact.latency_ms, exact.energy_wms), (9.0, 500.0 * 9.0));
 
-        let (_partial, partial) = db_for(&rows(None));
+        let (_partial, partial) = db_for(rows(None));
         let dropped = dec.query_pass_baseline(&partial, 15, 40.0).unwrap();
         assert_eq!(dropped.energy_wms, 0.0);
         assert_eq!(dropped.latency_ms.to_bits(), both.latency_ms.to_bits());
@@ -3027,13 +3040,13 @@ mod tests {
         let mut decode = op(FpmPhase::Decode);
         decode.sol_ops = glm_dsa_sol_ops("generation_attention");
         // (16, 262144) is not a leaf of the b = 12 transfer at kv 131072.
-        let (_full, full) = db_for(&rows((16, 262144)));
+        let (_full, full) = db_for(rows((16, 262144)));
         let got = decode.query_totals(&full, &[12.0, 131072.0]).unwrap();
         let (w_lo, w_hi) = (idw_weight(8.0, 12.0), idw_weight(16.0, 12.0));
         let power = (w_lo * 500.0 + w_hi * 700.0) / (w_lo + w_hi);
         close(got.energy_wms, power * got.latency_ms);
 
-        let (_partial, partial) = db_for(&rows((16, 131072)));
+        let (_partial, partial) = db_for(rows((16, 131072)));
         let dropped = decode.query_totals(&partial, &[12.0, 131072.0]).unwrap();
         assert_eq!(dropped.energy_wms, 0.0);
         assert_eq!(dropped.latency_ms.to_bits(), got.latency_ms.to_bits());
@@ -3063,7 +3076,7 @@ mod tests {
                 }
             }
         }
-        let (_tmp, db) = db_for(&rows);
+        let (_tmp, db) = db_for(rows);
         let mut prefill = op(FpmPhase::Prefill);
         prefill.sol_ops = glm_dsa_sol_ops("context_attention");
         // Restated back-mapping (see the DSA transfer test above).
@@ -3090,8 +3103,8 @@ mod tests {
     /// with and without a coverage sink.
     #[test]
     fn direct_method_is_latency_only_on_a_powered_pair() {
-        let (_v8, powered) = db_for(&with_power(default_rows(), default_power));
-        let (_v6, legacy) = db_for(&default_rows());
+        let (_v8, powered) = db_for(with_power(default_rows(), default_power));
+        let (_v6, legacy) = db_for(default_rows());
         let mut decode = op(FpmPhase::Decode);
         decode.interpolation = FpmInterpolation::Direct;
         let mut prefill = op(FpmPhase::Prefill);

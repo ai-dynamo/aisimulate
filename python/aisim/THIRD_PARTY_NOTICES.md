@@ -1,0 +1,2323 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Third-Party Notices
+
+AISim contains source material derived from the projects identified below.
+These notices apply only to the identified third-party material. Dependencies
+installed separately by package managers are governed by the license material
+distributed with those packages.
+
+Unless otherwise stated, AISim file paths in this document are relative
+to `python/aisim/` in the repository source tree.
+
+## SGLang v0.5.22 HiCache residency and merged backups
+
+The merged backup submission in repository-root
+`crates/core/src/engine/host_offload/tier.rs`, host-backed radix residency in
+`crates/core/src/engine/cache/{radix_cache.rs,radix_cache/hicache.rs}`,
+the controller in `crates/core/src/engine/kv_manager/{sglang_backend.rs,sglang_backend/hicache.rs}`,
+admission and transfer timing in `crates/core/src/engine/scheduler/sglang/{core.rs,decode.rs,host_loop.rs,policy.rs,prefill.rs,tests.rs}`,
+the offline scenarios in `crates/core/tests/sglang_fidelity.rs`,
+the descriptions in `docs/replay/engine/kv-cache.md`, and their
+regression tests are modified behavioral adaptations of
+`python/sglang/srt/mem_cache/l2_transfer.py` and
+`python/sglang/srt/mem_cache/unified_radix_cache.py` and
+`python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py`, and
+`python/sglang/srt/managers/schedule_policy.py` in SGLang
+v0.5.22 at commit `baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's private FIFO transfer lane
+and discrete-event acknowledgements. No serving implementation is vendored.
+
+## SGLang v0.5.22 cache-salt namespaces
+
+The cache-salt behavior in repository-root
+`crates/core/src/engine/common/hashing.rs`,
+`crates/core/src/engine/common/protocols.rs`,
+`crates/core/src/engine/protocol.rs`,
+`crates/core/src/engine/kv_manager/sglang_backend.rs`,
+`crates/core/src/engine/scheduler/sglang/request.rs`,
+`crates/core/src/engine/scheduler/sglang/tests.rs`,
+`crates/core/src/replay/{protocol.rs,spec.rs,replayer.rs}`,
+`crates/core/src/replay/loadgen/{types.rs,tests.rs}`,
+`crates/core/tests/replay_cache_salt.rs`,
+`docs/replay/engine/kv-cache.md`, and the inline request normalization in
+`src/aisim/traffic.py` and repository-root `tests/test_traffic.py`
+is a modified behavioral adaptation of SGLang v0.5.22 at commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Upstream paths: `python/sglang/srt/managers/io_struct.py`,
+`python/sglang/srt/managers/schedule_batch.py`,
+`python/sglang/srt/managers/schedule_policy.py`, and
+`python/sglang/srt/mem_cache/{radix_cache.py,utils.py,events.py}`.
+Copyright 2023-2024 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's native request lifecycle,
+replay, and XXH3 page/sequence identities. No serving code is vendored;
+the hashes model namespace isolation rather than SGLang's SHA256 encoding.
+
+## SGLang v0.5.22 computed KV and finish boundaries
+
+The output/committed-KV bookkeeping and regression cases in repository-root
+`crates/core/src/engine/scheduler/sglang/{decode.rs,request.rs,tests.rs}` and
+the descriptions in `docs/replay/engine/workers.md` are modified behavioral
+adaptations of SGLang v0.5.22 at immutable commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Original paths: `python/sglang/srt/managers/{schedule_batch.py,scheduler.py}`,
+`python/sglang/srt/managers/scheduler_components/batch_result_processor.py`,
+`python/sglang/srt/mem_cache/{allocation.py,common.py}`, and
+`python/sglang/srt/disaggregation/decode.py`.
+Copyright 2023-2026 SGLang Team. Apache-2.0; the license is at the pinned
+repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISim's page leases, deterministic length stops, and sampled
+speculative acceptance. Tests use synthetic requests; no upstream fixture is vendored.
+
+## SGLang v0.5.22 disaggregated admission and retraction recovery
+
+The native controls and scheduler wiring in repository-root
+`crates/core/src/engine/{config.rs,common/protocols.rs,scheduler/rank.rs}`,
+the request-capacity, transfer-admission and restoration behavior in
+`crates/core/src/engine/scheduler/sglang/{config.rs,core.rs,host_loop.rs,prefill.rs,request.rs,tests.rs}`,
+the native-limit regression in `crates/core/tests/engine.rs`, and the
+descriptions in `docs/replay/engine/workers.md` are modified
+behavioral adaptations of SGLang v0.5.22 at immutable commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Original paths: `python/sglang/srt/disaggregation/{decode.py,prefill.py}`,
+`python/sglang/srt/arg_groups/{fields/disagg.py,pd_disaggregation_hook.py}`,
+`python/sglang/srt/managers/{scheduler.py,schedule_batch.py}`, and
+`python/sglang/srt/mem_cache/kv_cache_configurator.py`.
+Copyright 2023-2026 SGLang Team. Apache-2.0; the license is at the pinned
+repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISim's synchronous request leases and discrete-event replay.
+Tests use synthetic requests; no upstream implementation or fixture is vendored.
+
+## SGLang v0.5.22 prefill admission and ratio lifecycle
+
+The admission budget, arrival limits, continuation priority, and ratio
+lifecycle in repository-root
+`crates/core/src/engine/scheduler/sglang/{config.rs,core.rs,decode.rs,host_loop.rs,policy.rs,prefill.rs,tests.rs}`,
+the protected-prefix capacity check in
+`crates/core/src/engine/kv_manager/sglang_backend.rs`, the regression fixtures in
+`crates/core/src/replay/components/engine.rs` and `crates/core/tests/engine.rs`,
+and the descriptions in
+`docs/replay/engine/{workers.md,sglang-vl-host-loop.md}` are modified behavioral
+adaptations of SGLang v0.5.22 at commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`:
+https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Upstream paths: `python/sglang/srt/mem_cache/{prefill_budget.py,allocator/base.py}`,
+`python/sglang/srt/managers/{scheduler.py,schedule_policy.py,schedule_batch.py,tp_worker.py,utils.py}`,
+and `python/sglang/srt/managers/scheduler_components/new_token_ratio_tracker.py`.
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's synchronous request leases
+and discrete-event scheduling. No serving implementation is vendored.
+
+## SGLang v0.5.22 semantic comparison probes
+
+The synthetic probes in repository-root
+`crates/core/src/engine/scheduler/sglang/semantic_evidence.rs` and their inputs,
+expected contracts and synthetic probe reports in
+`benchmarks/evidence/sglang-semantics-20261105/` are modified behavioral
+adaptations of the pinned SGLang v0.5.22 sources identified in the three
+preceding sections and the decode radix-cache section below.
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2026 SGLang Team. Apache-2.0; the upstream license is at the
+pinned repository's `LICENSE` and its full text is included here as `LICENSE`.
+Modified for AISim's synchronous leases, synthetic token IDs and fixed
+timing model. No upstream implementation or production request is vendored.
+
+## SGLang native FPM counter correction
+
+The following repository-root files derive from
+`python/sglang/srt/managers/scheduler_components/metrics_reporter.py` in SGLang:
+
+- `scripts/fpm_self_service/native_patches/sglang-native-five-fields.patch`
+- `scripts/fpm_self_service/native_patches/fixtures/metrics_reporter_scheduled_method.py.txt`
+
+Upstream: https://github.com/sgl-project/sglang , immutable revision
+`e087e662ba1ac4ef7747537e2a9141085efd4561`. Original source:
+https://github.com/sgl-project/sglang/blob/e087e662ba1ac4ef7747537e2a9141085efd4561/python/sglang/srt/managers/scheduler_components/metrics_reporter.py .
+Copyright 2023-2024 SGLang Team; Apache-2.0. The unmodified upstream license is
+retained at
+`scripts/fpm_self_service/native_patches/licenses/sglang-e087e662-LICENSE`.
+The pinned repository has no separate NOTICE on this source's ancestor paths.
+
+Modification status: the patch changes scheduled-prefill accounting to use
+pre-forward batch lengths and adds a prominent modification comment. The fixture
+extracts the unmodified original method into a standalone class wrapper; its
+comments identify the extraction and SGLang ownership. It is stored as text to
+preserve its byte-addressed provenance through formatters.
+
+The adjacent `materialize_sglang_patch.py` and tests are original orchestration.
+The helper generates a modified full SGLang source file, preserves the upstream
+license and explicit modification marker, and copies the patch and provenance
+beside it. The expected generated SHA256 is
+`80ca324b60beb470b4ea6057fde7ee9553dd32e851e9741831459614e40bee63`.
+`provenance.json` identifies the original, patch, fixture and license hashes.
+These notices also apply to generated source copies; materialization alone does
+not qualify a runtime or captured labels.
+
+## AIPerf AgentX snapshot oracle
+
+The reference sampling vectors and recycling contract in repository-root
+`crates/core/src/replay/loadgen/snapshot_tests.rs` and
+`docs/replay/workloads.md`, plus the invocation contract in
+`scripts/prediction_regression/export_agentx_snapshots.py`, are derived from
+`src/aiperf/timing/trajectory_source.py` and
+`src/aiperf/timing/strategies/agentic_replay.py` in SemiAnalysisAI/aiperf at
+commit `754356e9a39acc6cc6afb242d123bb57c3fb6f75`:
+https://github.com/SemiAnalysisAI/aiperf/tree/754356e9a39acc6cc6afb242d123bb57c3fb6f75
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0. The upstream license is at
+https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/LICENSE
+and the full license is included in this repository as `LICENSE`.
+Modified by NVIDIA: executed the pinned sampler on a small synthetic corpus
+to freeze expected cuts, and documented its sequential recycling behavior.
+No upstream implementation is vendored; AISim consumes explicit cuts.
+
+The live warmup policy in repository-root
+`crates/core/src/replay/loadgen/phase.rs` and
+`crates/core/src/replay/loadgen/driver.rs`, its regression tests in those files,
+and `docs/replay/agentic/warmup.md`, `docs/replay/agentic/continuous-profiles.md`
+and `docs/replay/workloads.md` are modified re-implementations of the same
+pinned `agentic_replay.py` behavior: globally aligned primers, per-lane
+admission quotas, compressed dependency waits, shared-cursor recycling, and
+source-clock frontier handoff. NVIDIA modified these algorithms to use the
+native deterministic dependency executor and its transactional server-settlement
+barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
+upstream serving implementation is vendored.
+
+The primers-only warmup policy in repository-root
+`crates/core/src/replay/loadgen/phase.rs`, its regression test there, and its
+descriptions in `docs/replay/agentic/warmup.md` and `docs/replay/workloads.md`
+model the snapshot warmup of NVIDIA AIPerf without a cache-pressure warmup
+(https://github.com/ai-dynamo/aiperf/blob/bb79be22fdc8ce7860e7b81eda1e7765474d568c/src/aiperf/timing/strategies/agentic_replay.py,
+`_execute_warmup` and `_capped_warmup_lead_ms`): one primer per stream, leads
+capped at the idle cap and aligned on the cut, and no further warmup request.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
+Licensed under Apache-2.0; no upstream implementation is vendored.
+
+The continuous-profile release rules in the same `driver.rs`, their regression
+tests there, and the release descriptions in
+`docs/replay/agentic/continuous-profiles.md` and `docs/replay/workloads.md` are
+modified re-implementations of the pinned `agentic_replay.py`,
+`src/aiperf/timing/branch_orchestrator.py`,
+`src/aiperf/timing/replay_dependencies.py` and
+`src/aiperf/common/loop_scheduler.py` behavior: dependency-relative release of
+continuations, spawns and joins, joins gated by the parent's own replay
+deadline, detected chains released when their replay barrier clears, and
+uniform idle shifts of every pending replay timer, repeated when a shift lands
+on a request still held by its replay barrier. The `agentx` Weka client in
+repository-root `crates/core/src/replay/loadgen/weka.rs`, its regression tests
+there, and its descriptions in the same two documents likewise re-implement
+the pinned `branch_orchestrator.py` branch dispatch with
+`src/aiperf/dataset/loader/weka_trace.py` and
+`src/aiperf/dataset/loader/weka_synth_buf.py`: subagents and flattened chains
+spawned and joined in groups by main-conversation turn, and each stream
+rendered as its own chat conversation. NVIDIA modified these rules to operate
+on the native dependency graph. The original NVIDIA copyright and Apache-2.0
+license apply; no upstream implementation is vendored.
+
+## AIConfigurator
+
+The repository-root `.coderabbit.yaml` is adapted and modified from
+AIConfigurator's `.coderabbit.yaml` at commit
+`13b5cf2697876692b0a52098266c81162add11fc`. The original imported policy is
+preserved at `python/aisim/.coderabbit.yaml` as migration provenance.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/.coderabbit.yaml
+
+Pinned upstream collection and preserved-file SHA-256:
+`5fb7a61a53f71f476169fa8e2419d3073c8d7e96206d8986b7d4fbb0f11fbcdd`
+
+AISim-modified root overlay SHA-256:
+`a70a21425533b419feaafcec67b176b3048a0893c4833bb802f46dc6e9a8f57e`
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at the identified revision is available at:
+https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
+
+The 18 B200 TensorRT-LLM 1.3.0rc20 performance tables under
+`src/aisim_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
+power measurements derived from AIConfigurator commit
+`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` (PR #1584). Fourteen tables remain
+unmodified, byte-identical copies after the September 17-18 refresh. The
+context-MLA table was replaced with locally collected measurements, and the
+MoE table has locally refreshed MXFP4 rows with unavailable-power sentinels.
+The context-attention and
+generation-attention tables are modified derivatives: AISim preserves
+newer local timing rows and adds the typed `0.0` / `0.0` unavailable sentinel
+to those local-only identities. Source paths, row counts, measured coverage,
+and merge details are recorded in
+`src/aisim_core/systems/data/b200_sxm/README.md`. The two unmodified
+upstream attention copies under
+`src/aisim_core/systems/data/b200_sxm/power_upstream/` support focused
+import regression tests, which pin source and packaged SHA-256 digests.
+
+The corresponding energy expectations in the repository-root file
+`crates/core/parity_tests/perfmodel/goldens/per_op.json` are modified generated
+derivatives of those measurements. AISim's native pinning workflow at
+commit `36dcc8f3afe9e6e2e9de976737b6337fad8c4d74` produced the two case updates;
+the adjacent parity README records the reviewed energy-only delta.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/aic-core/src/aiconfigurator_core/systems/data/b200_sxm
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at the identified revision is available at:
+https://github.com/ai-dynamo/aiconfigurator/blob/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/LICENSE
+
+## Dynamo V4.1 FPM collection adapter
+
+`collector/fpm_forward/runtime/dsv41/dsv41_scheduler.py` is modified code
+adapted from `components/src/dynamo/vllm/instrumented_scheduler.py` in
+https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9.
+It adds bounded same-request real-KV collection while preserving the native
+benchmark and FPM contracts. Copyright (c) 2025-2026 NVIDIA CORPORATION &
+AFFILIATES. All rights reserved. Licensed under Apache-2.0; the upstream
+license is preserved in the adapter's adjacent `LICENSE`. The adjacent README
+records the inspected vLLM API revision and immutable runtime image/source
+hashes. vLLM implementation files are not vendored. The text fixture and
+lifecycle tests are original work for this change, with no external corpus.
+
+## Dynamo GLM-5.3-Flash default-serving (prefix-cache) FPM adapter
+
+`python/aisim/collector/fpm_forward/runtime/glm53flash/glm53flash_prefix_scheduler.py`
+is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
+in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9
+(benchmark state machine on the native scheduler). Its prefix-cache real-seed staging
+(seed shot, untimed warm shot, validated measured shot; `_bench_realseed_stage_point` /
+`_bench_realseed_pending_step`) is ported from the same path at
+https://github.com/ai-dynamo/dynamo/tree/99dae1f53e5a0534c274223ff9daa97f0b1fc2ea, the revision
+shipped as ai-dynamo 1.5.0.dev20260917 in
+`lmsysorg/sglang@sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862`
+(file SHA256 `76cdd291e92c3c41f259279c316bcdedcc6a9aa615ad61e29ca6997105950047`, git blob
+`cbc2a12947ce18304721ac0549274fbeac51ddef`). Its queued-request classification for vLLM
+v0.31.0 (`_compute_queued` over `waiting` and `kv_holding_waiting`, replacing the removed
+`skipped_waiting`) is ported from the same path at
+https://github.com/ai-dynamo/dynamo/tree/395f02405c1dd1835ab73a39f7a5984ae5fd4552 (file SHA256
+`06fcb26ffcfeb4d58a01704d8d7842d9d838d4a34170a1086f09e5617442da8e`, git blob
+`c19f8174b2e232cf8c0f5a26da83b8085ef71776`). Changes: GLM-5.3-Flash
+default serving state (prefix caching on, Mamba align mode), seeded token inputs, executed
+per-request geometries on the 4-token IndexPool grid with recorded prefill chunk starts,
+5+10 repetitions with native-FPM validation, and compact deferred evidence. Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the upstream license is preserved in the adjacent `LICENSE`.
+No upstream root NOTICE exists. vLLM and SGLang implementation files are not vendored.
+
+## NVIDIA AIConfigurator speculative decoding
+
+The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
+
+Derived AISim paths are under `python/aisim/src/aisim_core/sdk/`, `python/aisim/src/aisim/sdk/speculation/`, `python/aisim/src/aisim_core/sdk/speculation/`, `python/aisim/src/aisim/legacy_cli/`, `python/aisim/src/aisim/sdk/{speculative,task_v2}.py`, and `python/aisim/tests/`; repository-root Rust paths are under `crates/core/src/perfmodel/`, `crates/core/parity_tests/perfmodel/`, and `crates/tests/public-api/`. The repository's [synchronization provenance](https://github.com/ai-dynamo/aisim/blob/main/docs/ci/aic-sync.md#source-provenance) records import boundaries and links the current path mapping. Changes preserve AISim's current native contracts and strengthen configuration validation and regression coverage.
+
+Upstream source:
+https://github.com/ai-dynamo/aiconfigurator/tree/6290c161a354da5250c391bd43372b2e9c6f4a51
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. Licensed under Apache-2.0; the original license is at:
+https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/LICENSE
+
+This records provenance for NVIDIA-authored predecessor code, without implying ownership by an unaffiliated third party.
+
+## NVIDIA AIConfigurator CI provenance
+
+Selected CI definitions and a recommendation test were adapted from NVIDIA's
+AIConfigurator repository at commit
+`77fd0773407b3683d8a671fe24a30a7110651b64` and modified for AISim's
+unified package layout and Fast CI / Full CI execution model:
+
+- repository-root `.github/workflows/ci.yml` (selected jobs)
+- repository-root `.github/actions/build-platform-wheel/action.yml`
+- repository-root `.github/actions/setup-python-rust/action.yml`
+- repository-root `.github/workflows/collector-check.yml`
+- repository-root `.github/workflows/prediction-regression-gate.yml`
+- repository-root `.github/workflows/validate-platform-wheels.yml`
+- `tests/e2e/cli/test_cli_recommend.py`
+
+Upstream source:
+https://github.com/ai-dynamo/AIConfigurator/tree/77fd0773407b3683d8a671fe24a30a7110651b64
+
+Copyright (c) NVIDIA CORPORATION & AFFILIATES.
+
+AIConfigurator is licensed under the Apache License, Version 2.0. The full
+Apache-2.0 license text is reproduced in `LICENSE`. This section records
+cross-repository provenance for NVIDIA-authored predecessor code; it is not a
+claim that AIConfigurator is owned by an unaffiliated third party.
+
+## NVIDIA Dynamo Weka regression provenance
+
+The `weka_seam_rekey_never_uses_a_future_parent` regression in repository-root
+`crates/core/src/replay/loadgen/weka.rs` is adapted and modified from NVIDIA
+Dynamo's `lib/mocker/src/loadgen/tests.rs` at immutable commit
+`b113ceae74da3f6754429ade750b0f5b0c8de5d6`. The adaptation uses AISim's public
+graph loader and adds assertions that the later continuation was selected while
+the earlier fork retains its original parent.
+
+Upstream source:
+https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/lib/mocker/src/loadgen/tests.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This material is licensed under the Apache License, Version 2.0. The upstream
+license at the identified revision is available at:
+https://github.com/ai-dynamo/dynamo/blob/b113ceae74da3f6754429ade750b0f5b0c8de5d6/LICENSE
+
+The full Apache-2.0 license text is reproduced in `LICENSE`. This section
+records provenance for NVIDIA-authored predecessor code; it is not a claim
+that Dynamo is owned by an unaffiliated third party.
+
+## SGLang feed-forward/decode composition and quantization exclusions
+
+The dense-prefix composition and exclusion resolver in `src/aisim_core/sdk/models/deepseek_v32.py` and their regression fixtures in `tests/unit/sdk/models/test_deepseek_v32_dense.py` and `tests/unit/sdk/models/test_large_ep_model_graphs.py` adapt and modify the tensor-parallel communication and packed-linear selection behavior from SGLang revision `02c5a855aceb968c310e6fbc6632270e26edc84b`. Original source paths are `python/sglang/srt/models/deepseek_v2.py`, `python/sglang/srt/layers/communicator.py`, `python/sglang/srt/layers/quantization/modelopt_quant.py`, and `python/sglang/srt/layers/quantization/utils.py`. The adaptation models operator composition and projection precision without importing the serving runtime or its GPU dependencies.
+
+The vLLM copyright in `src/aisim_core/sdk/models/deepseek_v32.py` is retained from those SGLang sources. At the pinned SGLang revision, the header of `python/sglang/srt/models/deepseek_v2.py` identifies its own upstream as [`vllm/model_executor/models/deepseek_v2.py` at vLLM commit `fb6af8bc086328ca6659e72d11ffd4309ce4de22`](https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py), licensed under Apache-2.0. This records the inherited attribution chain; the SGLang revision above is the source adapted for AISim.
+
+Public reference source: [SGLang v0.5.18 at `71de97b264b04dcd514cf904003028aefe9775c8`](https://github.com/sgl-project/sglang/tree/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt).
+The corresponding public files are:
+
+- [`models/deepseek_v2.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/models/deepseek_v2.py)
+- [`layers/communicator.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/communicator.py)
+- [`layers/quantization/modelopt_quant.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/quantization/modelopt_quant.py)
+- [`layers/quantization/utils.py`](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/python/sglang/srt/layers/quantization/utils.py)
+
+These public files contain the corresponding dense MLP, communication, and
+quantization-exclusion behavior. The original audit revision above identifies
+the fork used for the adaptation; the public reference is not a verified
+byte-for-byte mirror of that fork.
+
+Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team.
+These source files are licensed under the Apache License, Version 2.0; see the
+[public SGLang license at the reference revision](https://github.com/sgl-project/sglang/blob/71de97b264b04dcd514cf904003028aefe9775c8/LICENSE).
+
+## vLLM
+
+Selected synchronous MTP scheduling, uniform full-attention KV allocation, and
+host-offload behaviors in the following repository-root paths are adapted and
+modified from vLLM `v0.32.0` at commit
+`5df63a7203cdb9328d824a27b682e77c7b9928be`:
+
+- `crates/core/src/engine/cache/vllm_block_pool.rs`
+- `crates/core/src/engine/kv_manager/vllm_backend.rs`
+- `crates/core/src/engine/kv_manager/g1_manager.rs`
+- `crates/core/src/engine/scheduler/vllm/core.rs`
+- `crates/core/src/engine/scheduler/vllm/policy.rs`
+- `crates/core/src/engine/scheduler/vllm/host_offload.rs`
+- `crates/core/src/engine/scheduler/vllm/tests.rs`
+- `crates/core/src/engine/scheduler/vllm/mtp_offload_tests.rs`
+- `crates/core/src/engine/scheduler/vllm/native_mtp_tests.rs`
+- `docs/replay/engine/kv-cache.md` (MTP with host offload)
+- `docs/replay/engine/speculation.md` (MTP with host offload)
+- `docs/replay/features.md` (MTP/G2 composition boundaries)
+
+Upstream source and regression scenarios:
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_coordinator.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/worker.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/tests/v1/kv_connector/unit/offloading_connector/test_scheduler.py
+
+Copyright contributors to the vLLM project.
+
+This material is licensed under the Apache License 2.0. The upstream license
+at this revision is available at:
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+These are modified Rust simulation adaptations, not the upstream serving
+implementation. The scheduling baseline does not change the provenance or
+backend-version labels of AISim's measured performance data.
+
+No root NOTICE file is present at the identified revision. The repository's
+Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
+
+The grouped-cache config derivation and metadata regression tests in
+`src/aisim/support/config_profile.py`,
+`tests/unit/test_support_config_profile.py`, and
+`tests/unit/test_support_topology.py` are adapted and modified from vLLM's
+Inkling cache layout, decoder state construction, and configuration defaults at
+commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
+
+- [`vllm/models/inkling/nvidia/sconv_swa_attn.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/sconv_swa_attn.py)
+- [`vllm/models/inkling/nvidia/model.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/model.py)
+- [`vllm/models/inkling/configs.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/configs.py)
+
+Copyright contributors to the vLLM project.
+
+This material is licensed under Apache-2.0; the upstream license at the
+identified revision is available at:
+https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
+
+AISim modifies these contracts for metadata-only rank-local aggregate
+cache sizing and validation, without constructing runtime tensors or a model.
+The derived tests use original synthetic geometries and do not copy a
+checkpoint fixture. The derived files retain the upstream copyright and
+identify the modified source material.
+
+The repository-root files `crates/core/src/engine/scheduler/vllm/core.rs`,
+`crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs`,
+`crates/core/src/engine/cache/vllm_block_pool.rs`,
+`crates/core/src/engine/kv_manager/g1_manager.rs`,
+and `crates/core/src/engine/kv_manager/state_cache_tests.rs` adapt the align-mode
+prefill split, state-slot turnover/copy lifetimes and default checkpoint-retention
+behavior from vLLM v0.29.0,
+immutable commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
+
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/worker/mamba_utils.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
+
+These are modified Rust simulation adaptations, restricted to no internal
+prefill checkpoints, no speculative decoding and no periodic retention.
+The identified upstream revision has no root NOTICE file. The repository's
+Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
+
+The repository-root files
+`crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs`,
+`crates/core/src/engine/kv_manager/state_cache_tests.rs` and
+`python/aisim/src/aisim_core/sdk/memory/deepseek_v4.py` model the
+sliding-window prefix-cache retention (`VLLM_PREFIX_CACHE_RETENTION_INTERVAL`,
+replay boundaries, the EAGLE/MTP block after a boundary and the DeepSeek V4 MTP
+group) of vLLM [`v0.32.0`](https://github.com/vllm-project/vllm/tree/5df63a7203cdb9328d824a27b682e77c7b9928be)
+(commit `5df63a7203cdb9328d824a27b682e77c7b9928be`). The modeled functions are
+unchanged at main commit `0d5306aaca3971b620443a3ea779550ffe4d5114`. Files at v0.32.0:
+
+- [`vllm/v1/core/kv_cache_coordinator.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_coordinator.py)
+  (`_validate_prefix_cache_retention_interval`, `replay_boundaries`,
+  `KVCacheCoordinator.cache_blocks`; lines 33-86 and 354-376)
+- [`vllm/v1/core/single_type_kv_cache_manager.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/single_type_kv_cache_manager.py)
+  (`SlidingWindowManager._contiguous_blocks_for_hit`,
+  `SlidingWindowManager.find_longest_cache_hit`,
+  `SlidingWindowManager.reachable_block_mask`; lines 933-1133)
+- [`vllm/v1/core/kv_cache_utils.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_utils.py)
+  (`_annotate_eagle_groups`; lines 2029-2085)
+- [`vllm/models/deepseek_v4/attention.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/models/deepseek_v4/attention.py)
+  (MTP layer without a compressor; line 235)
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0
+(https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE).
+These are modified Rust and Python simulations of the behavior: a retained
+boundary is one whole-state copy, and no upstream source file is vendored.
+
+
+The inference-mode scope and MSA query-position metadata integration in
+`collector/vllm/collect_mla_module.py` and
+`collector/vllm/collect_msa_module.py` are adapted (modified) from serving
+behavior at vLLM commit `dd10e03f95f94edbea1975c67ace3a35ec9a8a40`:
+
+- `vllm/v1/worker/gpu_model_runner.py` (query positions, common attention metadata,
+  and the inference-mode model execution boundary).
+- `vllm/models/minimax_m3/nvidia/indexer_msa.py` (MSA positions metadata contract).
+- `vllm/models/minimax_m3/nvidia/model.py` (versioned shared top-k buffer layout).
+
+Upstream source:
+https://github.com/vllm-project/vllm/tree/dd10e03f95f94edbea1975c67ace3a35ec9a8a40
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0;
+modifications adapt the serving contracts to synthetic collector batches.
+
+
+The independently written Rust deferred-queue and post-lookup-touch behavior in
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`
+and related G3 fixtures in `crates/core/src/replay/agg_tests.rs` reference vLLM at
+immutable revision `6e448d0ea9bf3d88d898b65449ca6dc2aec170ac`:
+[`vllm/v1/core/sched/scheduler.py`](https://github.com/vllm-project/vllm/blob/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac/vllm/v1/core/sched/scheduler.py),
+`vllm/v1/core/sched/request_queue.py` and `vllm/v1/kv_offload/tiering/manager.py`.
+The upstream project is copyright contributors to the vLLM project and licensed
+under Apache-2.0. These repository-root-relative files adapt behavioral contracts;
+no upstream method bodies are copied. The Rust implementation and fixtures are
+modified for simulation and do not reproduce native filesystem timing.
+
+The `offloading_v0_32` and `simple_cpu_v0_32` G2 connector profiles in
+repository-root files `crates/core/src/engine/host_offload/tier.rs` and
+`crates/core/src/engine/scheduler/vllm/{core,host_offload}.rs`, their tests in
+those files, and their description in `docs/replay/engine/kv-cache.md` are
+independently written, modified Rust simulation adaptations of behavioral
+contracts at vLLM tag `v0.32.0` (commit `5df63a7203cdb9328d824a27b682e77c7b9928be`):
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/simple_kv_offload/worker.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/simple_cpu_offload_connector.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/base.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/policies/base.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/kv_offload/cpu/policies/lru.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models
+which blocks each connector stores, when a lookup hits, misses or defers, the
+eviction order of the CPU cache, how long a store holds its G1 source blocks,
+what a preemption waits for, and the engine step that submits the stores of a
+finished request.
+
+The speculative scheduling/progress corrections in repository-root files
+`crates/core/src/engine/scheduler/vllm/{core,policy,tests}.rs` and
+`crates/core/src/engine/common/speculative.rs` are independently written,
+modified Rust simulation adaptations of behavioral contracts at vLLM commit
+`b3563fc65ae0f5359802593d78e7ea097e1fed31`:
+
+- https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/vllm/v1/core/sched/async_scheduler.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models
+scheduled draft positions, first-output and preemption state in virtual time;
+it does not reproduce asynchronous worker execution. That revision has no
+root NOTICE file. The repository LICENSE contains the Apache-2.0 license text.
+
+The async-scheduling admission in repository-root files
+`crates/core/src/engine/scheduler/vllm/{core,tests}.rs` is an independently
+written, modified Rust simulation adaptation of behavioral contracts at vLLM
+tag `v0.28.0` (commit `2cf0a6915ce544dc493a0990f2ea38d81601128a`):
+
+- https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/engine/core.py
+- https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/config/vllm.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models,
+in virtual time, which committed batch an arriving request can join while the
+engine core keeps a queue of `max_concurrent_batches`; it does not reproduce
+asynchronous worker execution. That revision has no root NOTICE file.
+
+The following files are derived from vLLM's attention test utilities at tag
+`v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
+
+- `collector/vllm/utils.py`
+- `collector/vllm/utils_xpu.py`
+
+Upstream source:
+https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
+
+The Gemma 4 visual-mask behavior and replicated multimodal adapter in
+`src/aiconfigurator_core/sdk/models/gemma4.py` and
+`src/aiconfigurator_core/sdk/models/blocks/vit.py` are adapted and modified
+for performance modeling from vLLM at commit
+`d2906091bfc579cebefe3d8e8fb9077397ce9882`:
+
+https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/gemma4.py
+https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/gemma4_mm.py
+
+The Gemma 4 source preserves these upstream notices:
+
+Copyright contributors to the vLLM project.
+Copyright 2025 The vLLM team.
+Copyright 2025 Google Inc. HuggingFace Inc. team. All rights reserved.
+
+This material is licensed under the Apache License 2.0.
+
+The Mistral3 projector topology modeled in
+`src/aisim_core/sdk/models/blocks/vit.py` and parsed in
+`src/aisim_core/sdk/utils.py`, and Pixtral image geometry and prompt-token
+accounting in `src/aisim_core/sdk/backends/base_backend.py`, with regression
+coverage in `tests/unit/sdk/models/test_mistral3.py`, are adapted and modified for
+performance modeling from vLLM v0.24.0 at immutable commit
+`ee0da84ab9e04ac7610e28580af62c365e898389`:
+
+https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
+https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/pixtral.py
+
+Copyright contributors to the vLLM project. This material is licensed under
+the Apache License 2.0. The upstream license is available at:
+
+https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/LICENSE
+
+The Kimi K2.5 and Kimi K3 vision-tower topology, pooled PatchMerger, and
+PatchMergerV2 adapters modeled in
+`src/aiconfigurator_core/sdk/models/blocks/vit.py` and parsed in
+`src/aiconfigurator_core/sdk/utils.py`, with Kimi K3 rotary-grid validation in
+`src/aiconfigurator_core/sdk/backends/base_backend.py` and regression derivatives in
+`tests/unit/sdk/models/test_kimi_k25_vision.py` and
+`tests/unit/sdk/models/test_kimi_k3_vision.py`, are modified adaptations of the
+MoonViT3D implementation that Kimi K3 reuses from Kimi K2.5 in vLLM at commit
+`d2906091bfc579cebefe3d8e8fb9077397ce9882`:
+
+- https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25.py
+- https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+- https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/layers/quantization/modelopt.py
+
+The upstream license at that revision is available at:
+https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/LICENSE
+
+The Llama 4 encoder operation topology in
+`src/aiconfigurator_core/sdk/models/blocks/vit.py` is adapted (modified) from vLLM's Llama 4
+implementation at tag `v0.8.5` (commit
+`ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d`):
+
+https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/vllm/model_executor/models/mllama4.py
+
+Copyright 2025 the LLAMA4, Meta Inc., vLLM, and HuggingFace Inc. team. All rights reserved.
+
+The upstream license at that revision is available at:
+https://github.com/vllm-project/vllm/blob/ba41cc90e8ef7f236347b2f1599eec2cbb9e1f0d/LICENSE
+
+Copyright contributors to the vLLM project.
+
+The vLLM `LICENSE` file at commit
+`b8b302cde434df8c9289a2b465406b47ebab1c2d` is reproduced verbatim below:
+
+```text
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+```
+
+## DeepEP
+
+The following files are derived from DeepEP test utilities at commit
+`73b6ea4a439ba03a695563f9fd242c8e4b02b37c` and contain NVIDIA modifications:
+
+- `collector/wideep/sglang/deepep/test_internode.py`
+- `collector/wideep/sglang/deepep/test_intranode.py`
+- `collector/wideep/sglang/deepep/test_low_latency.py`
+- `collector/wideep/sglang/deepep/utils.py`
+
+The patch `collector/wideep/vllm/patches/deepep_73b_nvl4.patch` is also a
+modification of DeepEP source at that commit.
+
+Upstream source:
+https://github.com/deepseek-ai/DeepEP/tree/73b6ea4a439ba03a695563f9fd242c8e4b02b37c
+
+```text
+MIT License
+
+Copyright (c) 2025 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## SGLang DeepSeek-V4.1 serving contracts
+
+The V4.1 execution and performance-model logic in
+`src/aisim_core/sdk/deepseek_v41.py`, `sdk/models/deepseek_v41.py`
+(with the same `src/aisim_core/` prefix), and repository-root
+`crates/core/src/perfmodel/operators/dsv41.rs` is informed by and modified from
+SGLang's serving architecture at immutable commit
+`1aa0e962b206102b7c439a4a0c4981cfec6e87bc`:
+
+- `python/sglang/srt/models/deepseek_v4.py` and `deepseek_v2.py`
+- `python/sglang/srt/layers/engram.py`
+- `python/sglang/srt/layers/attention/dsv4/compressor.py`
+- `python/sglang/srt/layers/attention/dsv4/dsv41_sparse.py`
+- `python/sglang/srt/layers/attention/deepseek_v4_backend.py`
+- `python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py`
+- `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
+- `python/sglang/kernels/ops/attention/dsv4/sm90_fp4_indexer.py`
+- `python/sglang/benchmark/one_batch.py`
+
+The original integration adapter
+`collector/sglang/dsv41_native_runner.py` calls that pinned benchmark's model
+builder and request lifecycle. Its component boundaries are modified from
+the serving contracts above; it does not copy framework metadata builders.
+The original attention-only adapter `collector/sglang/dsv41_attention_runner.py`,
+its `tests/unit/collector/test_dsv41_attention.py` fixtures and the attention
+section of `collector/sglang/README.dsv41.md` also adapt those API boundaries
+(modified), including native dummy-loader post-load order from
+`python/sglang/srt/model_loader/loader.py` and random initialization from
+`python/sglang/srt/model_loader/weight_utils.py` at the same immutable revision.
+They call native attention, pool and request builders; they do not copy those
+implementations or represent the isolated stack as the complete model.
+The matching loaded-dimension guards in `collector/sglang/dsv41_contract.py`
+and their CPU fixtures in `tests/unit/collector/test_dsv41_contract.py` are
+modified analytical adaptations of the indexer layout in `dsv41_sparse.py`.
+The SM90 index-score arithmetic and query-width formulas in
+`crates/core/src/perfmodel/operators/dsv41.rs`, their Rust regression tests,
+and `docs/perf-model/models/deepseek-v41.md` are independently expressed, modified
+analytical adaptations of those same pinned BF16 indexer contracts.
+
+The measured operator databases and adjacent documentation under
+`src/aisim_core/systems/profiles/dsv41/` contain AISim timings
+and geometry adapted from the same serving contracts (modified). Their
+README and adjacent provenance identify the immutable collection runtime
+and source identities. The restored GB300 tables preserve their historical
+timings and documented source-audited indexer metadata correction. The
+B300 TP4 and TP2 tables are new native measurements with loaded-module dimension
+validation; they do not inherit that historical correction.
+
+The FPM table execution identities, geometry, collection sidecars and accompanying
+README under `src/aisim_core/systems/profiles/dsv41_fpm/`, including
+B300 TP2/TP4 and GB300 TP2 full/bounded measurements, are modified AISim
+adaptations of the SGLang serving-contract paths and immutable commit
+listed above (Copyright 2023-2024 SGLang Team and SGLang contributors,
+Apache-2.0), and of `config.json`, `inference/model.py` and
+`DeepSeek_V41_Tech_Report.pdf` from
+`deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d`
+(Copyright (c) 2023 DeepSeek, MIT; source and license below). The latencies are
+new AISim measurements; these files contain no upstream model execution
+code. The SGLang source revision identifies the serving-contract reference,
+not the entire measured runtime image; the immutable image and captured source
+identities remain collection provenance.
+
+Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
+reproduced in the repository `LICENSE`. These are analytical adaptations,
+not a copy of the model execution implementation. The modified analytical
+scoring/storage adaptations and their independently written regression cases
+also appear in `python/aisim/tests/unit/sdk/models/test_deepseek_v41.py`,
+Rust operator/spec unit tests, `docs/perf-model/models/deepseek-v41.md`. They distinguish candidate masking from scoring
+and physical FlashMLA cache payload from logical FP4 values.
+
+## SGLang 0.5.19 multimodal frontend and scheduler behavior
+
+The native VL replay path models sgl-project/sglang v0.5.19 at immutable commit
+`0bcd822377da7b5718e674eaf9c870d349424dd1`. Repository-root paths:
+
+- `crates/core/src/engine/scheduler/sglang/{host_loop,vision,frontend}.rs` and
+  their tests re-implement the observed behavior of `Scheduler.event_loop_overlap`,
+  `run_batch`, `recv_requests`, `process_batch_result_prefill`,
+  `_batch_encode_per_image_misses`, `MultiModalStaticCache`, `TokenizerManager`,
+  `BaseMultimodalProcessor`, the scheduler's receive preparation
+  (`managers/scheduler_components/request_receiver.py`) and the Rust multimodal workers'
+  feature transport (`RustMmProcessor._use_feature_shm`) as performance models.
+  They do not execute or copy the upstream implementation.
+- `crates/core/src/engine/scheduler/sglang/core.rs` (disaggregated prefill) and
+  `crates/core/src/replay/components/encoder.rs` likewise re-implement the
+  observed behavior of `disaggregation/prefill.py` (`SchedulerDisaggregationPrefillMixin`)
+  and of `disaggregation/encoder/{runtime,server,receiver,preprocessor}.py`
+  (`EncoderScheduler`, `_assign_items_by_modality`, `zmq_to_scheduler`) as
+  performance models, without copying the upstream implementation.
+- `python/aisim/src/aisim/vl/collect/` instantiates the pinned
+  upstream frontend objects unmodified on the serving host and times them from
+  the outside; it does not copy or modify their implementations.
+
+Source: https://github.com/sgl-project/sglang/tree/0bcd822377da7b5718e674eaf9c870d349424dd1
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
+at https://github.com/sgl-project/sglang/blob/0bcd822377da7b5718e674eaf9c870d349424dd1/LICENSE.
+
+## DeepSeek model configuration files
+
+The following model configuration files are copied from, or formatting-only
+adaptations of, the named DeepSeek model repositories:
+
+| AISim file | Upstream revision |
+| --- | --- |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-R1_config.json` | `deepseek-ai/DeepSeek-R1@56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json` | `deepseek-ai/DeepSeek-V3.2@c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json` | `deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json` | `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d` |
+| `src/aisim_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
+
+The V4.1 descriptor and performance formulas in `src/aisim_core/sdk/deepseek_v41.py`,
+`src/aisim_core/sdk/models/deepseek_v41.py`, and repository-root
+`crates/core/src/perfmodel/operators/dsv41.rs` are AISim performance-model
+adaptations of the architecture described by `inference/model.py` and
+`DeepSeek_V41_Tech_Report.pdf` at the same V4.1 revision (modified; no model execution code).
+Source: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/fb2764a5cf321eaa5070ca8f9e892818f477c16d
+
+Upstream repositories:
+https://huggingface.co/deepseek-ai
+
+```text
+MIT License
+
+Copyright (c) 2023 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Meta Muse Glimmer model configuration
+
+`src/aisim_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
+is an unmodified copy of `config.json` from the Meta Muse Glimmer model
+repository at immutable revision
+`f84ecc3a0ea984a4c04542a84269e3d065350a6e`:
+
+https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/config.json
+
+Copyright owner: Meta Platforms, Inc. and affiliates.
+
+License: Apache License 2.0. The upstream license is available at:
+https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/LICENSE
+
+The Apache License 2.0 terms are reproduced in this distribution's `LICENSE`
+file.
+
+## Qwen3.8-Max model configuration files
+
+The following model configuration files are copied byte-for-byte from the
+named Qwen model repositories at the immutable revisions shown:
+
+| Packaged file | Upstream revision |
+| --- | --- |
+| `aisim_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
+| `aisim_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
+
+Upstream repositories:
+https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B and
+https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B-FP8
+
+Copyright owner: Qwen. The copied files are unmodified. Both upstream
+revisions apply the same custom Qwen3.8-Max License, reproduced in full
+below:
+
+```text
+Qwen3.8-Max License
+
+Copyright (c) 2026 Qwen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software, including the model weights, parameters, configuration files, inference code and associated documentation files (collectively, the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, sell, deploy, host, fine-tune, and create derivative works from (collectively, "Use" or "Using") copies of the Software; and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. If the Software (or any derivative works thereof) is Used for any of the licensee's commercial products or services that have more than 100,000,000 monthly active users or US$ 20,000,000 (or equivalent in other currencies) monthly revenue, respective model name must be prominently displayed on the user interface of such product or service; and,
+
+2. If the licensee or any of its affiliates conducts a Model as a Service or AI Work Assistant business, and the aggregate revenue of the licensee and its affiliates exceeds US$50,000,000 (or the equivalent amount in any other currencies) during any consecutive twelve (12) months, the licensee shall obtain a separate license from Qwen before Using the Software or its derivative works for any commercial purpose. The foregoing requirement shall not apply to the licensee's internal Use of the Software, provided that such Use does not make the Software, its outputs, or its underlying model capabilities available to any third party.
+
+"Model as a Service" means giving a third party access to language model inference or fine-tuning (e.g., via API or a hosted endpoint) in a manner that allows such third parties to exercise meaningful control over the inputs, parameters, or training data. This does not include the mere relaying of requests to models hosted by other third parties.
+“AI Work Assistant” means an independent AI-powered product primarily designed for AI-assisted coding or office productivity (e.g., Qoder and QwenWork). It does not include: (a) a single-purpose AI tool (such as an AI translation tool); (b) an AI assistant primarily designed for a domain other than coding or office productivity (such as Taobao AI Shopping Assistant or AMap AI Chat); or (c) an AI assistant that is a feature of a product whose primary purpose is not AI-assisted coding or office productivity.
+
+THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL QWEN, ITS AFFILIATES OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. THE USE OF THE SOFTWARE MUST COMPLY WITH APPLICABLE LAWS AND REGULATIONS, AND MUST NOT INFRINGE THE INTELLECTUAL PROPERTY RIGHTS OF ANY THIRD PARTY.
+
+For any questions regarding this license, please contact model-business@notice.qwencloud.com.
+```
+
+## NVIDIA Qwen3.5-397B-A17B-NVFP4-V2 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisim_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4-V2_config.json` | `config.json` from `nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8` |
+| `src/aisim_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4-V2_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8` |
+
+Upstream repository:
+https://huggingface.co/nvidia/Qwen3.5-397B-A17B-NVFP4-V2/tree/8f590eae8f10bf55d9a46f79ea0280bde435c9f8
+
+Copyright owners: NVIDIA CORPORATION & AFFILIATES (the quantized export and
+its quantization metadata) and Alibaba Cloud (the base Qwen3.5-397B-A17B
+configuration). The copied files are unmodified.
+
+License, as declared by the upstream model card at that revision: the Apache
+License, Version 2.0 (`license: apache-2.0`). The upstream repository ships
+no separate license or NOTICE file. The base model, Qwen/Qwen3.5-397B-A17B,
+uses the same license; its `LICENSE` at revision
+`8472618112abcbd45acbcdc58436aff4233c23f7` states "Copyright 2026 Alibaba
+Cloud". The license text is in the `LICENSE` file distributed with this
+notice. The file digests are recorded in the adjacent
+`src/aisim_core/model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md`.
+
+## StepFun Step-3.7-Flash model configuration files
+
+The following files are modified adaptations of the named Hugging Face
+configuration files at the immutable revisions shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisim_core/model_configs/stepfun-ai--Step-3.7-Flash_config.json` | `config.json` from `stepfun-ai/Step-3.7-Flash@5f6244077ac62e04eec3f320501ff8c2b293373a` |
+| `src/aisim_core/model_configs/stepfun-ai--Step-3.7-Flash-FP8_config.json` | `config.json` from `stepfun-ai/Step-3.7-Flash-FP8@b3d7916fccac844cca050d7520f2aaa513f9a84f` |
+
+Upstream repositories:
+https://huggingface.co/stepfun-ai/Step-3.7-Flash and
+https://huggingface.co/stepfun-ai/Step-3.7-Flash-FP8
+
+Copyright owner: StepFun. Both repositories declare the Apache-2.0 license in
+their model cards. Its terms are in this repository's `LICENSE` and at
+https://www.apache.org/licenses/LICENSE-2.0.
+
+The packaged files are modified. They keep the decoder (`text_config`) fields
+that AISim reads, moved to the top level, with these changes:
+
+- The architecture is named `Step3p7FlashForCausalLM` and the model type
+  `step3p7`.
+- `num_attention_groups` is written as `num_key_value_heads`.
+- The MoE fields are written as `num_experts`, `num_experts_per_tok`,
+  `first_k_dense_replace`, `n_shared_experts` and `scoring_func`.
+- The `layer_types` entries of the MTP layers are dropped.
+- In the FP8 file, `quantization_config` keeps `quant_method`,
+  `weight_block_size` and `activation_scheme`.
+
+## Meta Llama 4
+
+The following bundled model configs are modified copies of Meta Llama 4
+checkpoint configuration files:
+
+- `src/aisim_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json`
+  from revision `92f3b1597a195b523d8d9e5700e57e4fbb8f20d3`:
+  https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct/blob/92f3b1597a195b523d8d9e5700e57e4fbb8f20d3/config.json
+- `src/aisim_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json`
+  from revision `73d14711bcc77c16df3470856949c3764056b617`:
+  https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct/blob/73d14711bcc77c16df3470856949c3764056b617/config.json
+
+Required attribution: Llama 4 is licensed under the Llama 4 Community License,
+Copyright © Meta Platforms, Inc. All Rights Reserved.
+
+The Llama 4 Community License below is reproduced from the official Meta Llama
+repository at commit `0e0b8c519242d5833d8c11bffc1232b77ad7f301`:
+
+https://github.com/meta-llama/llama-models/blob/0e0b8c519242d5833d8c11bffc1232b77ad7f301/models/llama4/LICENSE
+
+```text
+LLAMA 4 COMMUNITY LICENSE AGREEMENT
+
+Llama 4 Version Effective Date: April 5, 2025
+
+“Agreement” means the terms and conditions for use, reproduction, distribution and modification of the Llama Materials set forth herein.
+
+“Documentation” means the specifications, manuals and documentation accompanying Llama 4 distributed by Meta at https://www.llama.com/docs/overview.
+
+“Licensee” or “you” means you, or your employer or any other person or entity (if you are entering into this Agreement on such person or entity’s behalf), of the age required under applicable laws, rules or regulations to provide legal consent and that has legal authority to bind your employer or such other person or entity if you are entering in this Agreement on their behalf.
+
+“Llama 4” means the foundational large language models and software and algorithms, including machine-learning model code, trained model weights, inference-enabling code, training-enabling code, fine-tuning enabling code and other elements of the foregoing distributed by Meta at https://www.llama.com/llama-downloads.
+
+“Llama Materials” means, collectively, Meta’s proprietary Llama 4 and Documentation (and any portion thereof) made available under this Agreement.
+
+“Meta” or “we” means Meta Platforms Ireland Limited (if you are located in or, if you are an entity, your principal place of business is in the EEA or Switzerland) and Meta Platforms, Inc. (if you are located outside of the EEA or Switzerland).
+
+By clicking “I Accept” below or by using or distributing any portion or element of the Llama Materials, you agree to be bound by this Agreement.
+
+1. License Rights and Redistribution.
+
+a. Grant of Rights. You are granted a non-exclusive, worldwide, non-transferable and royalty-free limited license under Meta’s intellectual property or other rights owned by Meta embodied in the Llama Materials to use, reproduce, distribute, copy, create derivative works of, and make modifications to the Llama Materials.
+
+b. Redistribution and Use.
+
+i. If you distribute or make available the Llama Materials (or any derivative works thereof), or a product or service (including another AI model) that contains any of them, you shall (A) provide a copy of this Agreement with any such Llama Materials; and (B) prominently display “Built with Llama” on a related website, user interface, blogpost, about page, or product documentation. If you use the Llama Materials or any outputs or results of the Llama Materials to create, train, fine tune, or otherwise improve an AI model, which is distributed or made available, you shall also include “Llama” at the beginning of any such AI model name.
+
+ii. If you receive Llama Materials, or any derivative works thereof, from a Licensee as part of an integrated end user product, then Section 2 of this Agreement will not apply to you.
+
+iii. You must retain in all copies of the Llama Materials that you distribute the following attribution notice within a “Notice” text file distributed as a part of such copies: “Llama 4 is licensed under the Llama 4 Community License, Copyright © Meta Platforms, Inc. All Rights Reserved.”
+
+iv. Your use of the Llama Materials must comply with applicable laws and regulations (including trade compliance laws and regulations) and adhere to the Acceptable Use Policy for the Llama Materials (available at https://www.llama.com/llama4/use-policy), which is hereby incorporated by reference into this Agreement.
+
+2. Additional Commercial Terms. If, on the Llama 4 version release date, the monthly active users of the products or services made available by or for Licensee, or Licensee’s affiliates, is greater than 700 million monthly active users in the preceding calendar month, you must request a license from Meta, which Meta may grant to you in its sole discretion, and you are not authorized to exercise any of the rights under this Agreement unless or until Meta otherwise expressly grants you such rights.
+
+3. Disclaimer of Warranty. UNLESS REQUIRED BY APPLICABLE LAW, THE LLAMA MATERIALS AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED ON AN “AS IS” BASIS, WITHOUT WARRANTIES OF ANY KIND, AND META DISCLAIMS ALL WARRANTIES OF ANY KIND, BOTH EXPRESS AND IMPLIED, INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OF TITLE, NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE. YOU ARE SOLELY RESPONSIBLE FOR DETERMINING THE APPROPRIATENESS OF USING OR REDISTRIBUTING THE LLAMA MATERIALS AND ASSUME ANY RISKS ASSOCIATED WITH YOUR USE OF THE LLAMA MATERIALS AND ANY OUTPUT AND RESULTS.
+
+4. Limitation of Liability. IN NO EVENT WILL META OR ITS AFFILIATES BE LIABLE UNDER ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, TORT, NEGLIGENCE, PRODUCTS LIABILITY, OR OTHERWISE, ARISING OUT OF THIS AGREEMENT, FOR ANY LOST PROFITS OR ANY INDIRECT, SPECIAL, CONSEQUENTIAL, INCIDENTAL, EXEMPLARY OR PUNITIVE DAMAGES, EVEN IF META OR ITS AFFILIATES HAVE BEEN ADVISED OF THE POSSIBILITY OF ANY OF THE FOREGOING.
+
+5. Intellectual Property.
+
+a. No trademark licenses are granted under this Agreement, and in connection with the Llama Materials, neither Meta nor Licensee may use any name or mark owned by or associated with the other or any of its affiliates, except as required for reasonable and customary use in describing and redistributing the Llama Materials or as set forth in this Section 5(a). Meta hereby grants you a license to use “Llama” (the “Mark”) solely as required to comply with the last sentence of Section 1.b.i. You will comply with Meta’s brand guidelines (currently accessible at https://about.meta.com/brand/resources/meta/company-brand/). All goodwill arising out of your use of the Mark will inure to the benefit of Meta.
+
+b. Subject to Meta’s ownership of Llama Materials and derivatives made by or for Meta, with respect to any derivative works and modifications of the Llama Materials that are made by you, as between you and Meta, you are and will be the owner of such derivative works and modifications.
+
+c. If you institute litigation or other proceedings against Meta or any entity (including a cross-claim or counterclaim in a lawsuit) alleging that the Llama Materials or Llama 4 outputs or results, or any portion of any of the foregoing, constitutes infringement of intellectual property or other rights owned or licensable by you, then any licenses granted to you under this Agreement shall terminate as of the date such litigation or claim is filed or instituted. You will indemnify and hold harmless Meta from and against any claim by any third party arising out of or related to your use or distribution of the Llama Materials.
+
+6. Term and Termination. The term of this Agreement will commence upon your acceptance of this Agreement or access to the Llama Materials and will continue in full force and effect until terminated in accordance with the terms and conditions herein. Meta may terminate this Agreement if you are in breach of any term or condition of this Agreement. Upon termination of this Agreement, you shall delete and cease use of the Llama Materials. Sections 3, 4 and 7 shall survive the termination of this Agreement.
+
+7. Governing Law and Jurisdiction. This Agreement will be governed and construed under the laws of the State of California without regard to choice of law principles, and the UN Convention on Contracts for the International Sale of Goods does not apply to this Agreement. The courts of California shall have exclusive jurisdiction of any dispute arising out of this Agreement.
+```
+
+## Hugging Face Transformers
+
+The `rotate_half` function in `collector/trtllm/collect_mla.py` is copied from
+`transformers.models.llama.modeling_llama.rotate_half` in the Hugging Face
+Transformers project at tag `v4.57.1`:
+
+https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models/llama/modeling_llama.py#L109-L113
+
+The Gemma 4 vision-tower graph, bidirectional visual-block mask behavior, and
+aspect-ratio-preserving processor math in these files are adapted and modified
+for performance modeling from Hugging Face
+Transformers at commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
+
+- `src/aiconfigurator_core/sdk/models/blocks/vit.py`
+- `src/aiconfigurator_core/sdk/models/gemma4.py`
+- `src/aiconfigurator_core/sdk/backends/base_backend.py`
+
+Upstream sources:
+
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/gemma4/modeling_gemma4.py
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/gemma4/image_processing_gemma4.py
+
+Copyright 2026 the HuggingFace Team. All rights reserved.
+This Gemma 4 material is licensed under the Apache License 2.0.
+
+The Kimi K2.5 and Kimi K3 spatial-temporal vision-tower, processor, and temporal-pooling
+behavior in `src/aiconfigurator_core/sdk/models/blocks/vit.py`,
+`src/aiconfigurator_core/sdk/utils.py`, and `src/aiconfigurator_core/sdk/backends/base_backend.py`,
+with regression derivatives in `tests/unit/sdk/models/test_kimi_k25_vision.py`
+and `tests/unit/sdk/models/test_kimi_k3_vision.py`,
+are modified adaptations of Hugging Face Transformers at
+commit `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55`:
+
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/modeling_kimi_k25.py
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
+- https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+
+Copyright 2026 the HuggingFace Inc. team. All rights reserved.
+Copyright 2026 the HuggingFace Team. All rights reserved.
+This material is licensed under the Apache License 2.0.
+
+The upstream license at that revision is available at:
+https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE
+
+The Qwen VL `smart_resize` pixel-budget rule in
+`python/aisim/src/aisim_core/sdk/backends/base_backend.py`
+(`_qwen_smart_resize`) is a modified adaptation of the Qwen2-VL image processor
+in Hugging Face Transformers at tag `v4.57.0`:
+
+- https://github.com/huggingface/transformers/blob/v4.57.0/src/transformers/models/qwen2_vl/image_processing_qwen2_vl.py
+
+Copyright 2024 the HuggingFace Inc. team. All rights reserved.
+This material is licensed under the Apache License 2.0.
+
+The fixed-tile canvas and global-tile logic in
+`src/aiconfigurator_core/sdk/backends/base_backend.py`, and the processor metadata
+normalization in `src/aiconfigurator_core/sdk/utils.py`, are modified adaptations
+of the Llama 4 image processor (Copyright 2025 HuggingFace Inc. team. All rights
+reserved.) at tag `v4.51.0` (commit
+`0720e206c6ba28887e4d60ef60a6a089f6c1cc76`):
+
+https://github.com/huggingface/transformers/blob/0720e206c6ba28887e4d60ef60a6a089f6c1cc76/src/transformers/models/llama4/image_processing_llama4_fast.py
+
+The upstream license at that revision is available at:
+https://github.com/huggingface/transformers/blob/0720e206c6ba28887e4d60ef60a6a089f6c1cc76/LICENSE
+
+The Transformers `LICENSE` file at tag `v4.57.1` is reproduced verbatim below:
+
+```text
+Copyright 2018- The Hugging Face team. All rights reserved.
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+```
+
+## Published FPM dataset pin manifests
+
+The `hf_dataset.json` manifests and adjacent attribution README files under
+`python/aisim/src/aisim_core/systems/profiles/` in
+`minimax_m27_fpm/`, `dsv4pro_fpm/`, `dsv4flash_fpm/`, `glm52_fpm/`,
+`kimi_k3_fpm/` and `inkling_fpm/` adapt published NVIDIA collection metadata
+into hash-pinned download indexes (modified). No external timing tables,
+model weights or collection implementation are bundled in these directories.
+
+- Source: https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a
+- Immutable revision: `dbfcdd9eb62ea733efbc3f0cbd78277f2960061a`.
+- Original paths: configuration `manifest.json` files and `fpm/*.metadata.json`
+  under `data/MiniMaxAI--MiniMax-M2.7/`, `data/deepseek-ai--DeepSeek-V4-Pro/`,
+  `data/deepseek-ai--DeepSeek-V4-Flash-0731/`, `data/nvidia--GLM-5.2-NVFP4/`,
+  `data/moonshotai--Kimi-K3/` and `data/thinkingmachines--Inkling-NVFP4/`.
+  Each derived pin records the exact artifact paths and SHA-256 values.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0, as declared in the dataset card at the pinned revision;
+  the Apache-2.0 terms are reproduced in this repository's `LICENSE`.
+- Modifications: separate deployment roots, explicit development/diagnostic
+  admission, canonical loader targets and explicit references to installed
+  AISim hardware configurations. Source artifact bytes are unchanged when
+  downloaded.
+
+The dataset's root `THIRD_PARTY_NOTICES.md` is explicitly scoped to separate
+DeepSeek V4.1 source archives; it is not a license grant for these six models.
+This attribution relies on the dataset card for the indexed collection metadata
+and does not relicense model weights, producer code or their upstream projects.
+
+## AISim FPM Gym
+
+- Public migrated source: [FPM evaluator and overview](https://github.com/ai-dynamo/aisim/tree/4acab657e054b0ac135599b3a5206899cf831c3e/scripts/fpm_accuracy).
+  This is the modified public copy; the predecessor revision and paths follow.
+- Revision: `e8221729db2802e822f6919fd68bc2941743385b`.
+- Original paths: `src/aisim_fpm/{hf,types,models,evals/fpt}`,
+  `dashboard/index.html`, `dashboard/assets/gym.css`, and `tests/test_hf_dataset.py`.
+- Derived files: `scripts/fpm_accuracy/`, `pages/fpm-accuracy/`, and
+  `tests/fpm_accuracy/test_hf_dataset.py`.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0; NVIDIA maintainer confirmed permission to migrate and
+  publish this code under Apache-2.0.
+- Modified: development-only two-predictor evaluation, public overview export,
+  GitHub Pages presentation, local import paths, and canonical estimator API
+  adaptation with older-wheel compatibility.
+- Public dashboard migration: [dashboard source](https://github.com/ai-dynamo/aisim/tree/379d33493610e9adf234374a84bee3be74ccecb8/scripts/fpm_accuracy/dashboard).
+- Additional revision: `f934c030afc3a03cb04d8f3ff4709194f7445c98`.
+  Original paths: `src/aisim_fpm/dashboard/{data,measurement_heatmaps,visualization,visualization_diagnostics}.py`,
+  `dashboard/3d-visualization.html`, `dashboard/assets/visualization.{js,css}`,
+  and `tests/test_visualization.py`.
+  Derived files: `scripts/fpm_accuracy/dashboard/`,
+  `pages/fpm-accuracy/3d-visualization.html`, `pages/fpm-accuracy/assets/visualization.{js,css}`,
+  `tests/fpm_accuracy/test_visualization.py`, and its synthetic outputs in
+  `tests/fpm_accuracy/fixtures/dashboard/`.
+  Modified imports, reduced contracts, GitHub artifact publication, navigation,
+  theme integration, and tests. Same NVIDIA copyright and Apache-2.0 license.
+
+## Plotly.js (FPM visualization)
+
+- Upstream: https://github.com/plotly/plotly.js/tree/v3.4.0
+- Immutable release tag: `v3.4.0`; original path: `dist/plotly.min.js`.
+- Distributed unmodified as `pages/fpm-accuracy/assets/plotly.min.js`.
+- Copyright 2012–2026 Plotly, Inc.; MIT license preserved in the bundled header
+  and `pages/fpm-accuracy/assets/PLOTLY-LICENSE.txt`. The Pages build copies both.
+
+## Plotly.js (replay dashboard)
+
+- The replay HTML renderer embeds the unmodified Plotly.js bundle supplied by
+  the installed `plotly` Python dependency, preserving its version and copyright
+  header. No Plotly.js source is vendored in the Python renderer.
+- `python/aisim/src/aisim/replay/plotly-js-LICENSE.txt` is an unmodified
+  copy of the MIT license from https://github.com/plotly/plotly.js/blob/v3.4.0/LICENSE
+  (immutable release tag `v3.4.0`, original path `LICENSE`). It is packaged and
+  embedded in generated `report.html` files.
+- Copyright (c) 2012–2026 Plotly, Inc. The dashboard template and telemetry
+  transformations are AISim code; they do not modify Plotly.js.
+
+
+## jemalloc
+
+The Python wheel's native extension statically links jemalloc as its Rust
+global allocator. It is built, unmodified, from jemalloc 5.3.0 at commit
+`e13ca993e8ccb9ba9847cc330696e02839f328f7`, as vendored by the
+`tikv-jemalloc-sys` 0.6.1 crate. No jemalloc source is vendored in this
+repository.
+
+Upstream source:
+https://github.com/tikv/jemalloc/tree/e13ca993e8ccb9ba9847cc330696e02839f328f7
+
+```text
+Unless otherwise specified, files in the jemalloc source distribution are
+subject to the following license:
+--------------------------------------------------------------------------------
+Copyright (C) 2002-present Jason Evans <jasone@canonware.com>.
+All rights reserved.
+Copyright (C) 2007-2012 Mozilla Foundation.  All rights reserved.
+Copyright (C) 2009-present Facebook, Inc.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice(s),
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice(s),
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER(S) ``AS IS'' AND ANY EXPRESS
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO
+EVENT SHALL THE COPYRIGHT HOLDER(S) BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+--------------------------------------------------------------------------------
+```
+
+## vLLM Kimi KDA state sizing
+
+`src/aisim_core/sdk/memory/kimi_k3.py` and the cache-dtype controls in
+`src/aisim/config/engine.py` are adapted and modified from vLLM commit
+`a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
+`vllm/model_executor/layers/mamba/mamba_utils.py`,
+`vllm/model_executor/models/kimi_linear.py`,
+`vllm/model_executor/layers/kda.py`,
+`vllm/platforms/interface.py`, `vllm/v1/kv_cache_interface.py`,
+`vllm/v1/attention/backends/mla/triton_mla.py`, and `vllm/config/cache.py`.
+The modified implementation reuses AISim's Kimi model for token KV geometry,
+resolves the requested block granularity to fit one state using CPU arithmetic,
+and adds AISim validation and diagnostics.
+
+Source: https://github.com/vllm-project/vllm/tree/a474da28131f61684849b31e29af0eebaaedc383
+
+Copyright contributors to the vLLM project.
+Licensed under Apache-2.0;
+the license is included at the repository root as `LICENSE` and in the Python
+distribution. Upstream license:
+https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/LICENSE
+
+## GLM-5.3 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revisions shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisim_core/model_configs/zai-org--GLM-5.3_config.json` | `config.json` from `zai-org/GLM-5.3@ba32f8c19c8738e2c57c71798c601d477a7bf844` |
+| `src/aisim_core/model_configs/zai-org--GLM-5.3-BF16_config.json` | `config.json` from `zai-org/GLM-5.3-BF16@abf42e6c0e53bc29a875511301e7b7fcd220315b` |
+
+Upstream repositories:
+https://huggingface.co/zai-org/GLM-5.3 and
+https://huggingface.co/zai-org/GLM-5.3-BF16
+
+Copyright owner: Z.AI. The copied files are unmodified. Both upstream
+revisions ship the GLM-5.3 License, reproduced in full below:
+
+```text
+GLM-5.3 License
+
+Copyright (c) 2026 Z.AI
+
+Permission is hereby granted, free of charge, to any person or entity (the "Licensee") obtaining a copy of this software — including the model weights, parameters, configuration files, inference and training code, and associated documentation (collectively, the "Software") — to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software; to run, deploy, fine-tune, or otherwise modify the Software and create derivative works from it; and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. The Licensee's use of the Software must comply with applicable laws and regulations.
+
+2. "Model as a Service" means giving a third party access to language model inference or fine-tuning (e.g., via API) in a manner that allows such third party to exercise meaningful control over the inputs, parameters, or training data. This does not include (a) end-user products with model capabilities solely embedded within specific features or harnesses, or (b) mere relaying of requests to models hosted by others.
+If the Licensee or any of its affiliates operates a Model as a Service business, and the aggregate revenue of the Licensee and its affiliates exceeds 10 billion US dollars (or the equivalent in other currencies) in total over any consecutive 12 months, the Licensee must pass Z.AI's security review before using the Software or its derivative works for any commercial purpose. The scope and method of the security review shall be reasonably determined by Z.AI.
+
+3. THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL Z.AI OR ITS AFFILIATES OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For any questions regarding this license, please contact glmlicense@z.ai.
+
+-----
+
+版权所有 (c) 2026 Z.AI
+
+特此免费授予任何获得本软件副本的个人或实体（"被许可方"）——包括模型权重、参数、配置文件、推理和训练代码及相关文档（统称"软件"）——不受限制地处理本软件的权利，包括但不限于：使用、复制、修改、合并、发布、分发、再许可和/或销售软件副本；运行、部署、微调或以其他方式修改软件并创建衍生作品；以及允许获得软件的其他人行使上述权利，但须遵守以下条件：
+
+1. 上述版权声明和本许可声明应包含在软件的所有副本或实质性部分中。被许可方对软件的使用必须符合适用法律法规。
+
+2. "模型即服务"指以允许第三方对输入、参数或训练数据行使实质性控制的方式，向第三方提供语言模型推理或微调服务（如通过API）。不包括：(a) 模型能力仅嵌入特定功能或框架中的终端用户产品，或(b) 单纯转发请求至他人托管的模型。
+若被许可方或其关联方运营"模型即服务"业务，且被许可方及关联方在任意连续12个月内累计总收入超过100亿美元（或等值其他货币），则被许可方在使用软件或其衍生作品进行任何商业用途之前，须通过Z.AI的安全审查。安全审查的范围和方式由Z.AI合理确定。
+
+3. 软件及其任何输出和结果均按"现状"提供，不附带任何形式的保证，无论是明示还是暗示，包括但不限于适销性、特定用途适用性和不侵权的保证。在任何情况下，Z.AI或其关联方或版权持有人均不对任何索赔、损害或其他责任承担责任，无论该责任是基于合同、侵权或其他方式，因软件或使用软件而产生或与之相关。
+
+如对本许可有任何疑问，请联系 glmlicense@z.ai。
+```
+
+## GLM-5.3-Flash configurations and analytical model
+
+Unmodified configurations are included at
+`src/aisim_core/model_configs/zai-org--GLM-5.3-Flash_config.json`,
+`nvidia--GLM-5.3-Flash-NVFP4_config.json`, and
+`nvidia--GLM-5.3-Flash-NVFP4_hf_quant_config.json` in the same directory.
+Sources are Z.AI's `config.json` at
+https://huggingface.co/zai-org/GLM-5.3-Flash/tree/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a
+and NVIDIA's `config.json` / `hf_quant_config.json` at
+https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/tree/09b04e5e74bca08ca8549fc736d4cdd8624bfde3.
+Copyright (c) 2026 Z.AI Co., Ltd. MIT license; the full license is preserved
+in the adjacent distributed `GLM53FLASH_PROVENANCE.md`.
+
+The geometry in `src/aisim_core/sdk/glm53flash.py`,
+`src/aisim_core/sdk/models/glm53flash.py`, repository-root
+`crates/core/src/perfmodel/operators/glm53flash.rs`, and their GLM tests is a
+modified analytical adaptation of those configurations. Execution boundaries
+and precision partitions are independently expressed adaptations of
+`vllm/models/glm5next/common/{model,attention,kda}.py` and
+`vllm/models/glm5next/{nvidia,common}/sparse_indexer.py`,
+`vllm/model_executor/layers/logits_processor.py`, and
+`vllm/platforms/interface.py` from vLLM at
+https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6 (v0.31.0)
+(Copyright vLLM contributors, Apache-2.0), and
+`python/sglang/srt/models/glm5_next.py`, `python/sglang/srt/models/deepseek_v2.py`,
+`python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`, and
+`python/sglang/srt/layers/communicator_mhc.py` and
+`python/sglang/srt/layers/logits_processor.py` from SGLang at
+https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+(Copyright SGLang contributors, Apache-2.0). No serving implementation is
+vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
+the repository Apache-2.0 license text applies to these adaptations.
+
+The Hopper SGLang FP8-KV attention precision in
+`crates/core/src/perfmodel/operators/glm53flash.rs` and its arithmetic tests
+is a modified, independently expressed analytical adaptation of
+`python/sglang/kernels/ops/attention/dsa/tilelang_kernel.py` at
+https://github.com/sgl-project/sglang/tree/9336681310c7a7153c4fbd7c2b9ae62011899014
+(Copyright SGLang contributors, Apache-2.0). Changes: express the raw-FP8
+TileLang QK/PV precision as a tensor-core roofline rate on SM90 and verify
+the mathematical work with hand-calculated examples; no kernel source is
+vendored. The upstream license is preserved by the repository and packaged
+Apache-2.0 `LICENSE` text.
+
+## NVIDIA GLM-5.3-NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisim_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json` | `config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
+| `src/aisim_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
+
+Upstream repository:
+https://huggingface.co/nvidia/GLM-5.3-NVFP4/tree/e3b8f9f2fad29727dfa95e766c5cac18ea1414bf
+
+Copyright owners: NVIDIA CORPORATION & AFFILIATES (the quantized export and
+its quantization metadata) and Z.AI (the base GLM-5.3 configuration). The
+copied files are unmodified.
+
+License, as declared by the upstream model card at that revision: "License
+type: NVIDIA Proprietary", with use governed by the NVIDIA Open Model
+Agreement,
+https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-agreement/
+(the card links the unversioned page; the agreement text preserved in the
+provenance file named below was retrieved 2026-10-27 and is v. March 9,
+2026, page release date April 2, 2026). The card metadata declares
+`license_name: nvidia-open-model-license`. The original GLM-5.3 model is
+licensed under the GLM-5.3 License (Copyright (c) 2026 Z.AI), which ships in
+the upstream repository as `LICENSE`; the card states that the NVIDIA Open
+Model Agreement does not modify or supersede it. The full texts of both are
+preserved in the adjacent distributed
+`src/aisim_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
+
+The two license texts are also preserved together here so the canonical
+wheel notice and the bundled-config inventory bind both sets of terms.
+The wording is unchanged from the adjacent provenance file above.
+
+```text
+GLM-5.3 License
+
+Copyright (c) 2026 Z.AI
+
+Permission is hereby granted, free of charge, to any person or entity (the "Licensee") obtaining a copy of this software — including the model weights, parameters, configuration files, inference and training code, and associated documentation (collectively, the "Software") — to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software; to run, deploy, fine-tune, or otherwise modify the Software and create derivative works from it; and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. The Licensee's use of the Software must comply with applicable laws and regulations.
+
+2. "Model as a Service" means giving a third party access to language model inference or fine-tuning (e.g., via API) in a manner that allows such third party to exercise meaningful control over the inputs, parameters, or training data. This does not include (a) end-user products with model capabilities solely embedded within specific features or harnesses, or (b) mere relaying of requests to models hosted by others.
+If the Licensee or any of its affiliates operates a Model as a Service business, and the aggregate revenue of the Licensee and its affiliates exceeds 10 billion US dollars (or the equivalent in other currencies) in total over any consecutive 12 months, the Licensee must pass Z.AI's security review before using the Software or its derivative works for any commercial purpose. The scope and method of the security review shall be reasonably determined by Z.AI.
+
+3. THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL Z.AI OR ITS AFFILIATES OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For any questions regarding this license, please contact glmlicense@z.ai.
+
+-----
+
+版权所有 (c) 2026 Z.AI
+
+特此免费授予任何获得本软件副本的个人或实体（"被许可方"）——包括模型权重、参数、配置文件、推理和训练代码及相关文档（统称"软件"）——不受限制地处理本软件的权利，包括但不限于：使用、复制、修改、合并、发布、分发、再许可和/或销售软件副本；运行、部署、微调或以其他方式修改软件并创建衍生作品；以及允许获得软件的其他人行使上述权利，但须遵守以下条件：
+
+1. 上述版权声明和本许可声明应包含在软件的所有副本或实质性部分中。被许可方对软件的使用必须符合适用法律法规。
+
+2. "模型即服务"指以允许第三方对输入、参数或训练数据行使实质性控制的方式，向第三方提供语言模型推理或微调服务（如通过API）。不包括：(a) 模型能力仅嵌入特定功能或框架中的终端用户产品，或(b) 单纯转发请求至他人托管的模型。
+若被许可方或其关联方运营"模型即服务"业务，且被许可方及关联方在任意连续12个月内累计总收入超过100亿美元（或等值其他货币），则被许可方在使用软件或其衍生作品进行任何商业用途之前，须通过Z.AI的安全审查。安全审查的范围和方式由Z.AI合理确定。
+
+3. 软件及其任何输出和结果均按"现状"提供，不附带任何形式的保证，无论是明示还是暗示，包括但不限于适销性、特定用途适用性和不侵权的保证。在任何情况下，Z.AI或其关联方或版权持有人均不对任何索赔、损害或其他责任承担责任，无论该责任是基于合同、侵权或其他方式，因软件或使用软件而产生或与之相关。
+
+如对本许可有任何疑问，请联系 glmlicense@z.ai。
+
+NVIDIA Open Model Agreement
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+Release Date: April 2, 2026
+
+NVIDIA Works released under this License are intended to be used permissively and enable the further development of AI technologies. Subject to the terms of this License, NVIDIA confirms that:
+
+- Works are commercially usable.
+
+- You are free to create and distribute Derivative Works.
+
+- NVIDIA does not claim ownership to any outputs generated using the Works or Derivative Works.
+
+By using, reproducing, modifying, distributing, performing or displaying any portion or element of the Works or Derivative Works, or otherwise accepting the terms of this License, you agree to be bound by this License.
+
+1. Definitions.
+
+   “License” shall mean the terms and conditions for use, reproduction, and distribution as defined by Sections 1 through 10 of this document.
+
+   “Legal Entity” shall mean the union of the acting entity and all other entities that control, are controlled by, or are under common control with that entity. For the purposes of this definition, “control” means (i) the power, direct or indirect, to cause the direction or management of such entity, whether by contract or otherwise, or (ii) ownership of fifty percent (50%) or more of the outstanding shares, or (iii) beneficial ownership of such entity.
+
+   “You” (or “Your”) shall mean an individual or Legal Entity exercising permissions granted by this License.
+
+   “Work” shall mean the work of authorship, including machine learning model, software, checkpoints, learnt weights, algorithms, parameters, configuration files and documentation, made available under the License, as indicated by a copyright notice that is included in or attached to the work (an example is provided in the Appendix below).
+
+   “Derivative Works” shall mean any work, whether in source or object form, that is based on (or derived from) the Work and for which the editorial revisions, annotations, elaborations, or other modifications represent, as a whole, an original work of authorship. For the purposes of this License, Derivative Works shall not include works that remain separable from, or merely link (or bind by name) to the interfaces of, the Work and Derivative Works thereof.
+
+2. Grant of License. Subject to the terms and conditions of this License, NVIDIA hereby grants to You a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable license to reproduce, prepare Derivative Works of, publicly display, publicly perform, sublicense, and distribute the Work and such Derivative Works in source or object form.
+
+   If You institute patent or copyright litigation against any entity (including a cross-claim or counterclaim in a lawsuit) alleging that the Work or an output from the Work constitutes direct or contributory patent or copyright infringement, then any licenses granted to You under this License for that Work shall terminate as of the date such litigation is filed.
+
+3. Redistribution. You may reproduce and distribute copies of the Work or Derivative Works thereof in any medium, with or without modifications, and in source or object form, provided that You meet the following conditions:
+
+      a. You must give any other recipients of the Work a copy of this License; and
+
+      b. You must retain, in the source form of any Derivative Works that You distribute, all copyright, patent, trademark, and attribution notices from the source form of the Work, excluding those notices that do not pertain to any part of the Derivative Works; and
+
+      c. If the Work includes a “NOTICE” text file as part of its distribution, then any Derivative Works that You distribute must include a readable copy of the following attribution notice within a “Notice” text file with such copies and the following statement: “Licensed by NVIDIA Corporation under the NVIDIA Open Model Agreement.”
+
+   You may add Your own copyright statement to Your modifications and may provide additional or different license terms and conditions for use, reproduction, or distribution of Your modifications, or for any such Derivative Works as a whole, provided Your use, reproduction, and distribution of the Work otherwise complies with the conditions stated in this License.
+
+4. Trademarks. This License does not grant permission to use the trade names, trademarks, service marks, or product names of NVIDIA, except as required for reasonable and customary use in describing the origin of the Work and reproducing the content of the NOTICE file.
+
+5. Disclaimer of Warranty. Unless required by applicable law or agreed to in writing, NVIDIA provides the Work on an “AS IS” BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied, including, without limitation, any warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A PARTICULAR PURPOSE. You are solely responsible for determining the appropriateness of using or redistributing the Work and assume any risks associated with Your exercise of permissions under this License.
+
+6. Limitation of Liability. In no event and under no legal theory, whether in tort (including negligence), contract, or otherwise, unless required by applicable law (such as deliberate and grossly negligent acts) or agreed to in writing, shall NVIDIA be liable to You for damages, including any direct, indirect, special, incidental, or consequential damages of any character arising as a result of this License or out of the use or inability to use the Work, a Derivative Work or an output from the Work or Derivative Work (including but not limited to damages for loss of goodwill, work stoppage, computer failure or malfunction, or any and all other commercial damages or losses), even if NVIDIA has been advised of the possibility of such damages.
+
+7. Accepting Warranty or Additional Liability. While redistributing the Work or Derivative Works thereof, You may choose to offer, and charge a fee for, acceptance of support, warranty, indemnity, or other liability obligations and/or rights consistent with this License. However, in accepting such obligations, You may act only on Your own behalf and on Your sole responsibility, not on behalf of NVIDIA, and only if You agree to indemnify, defend, and hold NVIDIA harmless for any liability incurred by, or claims asserted against, NVIDIA by reason of your accepting any such warranty or additional liability. You will indemnify and hold harmless NVIDIA from and against any claim by any third party arising out of or related to your use or distribution of the Works, Derivative Works thereof, or output from the Works or Derivative Works.
+
+8. Feedback. NVIDIA appreciates your feedback, and You agree that NVIDIA may use it without restriction or compensation to You.
+
+9. Governing Law. This Agreement will be governed in all respects by the laws of the United States and the laws of the State of Delaware, without regard to conflict of laws principles or the United Nations Convention on Contracts for the International Sale of Goods. The state and federal courts residing in Santa Clara County, California will have exclusive jurisdiction over any dispute or claim arising out of or related to this Agreement, and the parties irrevocably consent to personal jurisdiction and venue in those courts; except that, either party may apply for injunctive remedies or an equivalent type of urgent legal relief in any jurisdiction.
+
+10. Trade and Compliance. You agree to comply with all applicable export, import, trade and economic sanctions laws and regulations, as amended, including without limitation U.S. Export Administration Regulations and Office of Foreign Assets Control regulations. These laws include restrictions on destinations, end-users and end-use.
+
+(v. March 9, 2026)
+
+End of terms and conditions
+```
+
+## NVIDIA Nemotron 3.5 Super VL NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_config.json` | `config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+| `src/aisim_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+
+Upstream repository:
+https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/tree/da5b2650a835292c678994a1fa3fb653250fb508
+
+Copyright owner: NVIDIA CORPORATION & AFFILIATES. The copied files are
+unmodified.
+
+License, as declared by the upstream model card at that revision: the
+OpenMDW License Agreement, version 1.1 (OpenMDW-1.1),
+https://openmdw.ai/license/1-1/. The card metadata declares
+`license: other` and `license_name: openmdw-1.1`, and the upstream
+repository ships no separate license file. The full agreement text is
+preserved in the adjacent distributed
+`src/aisim_core/model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md`.
+
+```text
+OpenMDW License Agreement, version 1.1 (OpenMDW-1.1)
+
+By exercising rights granted to you under this agreement, you accept and agree to its terms.
+
+As used in this agreement, “Model Materials” means the materials provided to you under this agreement, consisting of: (1) one or more machine learning models (including architecture and parameters); and (2) all related artifacts (including associated data, documentation and software) that are provided to you hereunder.
+
+Subject to your compliance with this agreement, permission is hereby granted, free of charge, to deal in the Model Materials without restriction, including under all copyright, patent, database, and trade secret rights included or embodied therein.
+
+If you distribute any portion of the Model Materials, you shall retain in your distribution (1) a copy of this agreement, and (2) all copyright notices and other notices of origin included in the Model Materials that are applicable to your distribution.
+
+If you file, maintain, or voluntarily participate in a lawsuit against any person or entity asserting that the Model Materials directly or indirectly infringe any patent or copyright, then all rights and grants made to you hereunder are terminated, unless that lawsuit was in response to a corresponding lawsuit first brought against you.
+
+This agreement does not impose any restrictions or obligations with respect to any use, modification, or sharing of any outputs generated by using the Model Materials.
+
+THE MODEL MATERIALS ARE PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NONINFRINGEMENT, ACCURACY, OR THE ABSENCE OF LATENT OR OTHER DEFECTS OR ERRORS, WHETHER OR NOT DISCOVERABLE, ALL TO THE GREATEST EXTENT PERMISSIBLE UNDER APPLICABLE LAW.
+
+YOU ARE SOLELY RESPONSIBLE FOR (1) CLEARING RIGHTS OF OTHER PERSONS THAT MAY APPLY TO THE MODEL MATERIALS OR ANY USE THEREOF, INCLUDING WITHOUT LIMITATION ANY PERSON’S COPYRIGHTS OR OTHER RIGHTS INCLUDED OR EMBODIED IN THE MODEL MATERIALS; (2) OBTAINING ANY NECESSARY CONSENTS, PERMISSIONS OR OTHER RIGHTS REQUIRED FOR ANY USE OF THE MODEL MATERIALS; OR (3) PERFORMING ANY DUE DILIGENCE OR UNDERTAKING ANY OTHER INVESTIGATIONS INTO THE MODEL MATERIALS OR ANYTHING INCORPORATED OR EMBODIED THEREIN.
+
+IN NO EVENT SHALL THE PROVIDERS OF THE MODEL MATERIALS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE MODEL MATERIALS, THE USE THEREOF OR OTHER DEALINGS THEREIN.
+```
+
+## vLLM DeepSeek V4 cache sizing
+
+`src/aisim_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
+control in `src/aisim/config/engine.py` are adapted and modified from vLLM
+commit `c5c116138267ac738bc262495326d28ffff834a2`. Original paths:
+`vllm/models/deepseek_v4/attention.py`, `vllm/models/deepseek_v4/compressor.py`,
+`vllm/v1/attention/backends/mla/sparse_swa.py`, `vllm/v1/kv_cache_interface.py`,
+`vllm/v1/core/kv_cache_utils.py`, `vllm/v1/core/single_type_kv_cache_manager.py`,
+and `vllm/config/attention.py`. The modified implementation computes DeepSeek V4
+cache pages, packed cache groups and resident sliding-window blocks with CPU
+arithmetic, maps them onto AISim's state cache, and adds AISim
+validation and diagnostics.
+
+Source: https://github.com/vllm-project/vllm/tree/c5c116138267ac738bc262495326d28ffff834a2
+
+Copyright contributors to the vLLM project.
+Licensed under Apache-2.0;
+the license is included at the repository root as `LICENSE` and in the Python
+distribution. Upstream license:
+https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834a2/LICENSE
+
+## SemiAnalysis AgentX simulation-performance fixture
+
+`python/aisim/tools/simulation_perf_gate/fixtures/agentx.jsonl` is derived
+from `traces.jsonl` in the SemiAnalysis dataset
+https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740
+at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`.
+`python/aisim/tools/simulation_perf_gate/fixtures/DATASET_CARD.md` is adapted
+from upstream `README.md` at the same revision. Modified by NVIDIA: omitted the
+distribution-plot section and added a source and scope note. The remaining
+upstream text and license declaration are retained.
+
+Upstream authors: SemiAnalysis. The upstream card supplies no separate
+copyright or NOTICE statement. License: Apache License 2.0, declared in the
+pinned dataset card and reproduced in `fixtures/LICENSE`.
+
+Modified by NVIDIA: selected four complete plays and normalized JSON whitespace.
+The original play retains its rows-API representation; the three added plays
+retain their raw JSONL request values, dependencies, hashes, and timestamps.
+See the adjacent fixture README and `agentx.json` manifest for the source,
+play identities, counts, and content checksum.
+
+## NVIDIA Dynamo CI handoff compatibility
+
+The exact-source rewrite in `scripts/performance/build_simulation_dynamo.py`
+is adapted and modified from NVIDIA Dynamo's `lib/mocker/src/common/handoff.rs`
+at commit `def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/handoff.rs
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation adds zero recurrent-state bytes to the legacy token-only DTO
+conversion for CI builds against the newer AISim handoff API. It preserves
+the upstream copyright header and marks the modified conversion in the output.
+
+## NVIDIA Dynamo CI struct-literal compatibility
+
+The exact-source rewrites in `scripts/performance/build_simulation_dynamo.py`
+and their regression fixtures in `tests/test_ci_workflow_contracts.py`
+are adapted and modified from NVIDIA Dynamo's
+`lib/mocker/src/grouped_scheduler/compatibility.rs` and
+`lib/mocker/src/replay/offline/extensions/kv_router/mod.rs`,
+`lib/mocker/src/replay/offline/entrypoints.rs`,
+`lib/mocker/src/replay/offline/extensions/kv_events/mod.rs`, and
+`lib/bindings/python/rust/llm/replay.rs` at commit
+`def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/grouped_scheduler/compatibility.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/entrypoints.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
+
+Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation adds `None` for new optional AISim fields to the native
+request and offline KV-router placement struct literals for CI builds against
+newer AISim APIs. It also sets an empty image list for the pinned text-only
+request when AISim requires `images: Vec<ImageSpec>`, rejecting image inputs
+instead of adding multimodal support to Dynamo's adapter. Both offline replay
+specifications disable the encoder pool; the Python binding's synthetic trace
+explicitly retains text-only traffic with `images: None`. The lifecycle conversion explicitly
+rejects host-loop TTFT milestones, which its legacy DTO cannot represent.
+The Weka import adapter retains the default recorded client when the AISim
+API adds the client selection field.
+It preserves the upstream copyright headers and marks each modification in the output.
+
+The replay compatibility rewrite in the same script adapts
+`lib/mocker/src/engine_adapter.rs` at that same immutable revision:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/engine_adapter.rs
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0 as above. The modified adapter explicitly sets prefill
+context parallelism to 1 in four replay descriptors, preserving the pinned
+adapter's topology. It also disables the SGLang host loop and takes the vision
+cache capacity from the canonical SGLang default, preserving text-only behavior.
+Its upstream copyright header is retained and each modified literal is marked
+in the generated output.
+
+## NVIDIA Dynamo CI speculation compatibility
+
+The exact-source rewrite in `scripts/performance/build_simulation_dynamo.py`
+and its regression fixture in `tests/test_ci_workflow_contracts.py` are adapted
+and modified from NVIDIA Dynamo's
+`lib/bindings/python/rust/llm/ais_callback.rs` at commit
+`def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/ais_callback.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation reads the serialized Ngram identity instead of the removed
+enum accessor, retaining legacy `nextn`, accepting disabled speculation, and
+rejecting other replay schemes.
+It preserves the upstream copyright header and marks the modified conversion
+in the output.
+
+The callback contract harness in `scripts/performance/check_dynamo_callback.py`
+compiles that entire adapted callback with the real AISim core. Its minimal
+trait interfaces are adapted from `lib/mocker/src/common/perf_model.rs` and
+`lib/kv-router/src/scheduling/prefill_load.rs` at the same immutable commit:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/perf_model.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/kv-router/src/scheduling/prefill_load.rs
+
+These files carry the same NVIDIA copyright and Apache-2.0 license above.
+The harness modifies their module placement to test the callback independently
+of the Dynamo scheduler; it does not replace callback or estimator behavior.
+
+## SGLang simulator and HiSim feature definitions
+
+The per-request feature set of the learned forward-pass model
+(`REQUEST_FEATURE_NAMES` in `python/aisim/src/aisim_core/sdk/fpm_learned.py` and
+`REQUEST_FEATURE_NAMES` in `crates/core/src/perfmodel/fpm/learned.rs`,
+relative to the repository root) is a re-implementation of the 18 batch
+features defined by `MLTimePredictor.FEATURE_NAMES` in the SGLang simulator,
+and the 32 `(present, past, extend)` request slots follow the feature layout
+of HiSim's XGBoost predictor. No upstream source code is copied; the feature
+names, ordering, and formulas were adapted so that models trained for either
+tool line up with this one.
+
+Upstream sources:
+- https://github.com/sgl-project/sglang/blob/59799a368793b9f795baf59b067233a65ad8e38e/tools/sglang-simulator/src/sglang_simulator/time_predictor/ml.py
+  (SGLang, Apache License 2.0; copyright the SGLang project contributors)
+- https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/hisim/src/hisim/time_predictor/aiconfigurator.py
+  (HiSim, Alibaba tair-kvcache, Apache License 2.0; copyright Alibaba Group)
+
+Both upstream licenses at the identified revisions:
+https://github.com/sgl-project/sglang/blob/59799a368793b9f795baf59b067233a65ad8e38e/LICENSE
+https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/LICENSE
+
+The AISim files are modified re-implementations, not verbatim copies.
+Both derived files carry the source URLs and revisions in their headers.
+
+## SGLang v0.5.20 transferred-prompt publication at running admission and release on ready-queue cancellation
+
+The following repository-root files independently model transferred-prompt publication at running admission and release on ready-queue cancellation:
+
+- `crates/core/src/engine/kv_manager/sglang_backend.rs`
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+- `crates/core/src/replay/disagg_tests.rs`
+- `crates/core/src/replay/handoff.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/disaggregation/decode.py (get_new_prebuilt_batch), python/sglang/srt/disaggregation/decode_schedule_batch_mixin.py (process_prebuilt), and python/sglang/srt/managers/scheduler.py (waiting-queue cancellation).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISim request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 partial-edge access recency and reinsertion of an already cached prefix
+
+The following repository-root files independently model partial-edge access recency and reinsertion of an already cached prefix:
+
+- `crates/core/src/engine/cache/radix_cache.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/mem_cache/radix_cache.py (_match_prefix_helper and _insert_helper).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISim request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 stable length-policy retraction order and post-release cache eviction toward the survivor reserve
+
+The following repository-root files independently model stable length-policy retraction order and post-release cache eviction toward the survivor reserve:
+
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/decode.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/managers/schedule_batch.py (_get_decode_retraction_order, retract_decode and release_req).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISim request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 completed source-prompt publication before the transfer hold
+
+The following repository-root files independently model completed source-prompt publication before the transfer hold:
+
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/disaggregation/prefill.py (process_batch_result_disagg_prefill).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISim request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang cache publication and KV event cadence
+
+The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/sglang_backend.rs`, `crates/core/src/engine/scheduler/sglang/core.rs`, `crates/core/src/engine/scheduler/sglang/decode.rs`, `crates/core/src/engine/scheduler/sglang/host_loop.rs`, and `crates/core/src/engine/scheduler/sglang/tests.rs` adapt the cache insert points and event queue/publish contract from SGLang v0.5.20, immutable commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`: `python/sglang/srt/mem_cache/radix_cache.py`, `python/sglang/srt/mem_cache/events.py`, `python/sglang/srt/managers/scheduler.py`, `python/sglang/srt/managers/scheduler_components/batch_result_processor.py`, and `python/sglang/srt/managers/scheduler_components/metrics_reporter.py`. Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e . Copyright 2023-2024 SGLang Team and contributors, Apache-2.0. The license text is included as `LICENSE`. Modified for AISim request leases, overlap observation, and physical page accounting. No production fixture is included.
+
+Running-request cancellation retains its KV lease until the in-flight forward
+is observed, adapting `Scheduler.abort_request` and result-time
+`release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## SGLang v0.5.22 decode radix cache and decode waiting-queue order
+
+The following repository-root files independently model the decode server's opt-in radix cache and its arrival-order waiting queue:
+
+- `crates/core/src/engine/config.rs`
+- `crates/core/src/engine/scheduler/sglang/config.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+- `python/aisim/src/aisim/config/engine.py`
+
+The modified Rust behavior, configuration validation and synthetic regression
+fixtures adapt the contract observed in SGLang v0.5.22, commit
+`baa9befa381511cd4d56f83980951e5a45fffc6d`.
+Original source paths: python/sglang/srt/arg_groups/fields/disagg.py (disaggregation_decode_enable_radix_cache), python/sglang/srt/arg_groups/pd_disaggregation_hook.py (handle_pd_disaggregation), python/sglang/srt/mem_cache/registry.py (decode tree-cache selection), python/sglang/srt/managers/schedule_policy.py (_validate_and_adjust_policy), and python/sglang/srt/disaggregation/decode.py (waiting-queue batch selection).
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISim request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang 0.5.21 collector serving-shape adaptation
+
+The synthetic batch staging in repository-root file
+`python/aisim/collector/sglang/collect_mla_module.py` adapts the native
+padded-decode buffer contract at SGLang revision
+`e00930c5489053f26d86b179cee0d087f846acbb`:
+
+- `python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py`
+  (`DecodeCudaGraphRunner.load_batch`).
+- `python/sglang/srt/model_executor/cuda_graph_buffer_registry.py`.
+- `python/sglang/srt/model_executor/runner_utils/buffers.py`.
+
+Source: https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
+
+Copyright SGLang Team and contributors, Apache-2.0. Upstream license:
+https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/LICENSE
+
+Modified for isolated synthetic attention collection: preserve real request
+counts in performance keys while staging sentinel slots for native graph
+buckets. The evidence harness calls the installed native runner; it does not
+vendor its implementation. This source attribution does not assert separate
+OSRB approval.
+
+## AISimulate heterogeneous AFD and super-node behavior
+
+The heterogeneous-node and fabric-tier behavior in the repository-root files
+listed below is adapted and reimplemented for the native worker-role architecture
+from the AISimulate fork at immutable commit
+`af56328c4ba7ffa1b8c42c8375244568c2e7bb8c`:
+
+https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
+
+| Derived files (repository-root paths) | Original paths at the pinned revision |
+| --- | --- |
+| `crates/core/src/perfmodel/common/system_spec.rs`, `crates/core/src/perfmodel/operators/communication.rs`, `crates/core/src/perfmodel/operators/afd_comm.rs`, `crates/core/src/perfmodel/afd/model.rs`, `crates/core/src/perfmodel/afd/execution.rs` | `crates/core/src/perfmodel/common/system_spec.rs`, `crates/core/src/perfmodel/operators/communication.rs`, `python/aisimulate/src/aiconfigurator_core/sdk/operations/afd_transfer.py`, `python/aisimulate/src/aiconfigurator/sdk/inference_session.py` |
+| `crates/core/src/engine/config.rs`, `crates/core/src/perfmodel/afd/mod.rs`, `python/aisim/src/aisim/sweeper/afd_parallel.py`, `python/aisim/src/aisim/sweeper/search_space.py`, `python/aisim/src/aisim/compiler.py` | `python/aisimulate/src/aiconfigurator_core/sdk/config.py`, `python/aisimulate/src/aiconfigurator/sdk/task_v2.py`, `python/aisimulate/src/aiconfigurator/sdk/pareto_analysis.py` |
+| `docs/replay/engine/analytical.md`, `docs/sweeper/afd-topology.md` | `docs/cli/legacy-aic-user-guide.md`, `python/aisimulate/docs/advanced_tuning.md` |
+
+All listed derivatives are modified. New rank-mapping preparation and regression
+tests were written for the current implementation; the old Python execution path
+was not imported. Upstream material retains its original copyright:
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Applicable license: Apache License 2.0, preserved in the repository `LICENSE`.
+The upstream license is available at:
+https://github.com/LPhgh/aisimulate/blob/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c/LICENSE
+
+## AIPerf request metric compatibility
+
+- Derived files: the request metric populations in
+  `crates/core/src/replay/report.rs` and `crates/core/src/replay/report/bounded.rs`,
+  the selector names in `python/aisim/src/aisim/aiperf_metrics.py`, and
+  `tests/fixtures/aiperf_0.13.0_request_metrics.json`.
+- Source: [ai-dynamo/aiperf](https://github.com/ai-dynamo/aiperf/tree/v0.13.0),
+  release `v0.13.0` (commit `794f8bb75f8582f22e412d7e650fc71ca2a3d21a`).
+- Original paths: `src/aiperf/metrics/types/ttft_metric.py`,
+  `request_latency_metric.py`, `inter_token_latency_metric.py`,
+  `output_token_throughput_metrics.py`, and `src/aiperf/metrics/accumulator.py`.
+- Copyright: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+- License: Apache-2.0 (the repository's `LICENSE` includes the license text).
+- Modifications: independent implementation of the pinned request metric
+  definitions in native replay reporting, with nearest-rank percentiles.
+  The fixture holds values computed by the pinned AIPerf metric classes with
+  `benchmarks/evidence/aiperf-metrics/aiperf_expected.py`.
+  No AIPerf runtime dependency or source files are bundled.
+
+## DeepSeek V3 configuration license scope unresolved
+
+`src/aisim_core/model_configs/deepseek-ai--DeepSeek-V3_config.json`
+is a modified configuration from `config.json` at
+https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/config.json.
+Copyright owner: DeepSeek. The configuration was adapted for AISim;
+its exact bundled bytes are recorded in `scripts/ci/bundled_configs.json`.
+
+Applicable configuration license: **UNKNOWN / unresolved**. This revision
+contains an MIT `LICENSE-CODE` and a separate `LICENSE-MODEL`:
+
+- https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/LICENSE-CODE
+- https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/LICENSE-MODEL
+
+The MIT code-license text retained in the preceding DeepSeek section does
+not establish the license applicable to this configuration. Maintainer or
+Open Source Review Board confirmation is required to resolve that scope.
+The frozen legacy inventory records this unresolved status; it does not
+assert license approval or grant distribution permission.
+
+## Split decode attention and CUDA-graph dispatch regression axes
+
+The `longest_split` and `eager` regression axes in the repository-root files
+`crates/core/src/perfmodel/fpm/regression/feature_axes.rs` and
+`crates/core/src/perfmodel/fpm/estimator.rs`, with their synthetic tests in
+`crates/core/src/perfmodel/fpm/regression/tests_configured.rs`, are
+independently written regression features that model two behavioral rules:
+
+- FlashInfer v0.7.0.post1, immutable commit
+  `946200de1ae94fc93fdd0926f0a13afd1fa7f0f1`: the KV splits the TensorRT-LLM
+  decode kernel gives each request (`numCtasPerSeqKv` in
+  [`include/flashinfer/trtllm/fmha/fmhaKernels.cuh`](https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/include/flashinfer/trtllm/fmha/fmhaKernels.cuh)).
+  Copyright (c) 2020-2026, NVIDIA CORPORATION. The project NOTICE reads
+  "FlashInfer, Copyright 2025-2026 NVIDIA, Copyright 2023-2026 FlashInfer
+  community (https://flashinfer.ai/)". Licensed under Apache-2.0:
+  https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/LICENSE
+- vLLM v0.32.0, immutable commit `5df63a7203cdb9328d824a27b682e77c7b9928be`:
+  a pass with more tokens than every captured CUDA graph runs without one
+  (`dispatch` in
+  [`vllm/v1/worker/gpu/cudagraph_utils.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py)).
+  Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+  https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/LICENSE
+  That revision has no root NOTICE file.
+
+No upstream source or test fixture is copied. The axes are modified
+simplifications: the kernel's split cap and tile choice and the CUDA-graph
+padding are not modeled, and `longest_split` counts every scheduled request,
+including prefill requests, which vLLM runs in the context kernel rather
+than the decode kernel. The Apache-2.0 license text is included in this
+repository as `LICENSE`.
