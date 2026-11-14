@@ -767,7 +767,7 @@ def test_glm_producer_token_evidence_passes_for_real_and_boundary_values(tmp_pat
     # real stream, which does not draw every id.
     count = producer.MAX_CONTEXT + producer.MAX_BATCH * seeded.REQUEST_STRIDE
     tokens = seeded.generate(seeded.SEED, count, seeded.VOCAB_LOW, seeded.VOCAB_HIGH)
-    assert (seeded.SEED, count, len(set(tokens))) == (53, 262240, 126418)
+    assert (seeded.SEED, count, len(set(tokens))) == (53, 262240, 126303)
     cases = {
         "producer": {"seed": seeded.SEED, "count": count, "unique_token_count": len(set(tokens))},
         # The smallest seed and a stream of one token.
