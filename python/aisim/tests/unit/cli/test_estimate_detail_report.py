@@ -214,3 +214,14 @@ def test_default_agg_energy_detail_explains_zero_latency_groups():
     text = format_estimate_detail_report(result, detail="energy")
     assert "Energy Breakdown (scheduled active work per GPU)" in text
     assert "<no measurable energy data>" in text
+
+
+def test_static_energy_detail_reports_withheld_phase_power_as_unavailable():
+    summary = InferenceSummary(RuntimeConfig(isl=128, osl=16))
+    summary.set_context_energy_wms_dict({"fpm_forward_prefill": 4000.0})
+    summary.set_generation_energy_wms_dict({"fpm_forward_decode": 0.0})
+    summary.set_context_power_avg(None)
+    summary.set_generation_power_avg(None)
+    text = format_estimate_detail_report(_estimate_result(mode="static", raw={}, summary=summary), detail="energy")
+    assert "Context energy (total = 4000.000 W·ms, avg P = unavailable)" in text
+    assert "Generation energy (total = 0.000 W·ms, avg P = unavailable)" in text

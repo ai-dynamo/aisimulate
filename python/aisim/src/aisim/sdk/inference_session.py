@@ -408,6 +408,9 @@ class DisaggInferenceSession:
             disagg_summary.set_oom(True)
 
         disagg_summary.set_summary_df(disagg_summary_df)
+        # The e2e accessor mirrors the published row: None when withheld.
+        disagg_power_w = disagg_summary_df["power_w"].iloc[0]
+        disagg_summary.set_e2e_power_avg(None if pd.isna(disagg_power_w) else float(disagg_power_w))
 
         # Carry per-op latency breakdowns from prefill/decode static runs
         per_ops_data = {}
@@ -431,6 +434,7 @@ class DisaggInferenceSession:
             per_ops_data["prefill"] = dict(prefill_ctx_latency)
             disagg_summary.set_context_latency_dict(dict(prefill_ctx_latency))
             disagg_summary.set_context_energy_wms_dict(dict(prefill_summary.get_context_energy_wms_dict()))
+            disagg_summary.set_context_covered_latency_ms(prefill_summary.get_context_covered_latency_ms())
             disagg_summary.set_context_power_avg(prefill_summary.get_context_power_avg())
         prefill_ctx_source = prefill_summary.get_context_source_dict()
         if prefill_ctx_source:
@@ -440,6 +444,7 @@ class DisaggInferenceSession:
             per_ops_data["decode"] = dict(decode_gen_latency)
             disagg_summary.set_generation_latency_dict(dict(decode_gen_latency))
             disagg_summary.set_generation_energy_wms_dict(dict(decode_summary.get_generation_energy_wms_dict()))
+            disagg_summary.set_generation_covered_latency_ms(decode_summary.get_generation_covered_latency_ms())
             disagg_summary.set_generation_power_avg(decode_summary.get_generation_power_avg())
         decode_gen_source = decode_summary.get_generation_source_dict()
         if decode_gen_source:

@@ -391,6 +391,10 @@ def _format_aggregate_energy_section(summary: InferenceSummary, bar_width: int, 
         return ["Energy Breakdown", "  <no energy data>"]
     titles = {"mix_step": "Mixed steps", "genonly_step": "Decode-only steps", "encoder": "Encoder"}
     lines = ["Energy Breakdown (scheduled active work per GPU)"]
+    # run_agg withholds FPM watts (raw power_w None) whatever the coverage;
+    # keep the energy evidence but publish no per-group watts either.
+    raw = summary.get_result_dict() or {}
+    withheld = "power_w" in raw and raw["power_w"] is None
     rendered_group = False
     for name, group in groups.items():
         if group.latency_ms <= 0:
@@ -399,7 +403,7 @@ def _format_aggregate_energy_section(summary: InferenceSummary, bar_width: int, 
         coverage = group.covered_latency_ms / group.latency_ms
         power = (
             f"{group.energy_wms / group.latency_ms:.1f} W"
-            if coverage >= 0.9 and group.energy_wms > 0
+            if not withheld and coverage >= 0.9 and group.energy_wms > 0
             else "unavailable"
         )
         lines.append(
@@ -430,15 +434,21 @@ def _format_energy_section(summary: InferenceSummary, bar_width: int, top_n: int
         if enc:
             lines.append("")
         total_ctx = sum(ctx.values())
-        lines.append(f"Context energy (total = {total_ctx:.3f} W·ms, avg P = {summary._context_power_avg:.1f} W)")
+        lines.append(f"Context energy (total = {total_ctx:.3f} W·ms, avg P = {_avg_power(summary._context_power_avg)})")
         lines.extend(_format_op_bars(ctx, top_n=top_n, bar_width=bar_width, unit="W·ms"))
     if gen:
         if enc or ctx:
             lines.append("")
         total_gen = sum(gen.values())
-        lines.append(f"Generation energy (total = {total_gen:.3f} W·ms, avg P = {summary._generation_power_avg:.1f} W)")
+        lines.append(
+            f"Generation energy (total = {total_gen:.3f} W·ms, avg P = {_avg_power(summary._generation_power_avg)})"
+        )
         lines.extend(_format_op_bars(gen, top_n=top_n, bar_width=bar_width, unit="W·ms"))
     return lines
+
+
+def _avg_power(watts: float | None) -> str:
+    return "unavailable" if watts is None else f"{watts:.1f} W"
 
 
 def _format_source_section(summary: InferenceSummary) -> list[str]:

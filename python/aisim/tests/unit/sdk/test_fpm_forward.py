@@ -17,6 +17,7 @@ side of the module boundary.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import shutil
@@ -168,7 +169,12 @@ def _row(
 def _write_pair(data_dir: str, rows: list[dict], *, sidecar_overrides: dict | None = None) -> str:
     os.makedirs(data_dir, exist_ok=True)
     parquet_path = os.path.join(data_dir, "fpm_forward_perf.parquet")
-    pq.write_table(pa.Table.from_pylist(rows), parquet_path)
+    table = pa.Table.from_pylist(rows)
+    if "power_w" in table.column_names:
+        # Schema 8 requires a DOUBLE column, even when every value is null.
+        index = table.column_names.index("power_w")
+        table = table.set_column(index, "power_w", table["power_w"].cast(pa.float64()))
+    pq.write_table(table, parquet_path)
     with open(parquet_path, "rb") as handle:
         parquet_sha = hashlib.sha256(handle.read()).hexdigest()
     metadata = {
@@ -1706,3 +1712,529 @@ def test_canonical_config_preserves_positional_quantization_fields():
     assert config.nextn == 0
     assert config.fpm_fmha_quant_mode == "fp8"
     assert config.moe_kernel_source == "sglang_flashinfer_trtllm_moe"
+
+
+# ---------------------------------------------------------------------------
+# AISIM-1973 V1 power publication gates (synthetic schema-8 pairs)
+# ---------------------------------------------------------------------------
+
+_POWER_VERSION = "0.24.0"  # packaged h200 vLLM op data prices draft and encoder ops
+
+
+_POWER_POLICY = "dynamo_native_single_sample_power_window_v1"
+
+
+def _write_power_pair(data_dir: str, rows: list[dict], power_w: list[float | None]) -> str:
+    """Write ``rows`` as a schema-8 pair with one ``power_w`` (W or None) per row."""
+    from aisim_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
+
+    execution = dict(zip(EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, strict=True))
+    # Schema 8 binds every row to the sidecar policy.
+    policy = {"measurement_policy": _POWER_POLICY, "measurement_repeats": 1}
+    rows = [dict(row, **execution, **policy, power_w=watts) for row, watts in zip(rows, power_w, strict=True)]
+    return _write_pair(
+        data_dir,
+        rows,
+        sidecar_overrides={
+            "schema_version": 8,
+            "measurement_policy": _POWER_POLICY,
+            "backend_version": _POWER_VERSION,
+        },
+    )
+
+
+@pytest.fixture
+def fpm_power_root(tmp_path):
+    """Systems roots with the packaged h200 vLLM op data plus one written FPM pair.
+
+    Returns ``write(model, power_w, rows=None)``. It writes ``rows`` (default
+    :func:`_power_rows`) as schema 8 with ``power_w(row)`` watts, or as
+    schema 6 when ``power_w`` is None, into a fresh systems root (the native
+    loader caches pairs by path) and returns its ``PerfDatabase``.
+    """
+    from aisim_core.sdk.rust_engine_step import _engine_handle_cache_clear
+
+    template = tmp_path / "template"
+    packaged = Path(_CORE_SYSTEMS) / "data" / SYSTEM
+    for family in packaged.iterdir():
+        source = family / BACKEND / _POWER_VERSION
+        if source.is_dir():
+            shutil.copytree(source, template / "data" / SYSTEM / family.name / BACKEND / _POWER_VERSION)
+    # The packaged vLLM op tables carry no power; give the copies a synthetic
+    # 400 W so op-level draft and encoder ops report energy.
+    for path in (template / "data").rglob("*.parquet"):
+        table = pq.read_table(path)
+        if "power" not in table.column_names:
+            pq.write_table(table.append_column("power", pa.array([400.0] * table.num_rows, pa.float64())), path)
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{SYSTEM}.yaml", template / f"{SYSTEM}.yaml")
+    roots = itertools.count()
+
+    def write(model, power_w, *, rows=None):
+        rows = _power_rows(model) if rows is None else rows
+        root = shutil.copytree(template, tmp_path / f"systems{next(roots)}")
+        data_dir = str(root / "data" / SYSTEM / BACKEND / _POWER_VERSION)
+        if power_w is None:
+            _write_pair(data_dir, rows, sidecar_overrides={"backend_version": _POWER_VERSION})
+        else:
+            _write_power_pair(data_dir, rows, [power_w(row) for row in rows])
+        _engine_handle_cache_clear()
+        return PerfDatabase(SYSTEM, BACKEND, _POWER_VERSION, systems_root=str(root))
+
+    yield write
+    _engine_handle_cache_clear()
+
+
+def _power_rows(model, *, visual_tokens: int = 0) -> list[dict]:
+    """Exact anchors for batch 2, isl 512 (+ visual tokens), osl 2."""
+    identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+    tokens = 512 + visual_tokens
+    rows = [
+        _row("prefill", 2, 2 * tokens, 0, 40.0, model_path=model.model_path, identity=identity),
+        # osl=2 runs one decode step at s = tokens + 1.
+        _row("decode", 2, 0, 2 * (tokens + 1), 6.0, model_path=model.model_path, identity=identity),
+    ]
+    return [dict(row, backend_version=_POWER_VERSION) for row in rows]
+
+
+def _full_power(row: dict) -> float:
+    return 300.0 if row["workload_kind"] == "prefill" else 450.0
+
+
+def _unpowered_decode(row: dict) -> float | None:
+    return 300.0 if row["workload_kind"] == "prefill" else None
+
+
+def _assert_power_withheld(summary) -> None:
+    assert summary.get_result_dict()["power_w"] is None
+    assert summary.get_summary_df()["power_w"].iloc[0] is None
+    assert summary.get_e2e_power_avg() is None
+    assert summary.get_context_power_avg() is None
+    assert summary.get_generation_power_avg() is None
+
+
+def _qwen_fpm(**overrides):
+    return models.get_model("Qwen/Qwen3-0.6B", _model_config(forward_model="fpm", **overrides), BACKEND)
+
+
+def _run_static(model, database, mode="static", **runtime):
+    from aisim.sdk.config import RuntimeConfig
+    from aisim.sdk.inference_session import InferenceSession
+
+    rc = RuntimeConfig(**{"batch_size": 2, "beam_width": 1, "isl": 512, "osl": 2, **runtime})
+    return InferenceSession(model, database, get_backend(BACKEND)).run_static(runtime_config=rc, mode=mode)
+
+
+def _run_disagg(database, model_config):
+    from aisim.sdk.config import RuntimeConfig
+    from aisim.sdk.inference_session import DisaggInferenceSession
+
+    backend = get_backend(BACKEND)
+    return DisaggInferenceSession(database, backend, database, backend).run_disagg(
+        "Qwen/Qwen3-0.6B",
+        RuntimeConfig(batch_size=2, beam_width=1, isl=512, osl=2),
+        model_config(),
+        2,
+        1,
+        model_config(),
+        2,
+        1,
+    )
+
+
+class TestFPMPowerPublication:
+    """Public SDK watts for FPM models are published only where V1 supports them."""
+
+    def test_fully_powered_static_run_keeps_numeric_watts(self, fpm_power_root):
+        model = _qwen_fpm()
+        summary = _run_static(model, fpm_power_root(model, _full_power))
+        # Independent oracle: 40 ms prefill at 300 W and 6 ms decode at 450 W.
+        expected = (40.0 * 300.0 + 6.0 * 450.0) / 46.0
+        assert summary.get_power_data_coverage() == 1.0
+        assert summary.get_result_dict()["power_w"] == pytest.approx(expected)
+        assert summary.get_e2e_power_avg() == pytest.approx(expected)
+        assert summary.get_context_power_avg() == pytest.approx(300.0)
+        assert summary.get_generation_power_avg() == pytest.approx(450.0)
+
+    @pytest.mark.parametrize(
+        "power_w, coverage",
+        [(_unpowered_decode, 40.0 / 46.0), (None, 0.0)],
+        ids=["v8_partial_below_0.9", "v6_latency_only"],
+    )
+    def test_static_run_below_coverage_threshold_withholds_watts(self, fpm_power_root, power_w, coverage):
+        model = _qwen_fpm()
+        powered = _run_static(model, fpm_power_root(model, _full_power)).get_result_dict()
+        summary = _run_static(model, fpm_power_root(model, power_w))
+        _assert_power_withheld(summary)
+        # The true coverage and the measured energy stay available internally.
+        assert summary.get_power_data_coverage() == pytest.approx(coverage)
+        context_energy = 40.0 * 300.0 if power_w is not None else 0.0
+        assert summary.get_context_energy_wms_dict()["fpm_forward_prefill"] == pytest.approx(context_energy)
+        assert summary.get_generation_energy_wms_dict()["fpm_forward_decode"] == 0.0
+        result = summary.get_result_dict()
+        assert (result["ttft"], result["tpot"]) == (powered["ttft"], powered["tpot"])
+
+    def test_op_level_run_below_coverage_threshold_keeps_raw_watts(self, fpm_power_root, monkeypatch):
+        from aisim_core.sdk.inference_summary import InferenceSummary
+
+        model = models.get_model("Qwen/Qwen3-0.6B", _model_config(), BACKEND)
+        database = fpm_power_root(_qwen_fpm(), _full_power)
+        # Scope guard: the FPM gate never applies to op-level models, even
+        # when their latency-weighted energy coverage is below 0.9.
+        monkeypatch.setattr(InferenceSummary, "has_sufficient_power_data", lambda self, threshold=0.9: False)
+        summary = _run_static(model, database)
+        energy = sum(summary.get_context_energy_wms_dict().values()) + sum(
+            summary.get_generation_energy_wms_dict().values()
+        )
+        latency = sum(summary.get_context_latency_dict().values()) + sum(summary.get_generation_latency_dict().values())
+        assert energy > 0
+        assert summary.get_result_dict()["power_w"] == pytest.approx(energy / latency)
+        assert summary.get_e2e_power_avg() == pytest.approx(energy / latency)
+        assert summary.get_context_power_avg() is not None
+        assert summary.get_generation_power_avg() is not None
+
+    def test_disagg_power_is_none_when_either_worker_is_withheld(self, fpm_power_root):
+        model = _qwen_fpm()
+
+        def plain():
+            return _model_config(forward_model="fpm")
+
+        powered = _run_disagg(fpm_power_root(model, _full_power), plain)
+        # Disagg TTFT carries the autoscale correction; decode is one 6 ms step.
+        ttft = powered.get_summary_df()["ttft"].iloc[0]
+        expected = (ttft * 300.0 + 6.0 * 450.0) / (ttft + 6.0)
+        assert powered.get_summary_df()["power_w"].iloc[0] == pytest.approx(expected, abs=1e-3)
+        assert powered.get_e2e_power_avg() == powered.get_summary_df()["power_w"].iloc[0]
+        assert powered.get_context_power_avg() == pytest.approx(300.0)
+        assert powered.get_generation_power_avg() == pytest.approx(450.0)
+        # Unpowered decode rows withhold the decode worker only.
+        withheld = _run_disagg(fpm_power_root(model, _unpowered_decode), plain)
+        assert withheld.get_summary_df()["power_w"].iloc[0] is None
+        assert withheld.get_e2e_power_avg() is None
+        assert withheld.get_context_power_avg() == pytest.approx(300.0)
+        assert withheld.get_generation_power_avg() is None
+        assert withheld.get_summary_df()["ttft"].iloc[0] == powered.get_summary_df()["ttft"].iloc[0]
+
+    @pytest.mark.parametrize("mode", ["static", "disagg"])
+    def test_draft_scheme_withholds_every_power_output(self, fpm_power_root, mode):
+        from aisim_core.sdk.speculation import SpeculationConfig
+
+        def draft_config():
+            speculation = SpeculationConfig(
+                kind="eagle3",
+                params={"num_speculative_tokens": 3},
+                draft_config=TestForwardModelRewrite._EAGLE3_CONFIG,
+            )
+            return _model_config(forward_model="fpm", speculation=speculation)
+
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP"):
+            model = models.get_model("Qwen/Qwen3-0.6B", draft_config(), BACKEND)
+        # Two requests verify four queries each: the decode row sits at batch 8.
+        rows = _power_rows(_qwen_fpm())
+        rows[1]["batch_size"] = 8
+        database = fpm_power_root(model, _full_power, rows=rows)
+        if mode == "static":
+            summary = _run_static(model, database)
+            _assert_power_withheld(summary)
+        else:
+            with pytest.warns(FutureWarning, match="Hybrid FPM/OP"):
+                summary = _run_disagg(database, draft_config)
+            assert summary.get_summary_df()["power_w"].iloc[0] is None
+            assert summary.get_e2e_power_avg() is None
+            assert summary.get_context_power_avg() is None
+            assert summary.get_generation_power_avg() is None
+        # Coverage passes 0.9, so the draft-scheme rule alone withholds the
+        # watts; op-level draft energy survives next to the FPM target energy.
+        assert summary.has_sufficient_power_data()
+        energy = {**summary.get_context_energy_wms_dict(), **summary.get_generation_energy_wms_dict()}
+        assert any(name.startswith("draft_") and value > 0 for name, value in energy.items())
+        assert energy["fpm_forward_prefill"] == pytest.approx(40.0 * 300.0)
+        assert energy["fpm_forward_decode"] == pytest.approx(6.0 * 450.0)
+
+    def test_text_only_multimodal_run_withholds_watts(self, fpm_power_root):
+        visual_tokens = 256
+        model = models.get_model(
+            "Qwen/Qwen3-VL-2B-Instruct",
+            _model_config(forward_model="fpm", fpm_config=FpmCompileConfig({"text_only": True})),
+            BACKEND,
+        )
+        assert model.encoder_ops
+        database = fpm_power_root(model, _full_power, rows=_power_rows(model, visual_tokens=visual_tokens))
+        summary = _run_static(model, database, num_image_tokens=visual_tokens, num_images_per_request=1)
+        _assert_power_withheld(summary)
+        # Encoder (op-level) and FPM energy, and the true coverage, are kept.
+        assert sum(summary.get_encoder_energy_wms_dict().values()) > 0
+        assert summary.get_context_energy_wms_dict()["fpm_forward_prefill"] == pytest.approx(40.0 * 300.0)
+        assert summary.get_power_data_coverage() > 0.9
+
+    def test_aggregate_run_withholds_watts_above_coverage_threshold(self, fpm_power_root):
+        from aisim.sdk.config import RuntimeConfig
+        from aisim.sdk.inference_session import InferenceSession
+
+        model = _qwen_fpm()
+
+        def run(power_w):
+            database = fpm_power_root(model, power_w, rows=_agg_rows(model))
+            rc = RuntimeConfig(batch_size=2, beam_width=1, isl=512, osl=512)
+            return InferenceSession(model, database, get_backend(BACKEND)).run_agg(rc, ctx_tokens=512)
+
+        summary = run(_full_power)
+        result = summary.get_result_dict()
+        assert result["power_w"] is None
+        assert summary.get_e2e_power_avg() is None
+        # Pure decode steps carry powered FPM energy, so coverage passes 0.9.
+        assert summary.get_power_data_coverage() > 0.9
+        assert sum(group.energy_wms for group in summary.get_aggregate_energy_breakdown().values()) > 0
+        # The CLI energy detail keeps the evidence but prints no group watts.
+        from aisim.legacy_cli.estimate_detail_report import _format_aggregate_energy_section
+
+        detail = "\n".join(_format_aggregate_energy_section(summary, bar_width=20, top_n=3))
+        assert "Decode-only steps energy" in detail and "coverage = 100.0%" in detail
+        assert " W)" not in detail and "avg P = unavailable" in detail
+        latency_only = run(None).get_result_dict()
+        assert (result["ttft"], result["tpot"]) == (latency_only["ttft"], latency_only["tpot"])
+
+    @pytest.mark.parametrize("forward_model", ["fpm", "op_level"])
+    def test_epd_disagg_estimate_withholds_watts(self, fpm_power_root, cli_parser, monkeypatch, capfd, forward_model):
+        import aisim.legacy_cli.main as cli_main
+        from aisim.sdk.task_v2 import Task
+
+        database, model = _epd_database(fpm_power_root)
+        monkeypatch.setattr(Task, "_load_database", lambda self, *_args: database)
+        monkeypatch.setattr(cli_main.perf_database, "set_systems_paths", lambda _paths: None)
+        rows = []
+        run_single_disagg = Task.run_single_disagg
+
+        def capture(self, **kwargs):
+            rows.append(run_single_disagg(self, **kwargs))
+            return rows[-1]
+
+        monkeypatch.setattr(Task, "run_single_disagg", capture)
+        args = cli_parser.parse_args(
+            ["estimate", "--model-path", _EPD_MODEL, "--system", SYSTEM, "--backend", BACKEND]
+            + ["--backend-version", _POWER_VERSION, "--forward-model", forward_model, "--estimate-mode", "disagg"]
+            + ["--enable-epd", "--image-height", "448", "--image-width", "448", "--isl", "512", "--osl", "2"]
+            + ["--prefill-batch-size", "2", "--decode-batch-size", "2", "--encoder-tp", "1"]
+            + ["--prefill-num-workers", "1", "--decode-num-workers", "1"]
+        )
+        cli_main.main(args)
+        (row,) = rows
+        assert row["encoder_latency"] > 0
+        if forward_model == "op_level":
+            # Scope guard: the SDK row keeps op-level EPD's raw blended watts
+            # (the CLI's 0.9 gate alone decides what it prints).
+            assert row["power_w"] > 0
+            return
+        # Decision P3: the row would mix op-level encoder watts with FPM
+        # watts, so it publishes none, although its true coverage (kept on
+        # the row) passes the CLI's 0.9 gate.
+        assert row["power_w"] is None
+        assert row["power_coverage"] > 0.9
+        assert "power_w          unavailable" in capfd.readouterr().out
+        # Each language worker keeps its FPM energy and coverage internally.
+        summary = _run_static(model, database, **_EPD_IMAGE)
+        _assert_power_withheld(summary)
+        assert summary.has_sufficient_power_data()
+        assert summary.get_context_energy_wms_dict()["fpm_forward_prefill"] == pytest.approx(40.0 * 300.0)
+        assert summary.get_generation_energy_wms_dict()["fpm_forward_decode"] == pytest.approx(6.0 * 450.0)
+
+    @pytest.mark.parametrize("full_encoder_coverage", [False, True], ids=["encoder_as_measured", "encoder_covered"])
+    def test_epd_disagg_sweep_withholds_watts(self, fpm_power_root, monkeypatch, full_encoder_coverage):
+        from aisim.sdk import sweep
+        from aisim.sdk.config import RuntimeConfig
+        from aisim.sdk.sweep import sweep_disagg
+        from aisim_core.sdk.backends.base_backend import BaseBackend
+
+        if full_encoder_coverage:
+            # Sweep rows carry no coverage field: the overlay blends the
+            # encoder watts only for a fully covered encoder (and writes the
+            # 0.0 sentinel otherwise), so pin both branches.
+            candidates = sweep._get_encoder_worker_candidates
+            monkeypatch.setattr(
+                sweep,
+                "_get_encoder_worker_candidates",
+                lambda **kwargs: [dict(worker, power_coverage=1.0) for worker in candidates(**kwargs)],
+            )
+        database, _model = _epd_database(fpm_power_root)
+        runtime = RuntimeConfig(isl=512, osl=2, ttft=1e6, tpot=1e6, **_EPD_IMAGE)
+        parallel = [(1, 1, 1, 1, 1, 1)]
+        rows = sweep_disagg(
+            model_path=_EPD_MODEL,
+            runtime_config=runtime,
+            prefill_database=database,
+            prefill_backend_name=BACKEND,
+            prefill_model_config=_model_config(forward_model="fpm"),
+            prefill_parallel_config_list=parallel,
+            prefill_latency_correction=1.0,
+            decode_database=database,
+            decode_backend_name=BACKEND,
+            decode_model_config=_model_config(forward_model="fpm"),
+            decode_parallel_config_list=parallel,
+            decode_latency_correction=1.0,
+            prefill_max_num_tokens=2 * BaseBackend.effective_prefill_isl(_EPD_MODEL, runtime),
+            decode_max_num_tokens=2,
+            prefill_num_worker_list=[1],
+            decode_num_worker_list=[1],
+            enable_epd=True,
+            encoder_tp_list=[1],
+            encoder_batch_list=[1],
+        )
+        assert len(rows) > 0
+        assert (rows["(e)workers"] > 0).all()
+        assert rows["power_w"].isna().all()
+
+
+_EPD_MODEL = "Qwen/Qwen3-VL-2B-Instruct"
+_EPD_IMAGE = {"image_height": 448, "image_width": 448, "num_images_per_request": 1}
+
+
+def _epd_database(fpm_power_root):
+    """A v8 pair (300 W prefill, 450 W decode) over the EPD language-only identity."""
+    from aisim.sdk.config import RuntimeConfig
+    from aisim_core.sdk.backends.base_backend import BaseBackend
+
+    model = models.get_model(_EPD_MODEL, _model_config(forward_model="fpm", language_only=True), BACKEND)
+    assert not model.encoder_ops
+    visual_tokens = BaseBackend.effective_prefill_isl(_EPD_MODEL, RuntimeConfig(isl=512, **_EPD_IMAGE)) - 512
+    assert visual_tokens > 0
+    rows = _power_rows(model, visual_tokens=visual_tokens)
+    return fpm_power_root(model, _full_power, rows=rows), model
+
+
+def _trajectory_rows(model, decode_steps) -> tuple[list[dict], dict[tuple[str, int], float | None]]:
+    """A powered batch-2, isl-512 prefill row plus one exact decode row per step.
+
+    ``decode_steps`` is ``[(s, latency_ms, watts), ...]``; a batch-2 decode step
+    at ``s = isl + i + 1`` reads ``2 * s`` KV tokens. Returns the rows and a
+    ``(workload_kind, kv) -> watts`` map for :func:`_write_power_pair`.
+    """
+    identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+    rows = [_row("prefill", 2, 1024, 0, 40.0, model_path=model.model_path, identity=identity)]
+    watts = {("prefill", 0): 300.0}
+    for s, latency_ms, step_watts in decode_steps:
+        rows.append(_row("decode", 2, 0, 2 * s, latency_ms, model_path=model.model_path, identity=identity))
+        watts["decode", 2 * s] = step_watts
+    rows = [dict(row, backend_version=_POWER_VERSION, cell_id=f"fpm-traj-{i}") for i, row in enumerate(rows)]
+    return rows, watts
+
+
+class TestFPMStaticPowerCoverage:
+    """Coverage of a multi-step static decode trajectory follows each query's power.
+
+    Stride 32 visits ``s = 513, 545, ...``: osl 65 runs two steps of 32
+    repeats, osl 66 adds a final step of 1. Every step folds into the one
+    ``fpm_forward_decode`` entry, so an entry with any energy cannot show how
+    much of its latency had power; the coverage must come from the engine's
+    per-query covered latency instead.
+    """
+
+    @staticmethod
+    def _run(fpm_power_root, decode_steps, *, osl, mode="static_gen"):
+        model = _qwen_fpm()
+        rows, watts = _trajectory_rows(model, decode_steps)
+        database = fpm_power_root(
+            model, lambda row: watts[row["workload_kind"], row["total_kv_read_tokens"]], rows=rows
+        )
+        return _run_static(model, database, mode=mode, osl=osl)
+
+    def test_half_unpowered_decode_trajectory_withholds_watts(self, fpm_power_root):
+        summary = self._run(fpm_power_root, [(513, 6.0, None), (545, 6.0, 450.0)], osl=65)
+        # 32 x 6 ms unpowered + 32 x 6 ms powered: coverage 192 / 384.
+        assert summary.get_generation_latency_dict()["fpm_forward_decode"] == pytest.approx(384.0)
+        assert summary.get_generation_energy_wms_dict()["fpm_forward_decode"] == pytest.approx(192.0 * 450.0)
+        assert summary.get_power_data_coverage() == pytest.approx(0.5)
+        _assert_power_withheld(summary)
+
+    @pytest.mark.parametrize(
+        "powered_ms, unpowered_ms, coverage, published",
+        [(8.9, 1.1, 0.89, False), (9.0, 1.0, 0.9, True)],
+        ids=["0.89_withheld", "0.90_published"],
+    )
+    def test_decode_coverage_threshold(self, fpm_power_root, powered_ms, unpowered_ms, coverage, published):
+        summary = self._run(fpm_power_root, [(513, powered_ms, 450.0), (545, unpowered_ms, None)], osl=65)
+        # 32 repeats of each step: coverage = powered / (powered + unpowered).
+        assert summary.get_power_data_coverage() == pytest.approx(coverage)
+        assert summary.has_sufficient_power_data() is published
+        if published:
+            # Watts are the trajectory's energy over all of its latency.
+            expected = 450.0 * powered_ms / (powered_ms + unpowered_ms)
+            assert summary.get_result_dict()["power_w"] == pytest.approx(expected)
+            assert summary.get_generation_power_avg() == pytest.approx(expected)
+        else:
+            _assert_power_withheld(summary)
+
+    def test_unequal_steps_and_partial_final_stride_weight_coverage_by_latency(self, fpm_power_root):
+        steps = [(513, 6.0, None), (545, 8.0, 450.0), (577, 10.0, 450.0)]
+        summary = self._run(fpm_power_root, steps, osl=66)
+        # Repeats 32, 32 and 1: (32 x 8 + 1 x 10) / (32 x 6 + 32 x 8 + 1 x 10).
+        assert summary.get_generation_latency_dict()["fpm_forward_decode"] == pytest.approx(458.0)
+        assert summary.get_power_data_coverage() == pytest.approx(266.0 / 458.0)
+        _assert_power_withheld(summary)
+        # An unpowered final step of one repeat is weighted by that repeat only.
+        steps = [(513, 6.0, 450.0), (545, 8.0, 450.0), (577, 10.0, None)]
+        summary = self._run(fpm_power_root, steps, osl=66)
+        assert summary.get_power_data_coverage() == pytest.approx(448.0 / 458.0)
+        assert summary.get_result_dict()["power_w"] == pytest.approx(450.0 * 448.0 / 458.0)
+
+    @pytest.mark.parametrize("watts, coverage", [(450.0, 1.0), (None, 0.0)], ids=["powered", "unpowered"])
+    def test_uniform_trajectory_coverage_is_exact(self, fpm_power_root, watts, coverage):
+        summary = self._run(fpm_power_root, [(513, 6.0, watts), (545, 7.0, watts)], osl=65)
+        assert summary.get_power_data_coverage() == coverage
+        assert (summary.get_result_dict()["power_w"] is None) is (watts is None)
+
+    def test_static_coverage_includes_the_unpowered_decode_share(self, fpm_power_root):
+        from aisim.legacy_cli.api import _apply_power_coverage_gate
+
+        steps = [(513, 6.0, None), (545, 6.0, 450.0)]
+        summary = self._run(fpm_power_root, steps, osl=65, mode="static")
+        # 40 ms powered prefill, 192 ms unpowered and 192 ms powered decode.
+        assert summary.get_power_data_coverage() == pytest.approx((40.0 + 192.0) / (40.0 + 384.0))
+        _assert_power_withheld(summary)
+        assert _apply_power_coverage_gate(summary, summary.get_result_dict())["power_w"] is None
+
+    def test_disagg_coverage_includes_the_unpowered_decode_share(self, fpm_power_root):
+        from aisim.legacy_cli.api import _apply_power_coverage_gate
+        from aisim.sdk.config import RuntimeConfig
+        from aisim.sdk.inference_session import DisaggInferenceSession
+
+        model = _qwen_fpm()
+        rows, watts = _trajectory_rows(model, [(513, 6.0, None), (545, 6.0, 450.0)])
+        database = fpm_power_root(
+            model, lambda row: watts[row["workload_kind"], row["total_kv_read_tokens"]], rows=rows
+        )
+        backend = get_backend(BACKEND)
+        disagg = DisaggInferenceSession(database, backend, database, backend).run_disagg(
+            "Qwen/Qwen3-0.6B",
+            RuntimeConfig(batch_size=2, beam_width=1, isl=512, osl=65),
+            _model_config(forward_model="fpm"),
+            2,
+            1,
+            _model_config(forward_model="fpm"),
+            2,
+            1,
+        )
+        assert disagg.get_summary_df()["power_w"].iloc[0] is None
+        assert disagg.get_context_power_avg() == pytest.approx(300.0)
+        assert disagg.get_generation_power_avg() is None
+        # The combined summary keeps the decode worker's per-query coverage:
+        # the whole (corrected) prefill and half of the decode trajectory.
+        prefill = disagg.get_context_latency_dict()["fpm_forward_prefill"]
+        decode = disagg.get_generation_latency_dict()["fpm_forward_decode"]
+        assert disagg.get_power_data_coverage() == pytest.approx((prefill + decode / 2) / (prefill + decode))
+        assert _apply_power_coverage_gate(disagg, disagg.get_result_dict())["power_w"] is None
+
+
+def _agg_rows(model) -> list[dict]:
+    """A powered grid around a batch-2, isl-512, osl-512 aggregate run."""
+    identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+    rows = [
+        _row("prefill", batch, tokens, kv, 20.0 + tokens / 64, model_path=model.model_path, identity=identity)
+        for batch in (1, 2)
+        for tokens in (1, 2, 256, 512, 514, 1024)
+        for kv in (0, 512, 1024)
+    ]
+    rows += [
+        _row("decode", batch, 0, kv, 5.0 + kv / 1024, model_path=model.model_path, identity=identity)
+        for batch in (1, 2)
+        for kv in (2, 512, 1024, 2048)
+    ]
+    return [dict(row, backend_version=_POWER_VERSION, cell_id=f"fpm-agg-{index}") for index, row in enumerate(rows)]

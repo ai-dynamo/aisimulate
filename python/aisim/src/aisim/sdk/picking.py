@@ -75,6 +75,18 @@ def worker_gpus(summary_dict: dict) -> int:
     return gpus
 
 
+def disagg_power_w(
+    prefill_power: float | None, decode_power: float | None, ttft: float, decode_time: float
+) -> float | None:
+    """Time-weighted prefill + decode watts, or ``None`` when either worker
+    withheld its power (``None``/NaN). Never zero-filled, which would
+    publish a diluted value."""
+    if pd.isna(prefill_power) or pd.isna(decode_power):
+        return None
+    total_time = ttft + decode_time
+    return (prefill_power * ttft + decode_power * decode_time) / total_time if total_time > 0 else 0.0
+
+
 # ---------------------------------------------------------------------------
 # Helper: build a disagg summary dict from prefill + decode dicts
 # ---------------------------------------------------------------------------
@@ -128,10 +140,9 @@ def _build_disagg_summary_dict(
     ttft = prefill_summary_dict["ttft"]
     tpot = decode_summary_dict["tpot"]
     decode_time = tpot * max(osl - 1, 0)
-    prefill_power = prefill_summary_dict.get("power_w", 0.0)
-    decode_power = decode_summary_dict.get("power_w", 0.0)
-    total_time = ttft + decode_time
-    disagg_power_avg = (prefill_power * ttft + decode_power * decode_time) / total_time if total_time > 0 else 0.0
+    disagg_power_avg = disagg_power_w(
+        prefill_summary_dict.get("power_w", 0.0), decode_summary_dict.get("power_w", 0.0), ttft, decode_time
+    )
 
     return {
         "model": prefill_summary_dict["model"],
