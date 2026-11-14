@@ -9,6 +9,7 @@ from aisim_core.sdk.models.base import BaseModel, register_model
 from aisim_core.sdk.models.helpers import (
     _is_routing_expert_target,
     _normalize_mixed_precision_layer_algo,
+    modelopt_mixed_precision_targets,
     mtp_scale_factor,
     quant_exclude_patterns,
 )
@@ -23,18 +24,30 @@ def _qwen35_mixed_precision_gemm_modes(
     default: common.GEMMQuantMode,
     *,
     allow_checkpoint_split: bool,
-) -> tuple[common.GEMMQuantMode, common.GEMMQuantMode, common.GEMMQuantMode]:
-    """Resolve projection, dense-FFN, and shared-expert GEMM modes.
+) -> tuple[common.GEMMQuantMode, common.GEMMQuantMode, common.GEMMQuantMode, common.GEMMQuantMode]:
+    """Resolve projection, dense-FFN, shared-expert, and GDN ``in_proj_ba`` GEMM modes.
 
     Explicit per-layer metadata is authoritative. When a category has no
     explicit entry, checkpoint exclusions keep it in BF16 instead of applying
     a broad ``Linear`` config group to every operation.
+
+    The GDN ``in_proj_a`` and ``in_proj_b`` projections run as one fused
+    ``in_proj_ba`` GEMM. Its lane is BF16 when an exclusion pattern names
+    either projection, or when a targets-only ModelOpt MIXED_PRECISION export
+    lists other attention projections but not this pair (such an export leaves
+    an unlisted module unquantized; see ``helpers.modelopt_mixed_precision_targets``).
+    An export that keeps a base lane quantizes an unlisted module through that
+    lane, so there the pair follows the default. Otherwise the pair follows the
+    projection lane. The runtimes resolve the
+    fused module through its shards, so shards of two precisions are an error.
     """
     if not allow_checkpoint_split:
-        return default, default, default
+        return default, default, default, default
 
-    modes = {"projection": default, "dense_ffn": default, "shared_expert": default}
+    modes = {"projection": default, "dense_ffn": default, "shared_expert": default, "gdn_ba": default}
     explicit: set[str] = set()
+    gdn_ba_shards: dict[str, set[str]] = {}
+    gdn_ba_modes: set[common.GEMMQuantMode] = set()
     algo_modes = {
         "fp8": common.GEMMQuantMode.fp8_static,
         "mxfp8": common.GEMMQuantMode.fp8,
@@ -66,7 +79,13 @@ def _qwen35_mixed_precision_gemm_modes(
                 continue
             target_name = str(target).lower()
             category = None
-            if ".linear_attn." in target_name or ".self_attn." in target_name:
+            module, _, projection = target_name.partition(".linear_attn.")
+            shard = projection.split(".", 1)[0]
+            if shard in ("in_proj_ba", "in_proj_a", "in_proj_b"):
+                category = "gdn_ba"
+                gdn_ba_shards.setdefault(module, set()).add(shard)
+                gdn_ba_modes.add(mode)
+            elif ".linear_attn." in target_name or ".self_attn." in target_name:
                 category = "projection"
             elif "shared_expert" in target_name:
                 category = "shared_expert"
@@ -83,8 +102,29 @@ def _qwen35_mixed_precision_gemm_modes(
         modes["shared_expert"] = common.GEMMQuantMode.bfloat16
     if "dense_ffn" not in explicit and any(".mlp" in p and "shared_expert" not in p for p in exclusions):
         modes["dense_ffn"] = common.GEMMQuantMode.bfloat16
+    for module, shards in gdn_ba_shards.items():
+        if "in_proj_ba" not in shards and len(shards) == 1:
+            (listed,) = shards
+            unlisted = "in_proj_b" if listed == "in_proj_a" else "in_proj_a"
+            raise ValueError(
+                f"quantized_layers list the GDN {listed} projection but not {unlisted} "
+                f"in {module}.linear_attn; their fused in_proj_ba GEMM cannot mix precisions"
+            )
+    if len(gdn_ba_modes) > 1:
+        raise ValueError(
+            "quantized_layers list the GDN in_proj_a and in_proj_b projections at more than one precision; "
+            "their fused in_proj_ba GEMM cannot mix precisions"
+        )
+    if "gdn_ba" not in explicit:
+        targets_only = modelopt_mixed_precision_targets(raw_config) is not None
+        if any("in_proj_a" in p or "in_proj_b" in p for p in exclusions):
+            modes["gdn_ba"] = common.GEMMQuantMode.bfloat16
+        elif "projection" in explicit:
+            modes["gdn_ba"] = common.GEMMQuantMode.bfloat16 if targets_only else default
+        else:
+            modes["gdn_ba"] = modes["projection"]
 
-    return modes["projection"], modes["dense_ffn"], modes["shared_expert"]
+    return modes["projection"], modes["dense_ffn"], modes["shared_expert"], modes["gdn_ba"]
 
 
 @register_model("QWEN35")
@@ -141,6 +181,7 @@ class Qwen35Model(BaseModel):
             self._projection_gemm_quant_mode,
             self._dense_ffn_gemm_quant_mode,
             self._shared_expert_gemm_quant_mode,
+            self._gdn_ba_gemm_quant_mode,
         ) = _qwen35_mixed_precision_gemm_modes(
             raw_config or {},
             self.config.gemm_quant_mode,
@@ -263,6 +304,7 @@ class Qwen35Model(BaseModel):
         attn_dp = self.config.attention_dp_size
         attn_ar_folded = self._sglang_folds_attn_ar()
         projection_gemm_q = self._projection_gemm_quant_mode
+        gdn_ba_gemm_q = self._gdn_ba_gemm_quant_mode
         dense_ffn_gemm_q = self._dense_ffn_gemm_quant_mode
         shared_expert_gemm_q = self._shared_expert_gemm_quant_mode
         kvcache_q = self.config.kvcache_quant_mode
@@ -307,7 +349,7 @@ class Qwen35Model(BaseModel):
                     ops.ElementWise("context_gdn_norm", c, 2 * h, 2 * h, 0.8),
                     ops.GEMM("context_gdn_in_proj_gemm", c, gdn_in_proj_out, h, projection_gemm_q),
                     # 2*nv/tp drops below the collected GEMM n-grid at high TP.
-                    ops.GEMM("context_gdn_in_proj_ba_gemm", c, gdn_ba_out, h, projection_gemm_q, below_grid_sol=True),
+                    ops.GEMM("context_gdn_in_proj_ba_gemm", c, gdn_ba_out, h, gdn_ba_gemm_q, below_grid_sol=True),
                     ops.GDNKernel(
                         "context_gdn_conv1d",
                         c,
@@ -647,6 +689,7 @@ class Qwen35Model(BaseModel):
         attn_dp = self.config.attention_dp_size
         attn_ar_folded = self._sglang_folds_attn_ar()
         projection_gemm_q = self._projection_gemm_quant_mode
+        gdn_ba_gemm_q = self._gdn_ba_gemm_quant_mode
         dense_ffn_gemm_q = self._dense_ffn_gemm_quant_mode
         shared_expert_gemm_q = self._shared_expert_gemm_quant_mode
         kvcache_q = self.config.kvcache_quant_mode
@@ -686,9 +729,7 @@ class Qwen35Model(BaseModel):
                 [
                     ops.ElementWise("generation_gdn_norm", c, 2 * h, 2 * h, 0.8),
                     ops.GEMM("generation_gdn_in_proj_gemm", c, gdn_in_proj_out, h, projection_gemm_q),
-                    ops.GEMM(
-                        "generation_gdn_in_proj_ba_gemm", c, gdn_ba_out, h, projection_gemm_q, below_grid_sol=True
-                    ),
+                    ops.GEMM("generation_gdn_in_proj_ba_gemm", c, gdn_ba_out, h, gdn_ba_gemm_q, below_grid_sol=True),
                     ops.GDNKernel(
                         "generation_gdn_conv1d",
                         c,

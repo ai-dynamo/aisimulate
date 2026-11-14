@@ -66,12 +66,18 @@ quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN)
 projections and its shared-expert projections are static per-tensor FP8, and
 its KV cache is FP8. AISim prices those projections as `fp8_static`, the
 routed experts as `nvfp4`, and the router, shared-expert gate and LM-head
-GEMMs in BF16, as the export stores them. Two lanes are approximations. The
-export keeps the GDN `in_proj_a` and `in_proj_b` projections in BF16, but
-AISim prices them with the other GDN projections as `fp8_static`. The
-export also keeps its multi-token prediction (MTP) layer in BF16. With
-`nextn` above zero, AISim scales the decode graph by `(nextn + L) / L`
-for `L` decoder layers, so it prices that layer with the decoder-layer lanes.
+GEMMs in BF16, as the export stores them. The export keeps the GDN
+`in_proj_a` and `in_proj_b` projections in BF16, and AISim prices their
+fused `in_proj_ba` GEMM in BF16 too. The bundled Qwen3.6 NVFP4 exports leave
+the same two projections out of their quantized layers, and a targets-only
+MIXED_PRECISION export (one whose header declares no base precision lane)
+leaves an unlisted module unquantized, so AISim prices that GEMM in BF16
+for them as well. An export that keeps a base lane, such as `quant_method: fp8`
+with a block size, quantizes its unlisted non-expert GEMMs through that lane
+instead. The remaining approximation is the MTP layer. The export
+keeps its multi-token prediction (MTP) layer in BF16. With `nextn` above zero,
+AISim scales the decode graph by `(nextn + L) / L` for `L` decoder
+layers, so it prices that layer with the decoder-layer lanes.
 
 ## Published FPE matrix
 
