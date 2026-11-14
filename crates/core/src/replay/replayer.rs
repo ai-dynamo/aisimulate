@@ -127,6 +127,21 @@ where
             .map_err(placement_boundary)
     }
 
+    fn needs_scheduler_load(&self, scheduler_id: usize, now_ms: f64, terminal: bool) -> bool {
+        self.0.needs_scheduler_load(scheduler_id, now_ms, terminal)
+    }
+
+    fn observe_scheduler_load(
+        &mut self,
+        scheduler_id: usize,
+        tokens: usize,
+        requests: usize,
+        now_ms: f64,
+    ) {
+        self.0
+            .observe_scheduler_load(scheduler_id, tokens, requests, now_ms);
+    }
+
     fn cancel_pending(&mut self, request_id: Uuid) -> bool {
         self.0.cancel_pending(request_id)
     }

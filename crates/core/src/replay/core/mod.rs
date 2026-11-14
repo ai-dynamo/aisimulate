@@ -253,6 +253,21 @@ pub trait PlacementPolicy<Request> {
     fn advance_clock(&mut self, _now_ms: f64) -> Result<Vec<Placement>> {
         Ok(Vec::new())
     }
+    /// Whether this policy needs a settled scheduler load snapshot now.
+    /// The runtime asks only at visible decode-pass completion boundaries.
+    fn needs_scheduler_load(&self, _scheduler_id: usize, _now_ms: f64, _terminal: bool) -> bool {
+        false
+    }
+    /// Latest scheduler-reported tokens in use plus unallocated queued tokens,
+    /// and running plus waiting requests. This is separate from optional KV events.
+    fn observe_scheduler_load(
+        &mut self,
+        _scheduler_id: usize,
+        _tokens: usize,
+        _requests: usize,
+        _now_ms: f64,
+    ) {
+    }
     fn cancel_pending(&mut self, request_id: Uuid) -> bool;
     /// Discard all request state, including tentative placement state when
     /// cancellation precedes engine dispatch.

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright 2023-2026 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
 // Cache-salt behavior follows SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
+// SWA prefix reuse adapts v0.5.21 (e00930c5489053f26d86b179cee0d087f846acbb); see THIRD_PARTY_NOTICES.md.
 
 // Admission and ratio lifecycle follow SGLang v0.5.22 (baa9befa381511cd4d56f83980951e5a45fffc6d); see THIRD_PARTY_NOTICES.md.
 // Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
@@ -2793,6 +2794,7 @@ mod destination_lifecycle {
         let mut core = SglangCore::new(args);
         let held_handoff = HandoffId::from(Uuid::from_u128(33_001));
         let held_uuid = Uuid::from_u128(33_002);
+        assert_eq!(core.decode_load(), (0, 0));
         let held = core
             .apply_command_effects(
                 SchedulerCommand::ReserveDestination {
@@ -2804,6 +2806,7 @@ mod destination_lifecycle {
             .unwrap();
         assert_eq!(held.lifecycle_events.len(), 1);
         assert_eq!(core.mocker_metrics().waiting_requests, 1);
+        assert_eq!(core.decode_load(), (4, 1), "allocated transfers count once");
         let held_snapshot = execute(&mut core, 0.0).fpm.unwrap();
         assert_eq!(held_snapshot.num_queued_decode, 1);
         assert_eq!(held_snapshot.sum_queued_decode_kv_tokens, 4);
@@ -2821,6 +2824,7 @@ mod destination_lifecycle {
             .unwrap();
         assert!(pending.lifecycle_events.is_empty());
         assert_eq!(core.mocker_metrics().waiting_requests, 2);
+        assert_eq!(core.decode_load(), (28, 2), "unallocated prompts add load");
         let mixed_snapshot = execute(&mut core, 0.0).fpm.unwrap();
         assert_eq!(mixed_snapshot.num_queued_decode, 2);
         assert_eq!(mixed_snapshot.sum_queued_decode_kv_tokens, 28);
@@ -2834,6 +2838,11 @@ mod destination_lifecycle {
             SchedulerCommandResult::Applied
         );
         assert_eq!(core.mocker_metrics().waiting_requests, 1);
+        assert_eq!(
+            core.decode_load(),
+            (4, 1),
+            "cancellation clears queued load"
+        );
 
         core.receive(request(Uuid::from_u128(33_005), vec![3; 4], 2));
         let blocker = execute(&mut core, 1.0);
@@ -2857,6 +2866,11 @@ mod destination_lifecycle {
         assert_eq!(completed.num_queued_decode, 0);
         assert_eq!(completed.sum_queued_decode_kv_tokens, 0);
         assert_eq!(core.mocker_metrics().waiting_requests, 0);
+        assert_eq!(
+            core.decode_load(),
+            (0, 0),
+            "evictable cache is not active load"
+        );
     }
 
     #[test]

@@ -347,6 +347,16 @@ where
             .with_context(|| format!("offline replay selected unknown worker {worker_id}"))
     }
 
+    pub(crate) fn decode_load(&self, scheduler_id: usize) -> Result<(usize, usize)> {
+        let owner = self.scheduler_owner(scheduler_id)?;
+        self.required_worker(owner.worker_id)?
+            .engine
+            .ranks()
+            .nth(owner.dp_rank as usize)
+            .and_then(|rank| rank.decode_load())
+            .context("decode load snapshots require a live SGLang rank")
+    }
+
     fn scheduler_owner(&self, scheduler_id: usize) -> Result<SchedulerOwner> {
         self.scheduler_owners
             .get(scheduler_id)

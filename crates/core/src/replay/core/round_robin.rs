@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Token budgets adapt SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
@@ -255,14 +258,24 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct TokenBudget {
+    tokens: usize,
+    requests: usize,
+    snapshot: Option<(usize, usize)>,
+    observed_at_ms: Option<f64>,
+}
+
+const LOAD_REFRESH_MS: f64 = 20.0;
+
 #[derive(Debug)]
 pub struct PoolRoundRobinPlacement<Events: EngineEventBatch> {
     next: usize,
     /// SGLang `--load-balance-method total_tokens`: pick the scheduler holding the fewest
     /// placed tokens instead of the next in turn.
     token_balance: bool,
-    loads: FxHashMap<usize, usize>,
-    assigned: FxHashMap<Uuid, (usize, usize)>,
+    loads: FxHashMap<usize, TokenBudget>,
+    last_refresh_ms: f64,
     workers: BTreeMap<usize, Vec<usize>>,
     hints: AuthoredKvHintSources,
     events: PhantomData<Events>,
@@ -275,7 +288,7 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
             next: 0,
             token_balance: false,
             loads: FxHashMap::default(),
-            assigned: FxHashMap::default(),
+            last_refresh_ms: 0.0,
             hints: AuthoredKvHintSources::new(&workers),
             workers: workers
                 .into_iter()
@@ -293,17 +306,22 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
     }
 
     /// Place each unpinned request on the scheduler holding the fewest placed
-    /// tokens (SGLang `total_tokens`); ties go to the next scheduler in turn.
+    /// tokens (SGLang `total_tokens`); ties use request count then scheduler order.
     pub fn with_token_balance(mut self, enabled: bool) -> Self {
         self.token_balance = enabled;
         self
     }
 
-    fn release_load(&mut self, request_id: Uuid) {
-        if let Some((scheduler_id, tokens)) = self.assigned.remove(&request_id)
-            && let Some(load) = self.loads.get_mut(&scheduler_id)
-        {
-            *load = load.saturating_sub(tokens);
+    fn refresh_loads(&mut self, now_ms: f64) {
+        if !self.token_balance || now_ms - self.last_refresh_ms < LOAD_REFRESH_MS {
+            return;
+        }
+        self.last_refresh_ms = now_ms;
+        for budget in self.loads.values_mut() {
+            if let Some((tokens, requests)) = budget.snapshot.take() {
+                budget.tokens = tokens;
+                budget.requests = requests;
+            }
         }
     }
 
@@ -328,7 +346,7 @@ where
         request: &Request,
         _metadata: Self::Metadata,
         session_id: Option<String>,
-        _now_ms: f64,
+        now_ms: f64,
     ) -> Result<PlacementEffects> {
         let request_id = request
             .request_id()
@@ -338,6 +356,7 @@ where
             request.preferred_dp_rank(),
             &self.workers,
         )?;
+        self.refresh_loads(now_ms);
         let scheduler_id = if let Some(scheduler) = pinned {
             scheduler
         } else {
@@ -361,15 +380,11 @@ where
             let index = self.next % active_count;
             let balanced = (self.token_balance && preferred_dp_rank.is_none())
                 .then(|| {
-                    // Least-loaded scheduler; ties fall to the next in turn.
-                    self.workers
-                        .values()
-                        .flatten()
-                        .copied()
-                        .cycle()
-                        .skip(index)
-                        .take(active_count)
-                        .min_by_key(|id| self.loads.get(id).copied().unwrap_or(0))
+                    // SGLang DPBudget: tokens, then request count, then rank order.
+                    self.workers.values().flatten().copied().min_by_key(|id| {
+                        let load = self.loads.get(id).copied().unwrap_or_default();
+                        (load.tokens, load.requests, *id)
+                    })
                 })
                 .flatten();
             let scheduler_id = if let Some(id) = balanced {
@@ -394,11 +409,10 @@ where
             scheduler_id
         };
         if self.token_balance {
-            // A session-pinned request loads its scheduler too; a re-placed ID drops its old load.
-            self.release_load(request_id);
-            let tokens = request.load_tokens();
-            *self.loads.entry(scheduler_id).or_default() += tokens;
-            self.assigned.insert(request_id, (scheduler_id, tokens));
+            // Prompt-only speculative increments last until a fresh scheduler snapshot.
+            let budget = self.loads.entry(scheduler_id).or_default();
+            budget.tokens += request.load_tokens();
+            budget.requests += 1;
         }
         let kv_hints = self
             .hints
@@ -424,8 +438,29 @@ where
         false
     }
 
-    fn request_terminal(&mut self, request_id: Uuid, _now_ms: f64) -> Result<Vec<Placement>> {
-        self.release_load(request_id);
+    fn needs_scheduler_load(&self, scheduler_id: usize, now_ms: f64, terminal: bool) -> bool {
+        self.token_balance
+            && (terminal
+                || self
+                    .loads
+                    .get(&scheduler_id)
+                    .and_then(|b| b.observed_at_ms)
+                    .is_none_or(|at_ms| now_ms - at_ms >= LOAD_REFRESH_MS))
+    }
+
+    fn observe_scheduler_load(
+        &mut self,
+        scheduler_id: usize,
+        tokens: usize,
+        requests: usize,
+        now_ms: f64,
+    ) {
+        let budget = self.loads.entry(scheduler_id).or_default();
+        budget.snapshot = Some((tokens, requests));
+        budget.observed_at_ms = Some(now_ms);
+    }
+
+    fn request_terminal(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<Vec<Placement>> {
         Ok(Vec::new())
     }
 
@@ -447,6 +482,9 @@ where
         // The engine may already have removed this worker and omitted its scheduler IDs.
         if let Some(scheduler_ids) = self.workers.remove(&worker.worker_id) {
             self.session_pins.retire(&scheduler_ids);
+            for id in scheduler_ids {
+                self.loads.remove(&id);
+            }
         }
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
@@ -456,6 +494,9 @@ where
         // The engine may already have removed this worker and omitted its scheduler IDs.
         if let Some(scheduler_ids) = self.workers.remove(&worker.worker_id) {
             self.session_pins.retire(&scheduler_ids);
+            for id in scheduler_ids {
+                self.loads.remove(&id);
+            }
         }
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
@@ -665,7 +706,7 @@ mod tests {
     #[test]
     fn pool_token_balance_places_on_the_least_loaded_scheduler() {
         // SGLang `total_tokens`: a request goes to the rank holding the fewest placed prompt
-        // tokens (`len(req.input_ids)`), and its tokens leave that rank when it terminates.
+        // tokens (`len(req.input_ids)`) until the next fresh scheduler snapshot.
         let request = |ordinal: u128, prompt: usize| DirectRequest {
             uuid: Some(Uuid::from_u128(ordinal)),
             tokens: vec![0; prompt],
@@ -701,7 +742,11 @@ mod tests {
         }
         PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(0), 0.0)
             .unwrap();
-        assert_eq!(place(&mut policy, &request(9, 10)), 0);
+        assert_eq!(
+            place(&mut policy, &request(9, 10)),
+            2,
+            "terminals do not decrement the controller's speculative budget"
+        );
 
         // The output budget is not load: a short prompt with a long budget stays the lighter rank.
         let two = WorkerTopology {
@@ -723,7 +768,7 @@ mod tests {
             .collect();
         assert_eq!(placed, [0, 1, 1]);
 
-        // A session-pinned request loads its scheduler, and the load leaves when it terminates.
+        // Session-pinned prompts also contribute to the controller budget.
         let place_in = |policy: &mut PoolRoundRobinPlacement<()>, request: &DirectRequest| {
             immediate(
                 PlacementPolicy::<DirectRequest>::place(
@@ -752,16 +797,76 @@ mod tests {
         );
         PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(21), 0.0)
             .unwrap();
-        assert_eq!(policy.loads[&0], 10);
+        assert_eq!(policy.loads[&0].tokens, 1_010);
+    }
 
-        // Placing an ID again moves its load instead of counting it twice.
-        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker]).with_token_balance(true);
-        place(&mut policy, &request(30, 1_000));
-        place(&mut policy, &request(30, 1_000));
-        assert_eq!(policy.loads.values().sum::<usize>(), 1_000);
-        PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(30), 0.0)
-            .unwrap();
-        assert_eq!(policy.loads.values().sum::<usize>(), 0);
+    #[test]
+    fn token_balance_refreshes_from_fresh_loads_and_preserves_burst_increments() {
+        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![WorkerTopology {
+            worker_id: 0,
+            scheduler_ids: vec![0, 1],
+            router_hint: false,
+        }])
+        .with_token_balance(true);
+        let snapshot = |policy: &mut PoolRoundRobinPlacement<()>, id, tokens, requests, at| {
+            PlacementPolicy::<DirectRequest>::observe_scheduler_load(
+                policy, id, tokens, requests, at,
+            );
+        };
+        let place = |policy: &mut PoolRoundRobinPlacement<()>, ordinal, now| {
+            immediate(
+                PlacementPolicy::<DirectRequest>::place(
+                    policy,
+                    &DirectRequest {
+                        uuid: Some(Uuid::from_u128(ordinal)),
+                        tokens: vec![0; 10],
+                        ..DirectRequest::default()
+                    },
+                    (),
+                    None,
+                    now,
+                )
+                .unwrap(),
+            )
+            .scheduler_id
+        };
+        snapshot(&mut policy, 0, 1_000, 1, 1.0);
+        snapshot(&mut policy, 1, 0, 0, 1.0);
+        assert_eq!(place(&mut policy, 1, 20.0), 1);
+        assert_eq!(place(&mut policy, 2, 20.0), 1);
+        assert_eq!(policy.loads[&1].tokens, 20, "same-burst increments survive");
+        assert_eq!(place(&mut policy, 3, 40.0), 1);
+        assert_eq!(
+            policy.loads[&1].tokens, 30,
+            "stale snapshots do not erase increments"
+        );
+        snapshot(&mut policy, 0, 0, 0, 41.0);
+        snapshot(&mut policy, 1, 500, 2, 41.0);
+        assert_eq!(place(&mut policy, 4, 59.0), 1, "20 ms refresh throttle");
+        assert_eq!(
+            place(&mut policy, 5, 60.0),
+            0,
+            "new KV usage replaces prompt load"
+        );
+        snapshot(&mut policy, 0, 100, 4, 61.0);
+        snapshot(&mut policy, 1, 100, 1, 61.0);
+        assert_eq!(place(&mut policy, 6, 80.0), 1, "request-count tie break");
+        assert!(!PlacementPolicy::<DirectRequest>::needs_scheduler_load(
+            &policy, 1, 62.0, false
+        ));
+        assert!(
+            PlacementPolicy::<DirectRequest>::needs_scheduler_load(&policy, 1, 62.0, true),
+            "a terminal publishes even inside the sampling interval"
+        );
+        snapshot(&mut policy, 0, 100, 4, 100.0);
+        snapshot(&mut policy, 1, 100, 1, 100.0);
+        assert_eq!(place(&mut policy, 7, 100.0), 1);
+        snapshot(&mut policy, 0, 0, 0, 100.0);
+        assert_eq!(
+            place(&mut policy, 8, 120.0),
+            0,
+            "a zero-duration terminal can replace a snapshot at the same timestamp"
+        );
     }
 
     #[test]

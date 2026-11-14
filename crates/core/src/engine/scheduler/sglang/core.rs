@@ -1060,6 +1060,30 @@ impl SglangCore {
         self.waiting.len() + self.prebuilt_ready.len() + self.running.len()
     }
 
+    /// SGLang load-inquirer budget for disaggregated decode. Allocated
+    /// transfer/waiting rows already occupy KV; count only unallocated queues again.
+    pub(crate) fn decode_load(&self) -> (usize, usize) {
+        let cache = self.kv_manager.cache();
+        let used = cache.total_tokens() - cache.available_tokens() - cache.evictable_size;
+        let pending = self
+            .pending_destinations
+            .payloads()
+            .map(|r| r.prompt_len())
+            .sum::<usize>();
+        let retracted = self
+            .waiting
+            .iter()
+            .filter(|r| r.retracted)
+            .map(|r| r.current_sequence_len())
+            .sum::<usize>();
+        let requests = self.running.len()
+            + self.waiting.len()
+            + self.prebuilt_ready.len()
+            + self.pending_destinations.len()
+            + self.destination_holds.len();
+        (used + pending + retracted, requests)
+    }
+
     pub(crate) fn mocker_metrics(&self) -> MockerMetrics {
         self.mocker_metrics_with_cache(0, 0)
     }
