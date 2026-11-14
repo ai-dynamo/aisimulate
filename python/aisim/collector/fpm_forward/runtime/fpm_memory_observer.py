@@ -60,6 +60,8 @@ SCHEMA_NAME = "aisimulate_fpm_runtime_memory"
 SCHEMA_VERSION = 1
 MEMORY_SUPPORTED_VERSIONS = ("0.27.0", "0.32.0", "0.33.0")
 EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0", "0.32.0", "0.33.0")
+# The one vLLM version whose probe records carry the hybrid cache evidence. The probe compares the exact string.
+HYBRID_EVIDENCE_VERSION = "0.33.0"
 # Audited release to {path relative to the installation root: SHA-256}. Made by vllm_source_manifest.py.
 SOURCE_MANIFESTS: dict[str, dict[str, str]] = {
     "0.32.0": {
@@ -203,7 +205,42 @@ def _check_release(payload: dict[str, Any], audited: tuple[str, ...], refusal: s
 
 RESULTS_DIR = Path("/results")
 _SPEC_MODULE = "vllm.v1.kv_cache_interface."
+_UNIFORM_SPEC = _SPEC_MODULE + "UniformTypeKVCacheSpecs"
+_MAMBA_SPEC = _SPEC_MODULE + "MambaSpec"
 _CONV_CLASS = "vllm.models.inkling.nvidia.sconv_swa_attn.InklingConvState"
+# Cache spec classes of vllm/v1/kv_cache_interface.py at vLLM 0.33.0
+# (4ba787ec9959e566d3b587a796dff07673324da5), keyed by class name. The table
+# maps by class, not by get_kv_cache_spec_kind: CircularBufferSpec has no spec
+# kind (1421-1459) but holds one block per request (982-989). RSWASpec is
+# left out: its manager frees the blocks between the prompt and the decode
+# window (v1/core/single_type_kv_cache_manager.py:900-943), which no kind models.
+SPEC_KINDS: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "FullAttentionSpec",
+            "MLAAttentionSpec",
+            "SinkFullAttentionSpec",
+            "HiddenStateCacheSpec",
+            "SlidingWindowSpec",
+            "SlidingWindowMLASpec",
+        ),
+        "attention",
+    ),
+    **dict.fromkeys(("CircularBufferSpec", "MambaSpec"), "state"),
+}
+# SlidingWindowSpec and its subclass SlidingWindowMLASpec (901-902, 1008) declare a positive window.
+_WINDOW_SPECS = frozenset(("SlidingWindowSpec", "SlidingWindowMLASpec"))
+# The spec classes that records without hybrid evidence accept (vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0).
+_LEGACY_SPECS = frozenset((_SPEC_MODULE + "FullAttentionSpec", _SPEC_MODULE + "SlidingWindowSpec"))
+# Cache settings that only hybrid evidence records (vLLM 0.33.0 config/cache.py:187-304).
+_HYBRID_CACHE_FIELDS = (
+    "block_size",
+    "mamba_cache_mode",
+    "mamba_block_size",
+    "prefix_match_unit",
+    "mamba_cache_dtype",
+    "mamba_ssm_cache_dtype",
+)
 _CONFIG_FIELDS = {
     "model_config": ("model", "revision", "dtype", "quantization", "max_model_len", "enforce_eager"),
     "cache_config": (
@@ -552,15 +589,24 @@ def _cached_config_commit(model_config: Any) -> str | None:
     return None
 
 
-def execution_config(config: Any) -> dict[str, Any]:
-    """Read execution identity without requiring the memory-finalization APIs."""
+def execution_config(config: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
+    """Read execution identity without requiring the memory-finalization APIs.
+
+    ``hybrid_evidence`` adds the vLLM 0.33.0 cache settings; without it the
+    record keeps the fields that 0.27.0 and 0.28.0 records have.
+    """
+    sections = (
+        {**_CONFIG_FIELDS, "cache_config": _CONFIG_FIELDS["cache_config"] + _HYBRID_CACHE_FIELDS}
+        if hybrid_evidence
+        else _CONFIG_FIELDS
+    )
     result = {
         section: {
             key: _json_value(getattr(getattr(config, section), key))
             for key in fields
             if hasattr(getattr(config, section), key)
         }
-        for section, fields in _CONFIG_FIELDS.items()
+        for section, fields in sections.items()
         if getattr(config, section, None) is not None
     }
     hf_config = getattr(config.model_config, "hf_config", None)
@@ -589,8 +635,8 @@ def execution_config(config: Any) -> dict[str, Any]:
     return result
 
 
-def resolved_config(config: Any) -> dict[str, Any]:
-    result = execution_config(config)
+def resolved_config(config: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
+    result = execution_config(config, hybrid_evidence=hybrid_evidence)
     # vLLM 0.27.0 config/offload.py owns weight offload; cache_config does not.
     offload = config.offload_config
     result["offload_config"] = {
@@ -617,13 +663,108 @@ def _positive(value: Any, label: str) -> int:
     return value
 
 
-def cache_groups(cache_config: Any) -> list[dict[str, Any]]:
+def _table_kind(spec: Any) -> str:
+    spec_type = _class_name(spec)
+    kind = SPEC_KINDS.get(spec_type.removeprefix(_SPEC_MODULE))
+    if kind is None:
+        raise ValueError(f"unsupported runtime cache spec: {spec_type}")
+    return kind
+
+
+def spec_kind(spec: Any) -> str:
+    """Map a cache spec class to its FPM cache kind; report every other class.
+
+    A UniformTypeKVCacheSpecs group takes the one kind of all its inner specs.
+    """
+    if _class_name(spec) != _UNIFORM_SPEC:
+        return _table_kind(spec)
+    inner = list(spec.kv_cache_specs.values())
+    kinds = {_table_kind(item) for item in inner}
+    if len(kinds) != 1:
+        classes = sorted({_class_name(item) for item in inner})
+        raise ValueError(f"unsupported runtime cache spec: {_UNIFORM_SPEC} of {classes}")
+    return kinds.pop()
+
+
+def _window(spec: Any) -> int | None:
+    window = getattr(spec, "sliding_window", None)
+    if _class_name(spec).removeprefix(_SPEC_MODULE) in _WINDOW_SPECS:
+        return _positive(window, "sliding_window")
+    if window is not None or getattr(spec, "attention_chunk_size", None) is not None:
+        raise ValueError("full-attention cache with alternate retention is unsupported")
+    return None
+
+
+def _spec_dtype(spec: Any) -> str | None:
+    # MambaSpec has one dtype per state tensor (`dtypes`), recorded in the group's state.
+    return None if _class_name(spec) == _MAMBA_SPEC else str(spec.dtype)
+
+
+def _layer_spec(spec: Any) -> dict[str, Any]:
+    return {
+        "spec_type": _class_name(spec),
+        "page_size_bytes": _positive(spec.page_size_bytes, "cache spec page size"),
+        "dtype": _spec_dtype(spec),
+        **{key: _json_value(getattr(spec, key, None)) for key in ("tokens_per_state", "cache_role")},
+    }
+
+
+def _state(spec: Any, vllm_config: Any = None) -> dict[str, Any]:
+    # A CircularBufferSpec holds one block per request (982-989).
+    if _class_name(spec) != _MAMBA_SPEC:
+        return {"blocks_per_request": 1}
+    fields = (
+        "mamba_cache_mode",
+        "num_speculative_blocks",
+        "num_prefill_checkpoint_blocks",
+        "prefill_checkpoint_alignment",
+        "shapes",
+        "dtypes",
+        "real_page_size_bytes",
+    )
+    # The steady count: one state block plus the speculative blocks, held between block boundaries in both modes
+    # (1140-1141). In align mode, vLLM's startup sizing counts 2 + k + c blocks (1135-1139). After a boundary, the
+    # group also holds the previous state block for one or two steps: two with async scheduling, the vLLM 0.33.0
+    # default (config/vllm.py:1685-1719, v1/core/single_type_kv_cache_manager.py:1640-1657).
+    result = {
+        **{key: _json_value(getattr(spec, key)) for key in fields},
+        "blocks_per_request": 1 + spec.num_speculative_blocks,
+    }
+    if vllm_config is not None:
+        # Read the runtime's startup reservation, independently of the steady count above
+        # (vLLM 0.33.0 v1/kv_cache_interface.py:MambaSpec.max_memory_usage_bytes, 1134-1141).
+        # Keep the actual config: this method reads its cache mode, not the spec's mode.
+        usage = _positive(spec.max_memory_usage_bytes(vllm_config), "Mamba startup memory")
+        page = _positive(spec.page_size_bytes, "Mamba page size")
+        result["startup_blocks_per_request"] = -(-usage // page)
+    return result
+
+
+def _shared(values: list[Any], label: str) -> Any:
+    if any(value != values[0] for value in values):
+        raise ValueError(f"cache group layers disagree on {label}")
+    return values[0]
+
+
+def cache_groups(cache_config: Any, *, hybrid_evidence: bool = False, vllm_config: Any = None) -> list[dict[str, Any]]:
+    """Record every cache group with its spec class, block, page, window and dtype.
+
+    ``hybrid_evidence`` maps the vLLM 0.33.0 spec classes of SPEC_KINDS and adds
+    each group's kind, the spec of each layer and state evidence. A
+    UniformTypeKVCacheSpecs group keeps one inner spec per layer; its layers share
+    one window and one state, and the group dtype is None when layers differ.
+    Live worker/scheduler callers pass ``vllm_config`` to observe each Mamba
+    spec's startup reservation as well; without it the historical shape is kept.
+    Without it, only FullAttentionSpec and SlidingWindowSpec groups are supported
+    and the record is the one vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0 runtimes have.
+    """
     groups = []
     all_names: set[str] = set()
     for group in cache_config.kv_cache_groups:
         spec = group.kv_cache_spec
         spec_type = _class_name(spec)
-        if spec_type not in {_SPEC_MODULE + "FullAttentionSpec", _SPEC_MODULE + "SlidingWindowSpec"}:
+        kind = spec_kind(spec) if hybrid_evidence else None
+        if not hybrid_evidence and spec_type not in _LEGACY_SPECS:
             raise ValueError(f"unsupported runtime cache spec: {spec_type}")
         if getattr(group, "is_eagle_group", False):
             raise ValueError("speculative cache groups are unsupported")
@@ -640,21 +781,34 @@ def cache_groups(cache_config: Any) -> list[dict[str, Any]]:
         if len(names) != len(set(names)) or all_names.intersection(names):
             raise ValueError("runtime cache group layer aliases are unsupported")
         all_names.update(names)
-        window = getattr(spec, "sliding_window", None)
-        if spec_type.endswith(".SlidingWindowSpec"):
-            _positive(window, "sliding_window")
-        elif window is not None or getattr(spec, "attention_chunk_size", None) is not None:
-            raise ValueError("full-attention cache with alternate retention is unsupported")
-        groups.append(
-            {
-                "layer_names": names,
-                "spec_type": spec_type,
-                "block_size_tokens": _positive(spec.block_size, "cache block size"),
-                "spec_page_size_bytes": _positive(spec.page_size_bytes, "cache spec page size"),
-                "sliding_window": window,
-                "dtype": str(spec.dtype),
-            }
-        )
+        if spec_type == _UNIFORM_SPEC:
+            specs = dict(spec.kv_cache_specs)
+            if list(specs) != names:
+                raise ValueError("the inner specs of a uniform cache group do not match its layer names")
+        else:
+            specs = dict.fromkeys(names, spec)
+        window = _shared([_window(item) for item in specs.values()], "sliding window")
+        block_size = _positive(spec.block_size, "cache block size")
+        page_size = _positive(spec.page_size_bytes, "cache spec page size")
+        dtypes = {_spec_dtype(item) for item in specs.values()}
+        record = {
+            "layer_names": names,
+            "spec_type": spec_type,
+            "block_size_tokens": block_size,
+            "spec_page_size_bytes": page_size,
+            "sliding_window": window,
+            # Uniform group layers can differ: an MLA indexer is uint8 at every KV precision.
+            "dtype": dtypes.pop() if len(dtypes) == 1 else None,
+        }
+        if hybrid_evidence:
+            record.update(kind=kind, layer_specs={name: _layer_spec(item) for name, item in specs.items()})
+            if kind == "state":
+                # A state group keeps blocks_per_request blocks, not a window of tokens.
+                record.update(
+                    sliding_window=None,
+                    state=_shared([_state(item, vllm_config) for item in specs.values()], "state evidence"),
+                )
+        groups.append(record)
     if not groups:
         raise ValueError("runtime emitted no cache groups")
     return groups
@@ -671,7 +825,7 @@ def _storage(tensor: Any) -> tuple[tuple[str, int], int]:
 def _layer_storages(kv_cache: Any) -> set[tuple[str, int]]:
     """Storage keys of one cache tensor, or of every tensor of a tuple or list.
 
-    A vLLM 0.31.0 Mamba layer binds a tuple of state views of one page.
+    A vLLM 0.33.0 Mamba layer binds a tuple of state views of one page (model_executor/layers/mamba/abstract.py:28-42).
     """
     tensors = kv_cache if isinstance(kv_cache, (tuple, list)) else (kv_cache,)
     if not tensors:
@@ -758,14 +912,19 @@ def _layer_strided_allocations(
     The page of layer l for block b starts at offset + l * layer_stride + b * block_stride
     (v1/kv_cache_interface.py 0.32.0:1413-1415, 0.33.0:1479-1481), so the last page of the last
     layer bounds the region in layer-outer and block-outer layouts. A layer's page is the spec
-    page of its group. Tensors whose regions overlap alias the same bytes: cache groups overlay
-    each other (0.32.0:1419-1421, 0.33.0:1485-1487).
+    page of its group, or the page of its own spec when the group holds ``layer_specs``.
+    Tensors whose regions overlap alias the same bytes: cache groups overlay each other
+    (0.32.0:1419-1421, 0.33.0:1485-1487); the importer checks how they overlap.
     """
     num_blocks = _positive(config.num_blocks, "cache block count")
     layer_storages = {name: _layer_storages(layer.kv_cache) for name, layer in layers.items()}
     if set().union(*layer_storages.values()) != set(storages):
         raise ValueError("cache group layers do not account for every model-runner storage")
-    pages = {name: group["spec_page_size_bytes"] for group in groups for name in group["layer_names"]}
+    pages = {
+        name: group["layer_specs"][name]["page_size_bytes"] if "layer_specs" in group else group["spec_page_size_bytes"]
+        for group in groups
+        for name in group["layer_names"]
+    }
     expected: dict[tuple[str, int], int] = {}
     covered: set[str] = set()
     allocations = []
@@ -810,14 +969,20 @@ def _layer_strided_allocations(
     return allocations
 
 
-def worker_memory(worker: Any) -> dict[str, Any]:
+def worker_memory(worker: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
+    """Read the initialized cache groups, storage and allocation plan of one worker.
+
+    ``hybrid_evidence`` records the vLLM 0.33.0 evidence of ``cache_groups``;
+    without it the groups are the ones vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0
+    runtimes have. The shape of the allocation record picks its reader.
+    """
     if not getattr(worker, "_fpm_cache_initialized", False):
         raise ValueError("worker cache initialization was not observed")
     runner = worker.model_runner
     if getattr(runner, "shared_kv_cache_layers", None):
         raise ValueError("cross-layer KV sharing is not yet supported by memory finalization")
     config = runner.kv_cache_config
-    groups = cache_groups(config)
+    groups = cache_groups(config, hybrid_evidence=hybrid_evidence, vllm_config=worker.vllm_config)
     storages = _tensor_storages(runner.kv_caches)
     context = worker.vllm_config.compilation_config.static_forward_context
     layers = {name: context[name] for group in groups for name in group["layer_names"]}
@@ -838,7 +1003,9 @@ def worker_memory(worker: Any) -> dict[str, Any]:
         conv = {value == _CONV_CLASS for value in classes.values()}
         if len(conv) != 1:
             raise ValueError("mixed convolution and attention cache group is unsupported")
-        group["kind"] = "convolution" if conv == {True} else "attention"
+        # Layers of the Inkling convolution class make a convolution group; hybrid
+        # evidence keeps the kind of the spec class otherwise.
+        group["kind"] = "convolution" if conv == {True} else group.get("kind", "attention")
         group["layer_classes"] = classes
         if group["kind"] == "convolution" and group["sliding_window"] != 4:
             raise ValueError("unsupported Inkling convolution retention")
@@ -867,7 +1034,13 @@ def worker_memory(worker: Any) -> dict[str, Any]:
     }
 
 
-def scheduler_memory(scheduler: Any, config: Any) -> dict[str, Any]:
+def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = False) -> dict[str, Any]:
+    """Read the initialized block pool of one scheduler.
+
+    ``hybrid_evidence`` adds the vLLM 0.33.0 block sizes, Mamba cache mode and
+    startup capacity, and records the ``cache_groups`` evidence without the kind;
+    without it the record is the one vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0 runtimes have.
+    """
     manager = scheduler.kv_cache_manager
     pool = manager.block_pool
     managers = manager.coordinator.single_type_managers
@@ -881,15 +1054,33 @@ def scheduler_memory(scheduler: Any, config: Any) -> dict[str, Any]:
         raise ValueError("scheduler null block reservation is not observable")
     if type(manager.watermark_blocks) is not int or manager.watermark_blocks != 0:
         raise ValueError("nonzero scheduler cache watermark is unsupported")
-    return {
+    record = {
         "num_blocks": num_blocks,
         "initial_free_blocks": free,
         "reserved_blocks": num_blocks - free,
         "null_block_id": pool.null_block.block_id,
         "watermark_blocks": manager.watermark_blocks,
         "pool_count": 1,
-        "groups": cache_groups(config),
+        "groups": cache_groups(config, hybrid_evidence=hybrid_evidence, vllm_config=scheduler.vllm_config),
     }
+    if hybrid_evidence:
+        # vLLM 0.33.0 Scheduler.block_size and hash_block_size (core/sched/scheduler.py:218, :350);
+        # its BlockPool keeps the hash block size too (core/block_pool.py:173).
+        hash_block_size = getattr(scheduler, "hash_block_size", None)
+        if hasattr(pool, "hash_block_size") and pool.hash_block_size != hash_block_size:
+            raise ValueError("scheduler hash block size differs from its block pool")
+        cache = scheduler.vllm_config.cache_config
+        record.update(
+            block_size=_json_value(getattr(scheduler, "block_size", None)),
+            hash_block_size=_json_value(hash_block_size),
+            mamba_cache_mode=_json_value(getattr(cache, "mamba_cache_mode", None)),
+            # The engine core sets the startup capacity before it builds the scheduler (engine/core.py:352).
+            kv_cache_size_tokens=_json_value(getattr(cache, "kv_cache_size_tokens", None)),
+            kv_cache_max_concurrency=_json_value(getattr(cache, "kv_cache_max_concurrency", None)),
+            # The importer compares these groups with the worker groups without their kind.
+            groups=[{key: value for key, value in group.items() if key != "kind"} for group in record["groups"]],
+        )
+    return record
 
 
 def observe(

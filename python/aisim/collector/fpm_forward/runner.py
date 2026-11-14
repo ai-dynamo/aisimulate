@@ -1350,6 +1350,10 @@ def _cell_generator_overrides(
         # The parser does not alter FPM scheduling, but keeping the model's
         # native runtime initialization avoids measuring a different engine.
         model_args.extend(["--trust-remote-code", "--reasoning-parser=glm45"])
+    if architecture == "Glm5NextForConditionalGeneration":
+        # The GLM-5.3-Flash FPM producer loads the text decoder only (docs/glm53flash-fpm.md:70-73),
+        # so a runtime probe measures the cache capacity of the deployment that collection uses.
+        model_args.append("--language-model-only")
     env = [
         {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},
         {"name": FPM_RUN_ID_ENV, "value": cell.cell_id},
@@ -1499,6 +1503,9 @@ def _cell_generator_overrides(
         raise ValueError("backend policy cannot replace runtime execution/memory observer scheduler class")
     if observe_memory and policy_flags & {"--kv-cache-memory-bytes", "--num-gpu-blocks-override"}:
         raise ValueError("backend policy cannot replace runtime memory observer classes or automatic cache sizing")
+    if observe_memory and "--mamba-cache-mode" in policy_flags:
+        # The prefix-caching setting selects the Mamba mode (vLLM 0.33.0 models/config.py:763-787).
+        raise ValueError("backend policy cannot select the Mamba cache mode for runtime memory observation")
     if observe_memory and any(
         str(argument).split("=", 1)[0].split(" ", 1)[0] == "--async-scheduling" for argument in policy_args
     ):

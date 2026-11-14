@@ -791,6 +791,62 @@ def test_grouped_automatic_intake_defers_rank_resources_until_after_topology(tmp
     assert SupportRequest.from_yaml(output).profile_deployment().resources.cache_layout == "grouped"
 
 
+# Collection observes pending memory on the vLLM versions of support/plan.py MEMORY_OBSERVATION_VERSIONS, also for a
+# grouped cache of full and sliding attention, whose specs the memory reader of the collection accepts. A draft whose
+# cache geometry is pending the runtime probe stops with the probe guidance before this review.
+_PENDING_MEMORY_LINES = {
+    "0.27.0": [
+        "  Memory is observed during initialized vLLM 0.27.0 collection.",
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
+    ],
+    "0.33.0": [
+        "  Memory is observed during initialized vLLM 0.33.0 collection.",
+        "  Collection policy: synchronous scheduling in both phases, matching supported prefill benchmarking.",
+    ],
+    "0.28.0": [
+        "  Memory observation currently supports vLLM 0.27.0, 0.32.0, 0.33.0; this version can collect timings only."
+    ],
+}
+
+
+@pytest.mark.parametrize("version", list(_PENDING_MEMORY_LINES))
+def test_grouped_review_states_where_pending_memory_is_observed(tmp_path, monkeypatch, capsys, version):
+    source, resources = _files(
+        tmp_path,
+        config={**_CONFIG, "sliding_window": 128},
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    _terminal(monkeypatch, ['{"sliding_attention": 16}', "accept"])
+    args = _args(tmp_path / "request.yaml", source, resources, framework_version=version) + ["--interactive"]
+    assert cli.main(args) == 0
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1].splitlines()
+    assert "  Grouped pages retain full history or the declared window, with separate convolution state." in review
+    assert not [line for line in review if "State groups" in line]
+    assert "  Memory source: pending." in review
+    memory_lines = {line for lines in _PENDING_MEMORY_LINES.values() for line in lines}
+    assert [line for line in review if line in memory_lines] == _PENDING_MEMORY_LINES[version]
+
+
+def test_grouped_review_names_state_groups_only_when_the_draft_holds_one(tmp_path, monkeypatch, capsys):
+    # Without a layer count in the config, a complete cache_groups override resolves the grouped geometry, so a
+    # declared state group reaches the review.
+    config = {key: value for key, value in _CONFIG.items() if key != "num_hidden_layers"}
+    page = {"block_size_tokens": 16, "page_size_bytes": 4096}
+    groups = [
+        {"name": "full", "kind": "attention", "num_layers": 1, **page},
+        {"name": "kda", "kind": "state", "num_layers": 1, "blocks_per_request": 1, **page},
+    ]
+    overrides = {"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"}
+    source, resources = _files(tmp_path, config=config, overrides={**overrides, "cache_groups": groups})
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(tmp_path / "request.yaml", source, resources) + ["--interactive"]) == 0
+    review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1].splitlines()
+    grouped = review.index(
+        "  Grouped pages retain full history or the declared window, with separate convolution state."
+    )
+    assert review[grouped + 1] == "  State groups hold a fixed block count per request."
+
+
 def _files(tmp_path, *, config=None, overrides=None, suffix="yaml"):
     source = tmp_path / "config.json"
     source.write_text(json.dumps(_CONFIG if config is None else config))
@@ -1945,8 +2001,8 @@ def _glm_precision(tmp_path):
 def _stops_with_guidance(command, capsys, *, import_limit=True):
     """Run init to its nonzero exit and return its (stdout, stderr).
 
-    ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop warns
-    that observation import cannot take cache groups other than full or sliding attention yet.
+    ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop says
+    which vLLM version observation import maps state cache groups for.
     """
     with pytest.raises(SystemExit) as result:
         cli.main(command)
@@ -1955,8 +2011,10 @@ def _stops_with_guidance(command, capsys, *, import_limit=True):
     assert "Cache geometry: pending runtime probe" in captured.err
     assert "model config did not produce a complete FPM profile" not in captured.err
     limit = (
-        "Importing cache groups other than full or sliding attention (for example recurrent state) is not supported "
-        "yet. Import reports such probes as incomplete."
+        "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups only from vLLM "
+        "0.33.0 probe records. On another runtime version, the probe reports these specs, such as MambaSpec, as "
+        "unsupported runtime cache specs (guide: "
+        "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
     )
     assert (limit in captured.err) is import_limit
     return captured.out, captured.err
@@ -2120,6 +2178,18 @@ def test_runtime_resolved_interactive_never_prompts_for_geometry(tmp_path, monke
     assert not [prompt for prompt in prompts if "cache_layout" in prompt or "kv_bytes_per_token" in prompt]
     assert "onboard probe-runtime" in stderr and "fmha_quant_mode: resolve" not in stderr
     assert explicit_topology or "explicit topology" in stderr
+    assert not out.exists()
+
+
+def test_runtime_resolved_interactive_stops_before_the_memory_review(tmp_path, monkeypatch, capsys):
+    # vLLM 0.33.0 has a bundled probe instrumentation, and the draft still stops with the probe guidance before the
+    # review that states where pending memory is observed.
+    _terminal(monkeypatch)
+    out = tmp_path / "request.yaml"
+    command = [*_ISSUE_ARGS, "--framework-version", "0.33.0", "--model-config", str(_GLM), *_glm_precision(tmp_path)]
+    stdout, stderr = _stops_with_guidance([*command, "--interactive", "--output", str(out)], capsys)
+    assert "Review FPM profile before saving:" not in stdout + stderr
+    assert "Memory is observed" not in stdout + stderr
     assert not out.exists()
 
 

@@ -171,7 +171,11 @@ include = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = ["*.ipynb"]
+extend-exclude = [
+    "*.ipynb",
+    # Byte-exact copies of a frozen probe bundle: the import checks their hashes, so a reformat breaks the fixture.
+    "**/tests/unit/collector/fixtures/glm53flash_vllm_0330_probe",
+]
 
 [tool.ruff.lint]
 select = [

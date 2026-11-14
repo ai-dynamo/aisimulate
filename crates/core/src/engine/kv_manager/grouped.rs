@@ -85,6 +85,13 @@ impl GroupedKvPool {
             .map(|lease| lease.bytes)
     }
 
+    /// Bytes that the state groups hold for one running request, whatever
+    /// its context length: the state charge computed when the pool is built,
+    /// or `u64::MAX` when those bytes overflow.
+    pub(crate) fn fixed_request_bytes(&self) -> u64 {
+        self.state.as_ref().map_or(u64::MAX, |state| state.bytes)
+    }
+
     /// Reserve every group atomically. Expired blocks become reusable in this
     /// transition, but failed attempts leave both the lease and pool unchanged.
     pub(crate) fn allocate(
@@ -144,6 +151,8 @@ mod tests {
                     page_size_bytes: 8,
                     sliding_window: None,
                     blocks_per_request: None,
+                    prefill_checkpoint_blocks: None,
+                    prefill_checkpoint_alignment: None,
                 },
                 FpmCacheGroup {
                     name: "window".into(),
@@ -153,10 +162,13 @@ mod tests {
                     page_size_bytes: 6,
                     sliding_window: Some(3),
                     blocks_per_request: None,
+                    prefill_checkpoint_blocks: None,
+                    prefill_checkpoint_alignment: None,
                 },
             ],
             42,
         );
+        assert_eq!(pool.fixed_request_bytes(), 0);
         let mut first = None;
         let mut second = None;
         assert!(pool.allocate(&mut first, 0, 4)); // 8 + 2 * 6 = 20
@@ -189,6 +201,8 @@ mod tests {
                     page_size_bytes: 8,
                     sliding_window: None,
                     blocks_per_request: None,
+                    prefill_checkpoint_blocks: None,
+                    prefill_checkpoint_alignment: None,
                 },
                 FpmCacheGroup {
                     name: "kda".into(),
@@ -198,10 +212,14 @@ mod tests {
                     page_size_bytes: 10,
                     sliding_window: None,
                     blocks_per_request: Some(2),
+                    prefill_checkpoint_blocks: None,
+                    prefill_checkpoint_alignment: None,
                 },
             ],
             100,
         );
+        // Only the state group counts: 2 blocks of 10 bytes.
+        assert_eq!(pool.fixed_request_bytes(), 20);
         let mut lease = None;
         assert!(pool.allocate(&mut lease, 0, 4)); // 8 + 2 * 10 = 28
         assert_eq!(lease.as_ref().unwrap().blocks(), 3); // 0..1 and the state's 0..2
@@ -225,6 +243,8 @@ mod tests {
             page_size_bytes,
             sliding_window: None,
             blocks_per_request: Some(blocks),
+            prefill_checkpoint_blocks: None,
+            prefill_checkpoint_alignment: None,
         };
         let mut pool = GroupedKvPool::new(vec![state("kda", 10, 2), state("tail", 6, 1)], 100);
         assert_eq!(pool.required_bytes(0, 0), Some(0));
