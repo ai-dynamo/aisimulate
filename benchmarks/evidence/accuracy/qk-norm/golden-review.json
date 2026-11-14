@@ -1,0 +1,218 @@
+{
+  "base_revision": "f85518b36f5488a4c8f6c9553a85d523f173bbb6",
+  "corrected_model": "This change merged onto base_revision. The merge commit is the baseline_source_sha in .github/prediction-numerical-sentinels.json and the git_head of the refreshed post_freeze_pins.",
+  "per_op_generation_attention_changes": [
+    {
+      "case": "minimax-m25-b200-sglang-isl1024-osl2",
+      "before_ms": 2.1702700298122157,
+      "after_ms": 0.5334700298122156
+    },
+    {
+      "case": "minimax-m25-b200-vllm-isl1024-osl2",
+      "before_ms": 2.4160554583372416,
+      "after_ms": 0.7792554583372419
+    },
+    {
+      "case": "minimax-m25-b200-vllm-sampled-prefix",
+      "before_ms": 9.278525771226136,
+      "after_ms": 2.731643211226136
+    },
+    {
+      "case": "minimax-m27-b200-vllm-isl1024-osl2",
+      "before_ms": 2.4160554583372416,
+      "after_ms": 0.7792554583372419
+    },
+    {
+      "case": "qwen3-30b-a3b-b200-vllm-isl1024-osl2",
+      "before_ms": 1.7918450022034613,
+      "after_ms": 0.5246450022034612
+    }
+  ],
+  "compile_engine_records": 21,
+  "engine_step_records": 116,
+  "engine_step_cases": 30,
+  "engine_step_changed_metrics": {
+    "agg_request": 29,
+    "agg_tpot": 29,
+    "agg_ttft": 29,
+    "disagg_request": 29,
+    "disagg_tpot": 29,
+    "mixed_step": 29,
+    "static_gen": 29,
+    "static_total": 29
+  },
+  "refresh_selection": "Records whose full pin_goldens.py refresh on the corrected build differs from a full refresh on a build of base_revision. Only these are refreshed; every changed value decreases.",
+  "base_golden_records_not_reproduced_by_base_build": [
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::agg",
+      "metric": "agg_request",
+      "golden_ms": 83.36025598147515,
+      "base_build_ms": 83.39250623752467
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::agg",
+      "metric": "agg_tpot",
+      "golden_ms": 18.898943991282422,
+      "base_build_ms": 18.91412058236455
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::agg",
+      "metric": "agg_ttft",
+      "golden_ms": 64.46131199019273,
+      "base_build_ms": 64.47838565516012
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::mixed",
+      "metric": "mixed_step",
+      "golden_ms": 18.898943991282426,
+      "base_build_ms": 18.914120582364554
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::static",
+      "metric": "static_ctx",
+      "golden_ms": 18.142,
+      "base_build_ms": 18.141
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::static",
+      "metric": "static_gen",
+      "golden_ms": 4.597,
+      "base_build_ms": 4.613
+    },
+    {
+      "record": "llama4-scout-b200-vllm-isl1024-osl2::static",
+      "metric": "static_total",
+      "golden_ms": 22.739,
+      "base_build_ms": 22.753999999999998
+    },
+    {
+      "record": "nemotron-nas-b200-trtllm-isl1024-osl2::agg",
+      "metric": "agg_request",
+      "golden_ms": 71.66048925588844,
+      "base_build_ms": 71.66048925588842
+    },
+    {
+      "record": "nemotron-nas-b200-trtllm-isl1024-osl2::agg",
+      "metric": "agg_tpot",
+      "golden_ms": 24.291691273182522,
+      "base_build_ms": 24.29169127318252
+    },
+    {
+      "record": "nemotron-nas-b200-trtllm-isl1024-osl2::agg",
+      "metric": "agg_ttft",
+      "golden_ms": 47.368797982705914,
+      "base_build_ms": 47.36879798270591
+    }
+  ],
+  "base_golden_records_not_reproduced_note": "Independent of this change; these records keep the base goldens.",
+  "native_sha256": {
+    "base_release": "dcc0d9a182c88d775294d8e66528abe1c4f78a7e06ca78b8bba04adeb8976136",
+    "corrected_release": "152d3f436a6228862eaba73f4ef5f34a1ce7fd0a5e8ff5a15466d54761467a8f"
+  },
+  "validation": {
+    "rust_operator_tests": 361,
+    "python_focused_tests": 109,
+    "python_canonical_tests": 26,
+    "parity_tests": 389
+  },
+  "b60_scan_coverage": {
+    "case": "qwen3-30b-a3b-b60-vllm-scan-coverage",
+    "surfaces": [
+      "agg",
+      "disagg",
+      "mixed",
+      "static"
+    ],
+    "static_context_ms": 133.227,
+    "base_static_generation_ms": 9.784,
+    "corrected_static_generation_ms": 8.517
+  },
+  "native_prediction_sentinels": {
+    "interpretation": "Proposed simulator stability references for the deliberate Q/K accounting change; not measured hardware accuracy or maintainer acceptance.",
+    "unchanged_prefill_cases": 8,
+    "changed_decode_cases": 8,
+    "query_inputs_and_tolerances_unchanged": true,
+    "effective_bandwidth_bytes_per_second": 6160000000000,
+    "old_fixed_ms_per_layer": 0.0264,
+    "delta_derivation": "layers * (osl - 1) * ((batch - 1) * one_token_traffic_ms_per_layer - 0.0264)",
+    "model_geometry": {
+      "Qwen3-32B": {
+        "layers": 64,
+        "tp": 4,
+        "local_q_heads": 16,
+        "local_k_heads": 2,
+        "head_dim": 128,
+        "one_token_traffic_ms_per_layer": 3.2914285714285715e-06
+      },
+      "MiniMax-M2.5": {
+        "layers": 62,
+        "tp": 8,
+        "local_q_heads": 6,
+        "local_k_heads": 1,
+        "head_dim": 128,
+        "one_token_traffic_ms_per_layer": 1.28e-06
+      }
+    },
+    "previous_source_revision": "fc6e26a82dea7fe49317d48ae97523323ee940b7",
+    "native_release_sha256": "152d3f436a6228862eaba73f4ef5f34a1ce7fd0a5e8ff5a15466d54761467a8f",
+    "maximum_delta_residual_ms": 5.684341886080801e-13,
+    "changes": [
+      {
+        "case": "Qwen3-32B-predict_decode_latency-1-1024",
+        "before_ms": 7.4632784074708995,
+        "after_ms": 5.7736784074709,
+        "derived_delta_ms": -1.6896,
+        "residual_ms": 4.440892098500626e-16
+      },
+      {
+        "case": "Qwen3-32B-predict_decode_latency-8-8192",
+        "before_ms": 1984.398792064317,
+        "after_ms": 1553.926804864317,
+        "derived_delta_ms": -430.4719872,
+        "residual_ms": 1.7053025658242404e-13
+      },
+      {
+        "case": "MiniMax-M2.5-predict_decode_latency-1-1024",
+        "before_ms": 6.956580007206089,
+        "after_ms": 5.319780007206088,
+        "derived_delta_ms": -1.6368,
+        "residual_ms": -8.881784197001252e-16
+      },
+      {
+        "case": "MiniMax-M2.5-predict_decode_latency-8-8192",
+        "before_ms": 2192.9660386705996,
+        "after_ms": 1775.723696270599,
+        "derived_delta_ms": -417.2423424,
+        "residual_ms": -5.684341886080801e-13
+      },
+      {
+        "case": "trtllm-Qwen3-32B-predict_decode_latency-1-1024",
+        "before_ms": 7.390312495740691,
+        "after_ms": 5.700712495740691,
+        "derived_delta_ms": -1.6896,
+        "residual_ms": 4.440892098500626e-16
+      },
+      {
+        "case": "trtllm-Qwen3-32B-predict_decode_latency-8-8192",
+        "before_ms": 1972.7326953236038,
+        "after_ms": 1542.2607081236038,
+        "derived_delta_ms": -430.4719872,
+        "residual_ms": -5.684341886080802e-14
+      },
+      {
+        "case": "sglang-Qwen3-32B-predict_decode_latency-1-1024",
+        "before_ms": 7.367158565634071,
+        "after_ms": 5.6775585656340715,
+        "derived_delta_ms": -1.6896,
+        "residual_ms": 4.440892098500626e-16
+      },
+      {
+        "case": "sglang-Qwen3-32B-predict_decode_latency-8-8192",
+        "before_ms": 1916.6777711920129,
+        "after_ms": 1486.205783992013,
+        "derived_delta_ms": -430.4719872,
+        "residual_ms": 1.7053025658242404e-13
+      }
+    ]
+  }
+}

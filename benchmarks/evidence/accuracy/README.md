@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 - [DeepSeek-V4.1](deepseek-v41.md): independent per-profile calibration/heldout results.
 - [Replay evidence](replay-evidence.md): cache/AgentX validation and source boundaries.
+- [Decode Q/K normalization](qk-norm/README.md): CPU-only reproduction and paired simulator predictions.
 
 These retained records explain the measurements cited by current component
 documentation. They are not universal support declarations or fresh benchmark
