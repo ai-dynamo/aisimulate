@@ -5,7 +5,7 @@
 
 //! `Engine`: the compiled-spec execution core.
 //!
-//! Mirrors `aisimulate.sdk.backends.base_backend`'s static orchestration
+//! Mirrors `aisim.sdk.backends.base_backend`'s static orchestration
 //! (`run_static` / `run_static_latency_only` / `_run_static_breakdown` /
 //! `_run_context_phase` / `_run_generation_phase`) but executes a precompiled
 //! [`EngineSpec`] — Python no longer walks the op list per call. The per-phase
@@ -31,6 +31,7 @@ use crate::operators::base::PerformanceResult;
 use crate::operators::util_empirical::ProvenanceTier;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
+use crate::perfmodel::afd::plan::AfdExecutionPlan;
 use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
 use crate::session::{
     ContextOpFilter, OpListPlan, QueryMemo, context_op_runtime, generation_op_runtime,
@@ -434,6 +435,29 @@ pub(crate) struct RankPricing {
     /// The least-confident empirical tier the rank's lookups fired, noted
     /// again whenever the memo answers in their place.
     provenance: ProvenanceTier,
+    /// What a caller derives from this pricing ([`Self::derived`]).
+    derived: OnceLock<Box<dyn std::any::Any + Send + Sync>>,
+}
+
+impl RankPricing {
+    /// The `T` that `build` derives from this pricing, built on first use and
+    /// kept with it, so that every rank the memo answers with this entry
+    /// reuses it. `build` may depend only on the pricing and on what its memo
+    /// key determines. A pricing keeps one derived type.
+    pub(crate) fn derived<T: Send + Sync + 'static, E>(
+        &self,
+        build: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<&T, E> {
+        if self.derived.get().is_none() {
+            // A concurrent first use keeps one of the equal values.
+            let _ = self.derived.set(Box::new(build(self)?));
+        }
+        Ok(self
+            .derived
+            .get()
+            .and_then(|kept| kept.downcast_ref())
+            .expect("a rank pricing keeps one derived type"))
+    }
 }
 
 /// [`Engine::forward_pass_estimate`] keeping each rank's pricing: the rank
@@ -759,6 +783,9 @@ pub(crate) enum IterationDispatch {
 /// Parallelism / quant scalars do not enter the latency sum — they drive
 /// throughput and memory, which `StaticResult` omits — so they are not stored.
 pub struct Engine {
+    afd_plan: Option<AfdExecutionPlan>,
+    /// Retain just the compiled parallel identity for AFD construction checks.
+    parallelism: (u32, u32, u32, u32),
     /// Context-phase ops in execution order (from `spec.context_ops`).
     context_ops: Vec<Op>,
     /// Generation-phase ops in execution order (from `spec.generation_ops`).
@@ -917,6 +944,33 @@ impl Engine {
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
         )?;
+        let pool_role = spec
+            .engine
+            .extra
+            .get("afd_pool_role")
+            .map(|v| {
+                serde_json::from_value::<crate::AfdPoolRole>(serde_json::Value::String(v.clone()))
+                    .map_err(|_| {
+                        AicError::InvalidEngineConfig("invalid AFD pool role identity".into())
+                    })
+            })
+            .transpose()?;
+        if pool_role != spec.afd_plan.as_ref().map(|plan| plan.role) {
+            return Err(AicError::InvalidEngineConfig(
+                "AFD plan/pool role identity mismatch".into(),
+            ));
+        }
+        if let Some(plan) = &spec.afd_plan {
+            plan.validate(spec.context_ops.len(), spec.generation_ops.len())?;
+            for op in spec.context_ops.iter().chain(&spec.generation_ops) {
+                crate::perfmodel::afd::validation::validate_pool_op(op, plan.role)?;
+            }
+            if plan.model != spec.engine.model_name {
+                return Err(AicError::InvalidEngineConfig(
+                    "AFD plan/model identity mismatch".into(),
+                ));
+            }
+        }
         let spec_sha256 = spec.content_sha256()?;
         Ok(Engine {
             legacy_profile: spec.engine.extra.contains_key("execution_profile_phase")
@@ -941,6 +995,16 @@ impl Engine {
             shared_names: Mutex::default(),
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
+            afd_plan: spec.afd_plan,
+            parallelism: (
+                spec.engine.parallel.tp_size,
+                spec.engine.parallel.attention_dp_size.unwrap_or(1),
+                spec.engine
+                    .parallel
+                    .moe_tp_size
+                    .unwrap_or(spec.engine.parallel.tp_size),
+                spec.engine.parallel.moe_ep_size.unwrap_or(1),
+            ),
             context_ops: spec.context_ops,
             generation_ops: spec.generation_ops,
             db,
@@ -1355,7 +1419,7 @@ impl Engine {
     /// matching `PerfDatabase` from its identity, then [`Engine::build`].
     ///
     /// Runs the `Engine::from_spec_bytes(bytes) + PerfDatabase::load`
-    /// flow. `systems_root` points at `python/aisimulate/src/aisimulate_core/systems` and is used
+    /// flow. `systems_root` points at `python/aisim/src/aisim_core/systems` and is used
     /// only as a fallback: when the decoded `spec.engine.systems_path` is
     /// `Some`, that path is authoritative and overrides the `systems_root`
     /// argument.
@@ -1423,6 +1487,23 @@ impl Engine {
         Ok(())
     }
 
+    /// Actual compiled operator precision, including mixed-precision exceptions.
+    pub(crate) fn execution_quantization(&self) -> serde_json::Value {
+        let mut modes = std::collections::BTreeMap::<&str, std::collections::BTreeSet<&str>>::new();
+        for op in self.context_ops.iter().chain(&self.generation_ops) {
+            match op {
+                crate::operators::Op::Gemm(g) => {
+                    modes.entry("gemm").or_default().insert(g.quant_mode.name());
+                }
+                crate::operators::Op::Moe(m) => {
+                    modes.entry("moe").or_default().insert(m.quant_mode.name());
+                }
+                _ => {}
+            }
+        }
+        serde_json::to_value(modes).expect("string map")
+    }
+
     pub(crate) fn validate_forward_pass_readiness(
         &self,
         worker_type: crate::ForwardPassWorkerType,
@@ -1448,6 +1529,14 @@ impl Engine {
     /// Shared perf database handle.
     pub fn database(&self) -> &Arc<PerfDatabase> {
         &self.db
+    }
+
+    pub(crate) fn afd_plan(&self) -> Option<&AfdExecutionPlan> {
+        self.afd_plan.as_ref()
+    }
+
+    pub(crate) fn parallelism(&self) -> (u32, u32, u32, u32) {
+        self.parallelism
     }
 
     /// Clear the empirical-provenance accumulator (start of a run). The PyO3
@@ -1483,6 +1572,20 @@ impl Engine {
     /// [`Self::context_ops_for_test`].
     #[cfg(test)]
     pub(crate) fn generation_ops_for_test(&self) -> &[Op] {
+        &self.generation_ops
+    }
+
+    /// Production accessor for the context op list. The AFD timing model
+    /// (`perfmodel::afd`) partitions and re-walks the compiled lists with its
+    /// own query shapes (uniform `x`, runtime `prefix`) instead of the
+    /// engine's whole-list phases.
+    pub(crate) fn context_ops(&self) -> &[Op] {
+        &self.context_ops
+    }
+
+    /// Production accessor for the generation op list. See
+    /// [`Self::context_ops`].
+    pub(crate) fn generation_ops(&self) -> &[Op] {
         &self.generation_ops
     }
 
@@ -3412,6 +3515,7 @@ impl Engine {
             operations: values,
             diagnostics,
             provenance: self.db.worst_provenance(),
+            derived: OnceLock::new(),
         })
     }
 
@@ -3876,8 +3980,7 @@ pub(crate) mod tests {
     use crate::{BackendKind, ParallelMapping, QuantizationConfig};
 
     fn systems_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python/aisim/src/aisim_core/systems")
     }
 
     const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
@@ -5433,6 +5536,27 @@ pub(crate) mod tests {
             .unwrap();
         assert!(iteration.ranks[0].operations.is_none());
         assert_eq!(iteration.latency_ms, covered);
+    }
+
+    #[test]
+    fn rank_pricing_keeps_what_a_caller_derives_from_it() {
+        let rank = RankPricing {
+            latency_ms: 2.0,
+            operations: None,
+            diagnostics: None,
+            provenance: ProvenanceTier::Silicon,
+            derived: OnceLock::new(),
+        };
+        let builds = std::cell::Cell::new(0);
+        let build = |rank: &RankPricing| -> Result<Vec<f64>, String> {
+            builds.set(builds.get() + 1);
+            Ok(vec![rank.latency_ms])
+        };
+        // A failed build keeps nothing.
+        assert!(rank.derived(|_| Err::<Vec<f64>, _>("no")).is_err());
+        let first = rank.derived(build).unwrap();
+        assert!(std::ptr::eq(rank.derived(build).unwrap(), first));
+        assert_eq!((first, builds.get()), (&vec![2.0], 1));
     }
 
     #[test]

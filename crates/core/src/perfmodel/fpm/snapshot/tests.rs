@@ -592,6 +592,16 @@ fn selected_regression_round_trips_one_three_and_six_dimensions() {
             ..LinearFitConfig::default()
         });
     });
+    // The axis constants are configuration-only; restoration takes them from it.
+    check_regression(AGG, true, |config| {
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            feature_axes: vec![Attention, Moe, Count, Past, LongestPerSplit, EagerPass],
+            non_negative: false,
+            max_kv_splits: Some(1024),
+            max_cudagraph_capture_size: Some(512),
+            ..LinearFitConfig::default()
+        });
+    });
 }
 
 fn fpm5_regression(config: &mut ForwardPassPerfModelConfig) {
@@ -2169,7 +2179,7 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
             Box::new(|m: &mut serde_json::Value| {
                 m["producer"]["aisimulate_core_version"] = "0.0.1".into()
             }),
-            "written by aisimulate-core 0.0.1",
+            "written by aisim-core 0.0.1",
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
@@ -2192,10 +2202,10 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
-                m["state_layout_version"] = 3.into();
+                m["state_layout_version"] = 4.into();
                 m["files"][0]["future_field"] = true.into();
             }),
-            "state layout version 3 is not supported",
+            "state layout version 4 is not supported",
         ),
         (
             Box::new(|m: &mut serde_json::Value| {
@@ -2203,7 +2213,7 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
                 m["producer"]["future_field"] = true.into();
                 m["future_field"] = true.into();
             }),
-            "written by aisimulate-core 99.0.0",
+            "written by aisim-core 99.0.0",
         ),
         (
             Box::new(|m: &mut serde_json::Value| m["producer"]["future_field"] = true.into()),
@@ -2769,7 +2779,7 @@ fn state_invariant_violations_are_rejected_before_they_can_panic() {
         ),
         (
             Box::new(|value| {
-                value["layout_version"] = 3.into();
+                value["layout_version"] = 4.into();
             }),
             "layout version differs",
         ),
@@ -3243,12 +3253,13 @@ fn pathdiff(path: &Path, base: &Path) -> PathBuf {
 // Format stability
 // ---------------------------------------------------------------------------
 
-/// Independent mirror of the version-2 `state.bin` layout for the regression,
+/// Independent mirror of the version-3 `state.bin` layout for the regression,
 /// fixed/dynamic/hybrid correction and selector envelopes. A change to any
 /// encoded field, order, type or variant fails this decode: bump
 /// `STATE_SNAPSHOT_LAYOUT_VERSION` and update the mirror together. Version 2
-/// appended the `fpm5` aggregate regression store.
-mod layout_v2 {
+/// appended the `fpm5` aggregate regression store, and version 3 the
+/// `longest_split` and `eager` regression axes.
+mod layout_v3 {
     use serde::Deserialize;
 
     type Map<K, V> = Vec<(K, V)>;
@@ -3429,20 +3440,20 @@ mod layout_v2 {
     }
 }
 
-fn decode_v2(path: &Path) -> layout_v2::StateFile {
+fn decode_v3(path: &Path) -> layout_v3::StateFile {
     use bincode::Options;
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .reject_trailing_bytes()
         .deserialize(&std::fs::read(path).unwrap())
-        .expect("state.bin no longer matches layout v2: bump STATE_SNAPSHOT_LAYOUT_VERSION")
+        .expect("state.bin no longer matches layout v3: bump STATE_SNAPSHOT_LAYOUT_VERSION")
 }
 
 #[test]
-fn state_layout_v2_matches_an_independent_decoder() {
+fn state_layout_v3_matches_an_independent_decoder() {
     assert_eq!(
-        STATE_SNAPSHOT_LAYOUT_VERSION, 2,
-        "update the layout_v2 mirror and this golden with the version"
+        STATE_SNAPSHOT_LAYOUT_VERSION, 3,
+        "update the layout_v3 mirror and this golden with the version"
     );
     let dir = tempfile::tempdir().unwrap();
     let mut regression = best(regression_config(DECODE, |config| {
@@ -3458,15 +3469,15 @@ fn state_layout_v2_matches_an_independent_decoder() {
             &StateSnapshotOptions::default(),
         )
         .unwrap();
-    let state = decode_v2(&dir.path().join("regression").join(STATE_FILE));
-    assert_eq!(state.layout_version, 2);
-    let layout_v2::State::Regression { stores } = state.state else {
+    let state = decode_v3(&dir.path().join("regression").join(STATE_FILE));
+    assert_eq!(state.layout_version, 3);
+    let layout_v3::State::Regression { stores } = state.state else {
         panic!("regression variant index changed")
     };
     assert_eq!(stores.len(), 1);
     // `ForwardPassRegressionWorkloadKind::PureDecode` is variant 0.
     assert_eq!(stores[0].0, 0);
-    let layout_v2::Store::Linear(linear) = &stores[0].1 else {
+    let layout_v3::Store::Linear(linear) = &stores[0].1 else {
         panic!("linear store variant index changed")
     };
     assert_eq!(linear.samples.total_observations, 64);
@@ -3505,12 +3516,12 @@ fn state_layout_v2_matches_an_independent_decoder() {
     aggregate
         .save_state_snapshot(dir.path().join("fpm5"), &StateSnapshotOptions::default())
         .unwrap();
-    let layout_v2::State::Regression { stores } =
-        decode_v2(&dir.path().join("fpm5").join(STATE_FILE)).state
+    let layout_v3::State::Regression { stores } =
+        decode_v3(&dir.path().join("fpm5").join(STATE_FILE)).state
     else {
         panic!("regression variant index changed")
     };
-    let layout_v2::Store::Aggregate(aggregate) = &stores[0].1 else {
+    let layout_v3::Store::Aggregate(aggregate) = &stores[0].1 else {
         panic!("aggregate store must be variant 3")
     };
     // `RegressionFeatureAxis::Count` is variant 2.
@@ -3553,18 +3564,18 @@ fn state_layout_v2_matches_an_independent_decoder() {
         learned
             .save_state_snapshot(&path, &StateSnapshotOptions::default())
             .unwrap();
-        let layout_v2::State::Learned { corrections } = decode_v2(&path.join(STATE_FILE)).state
+        let layout_v3::State::Learned { corrections } = decode_v3(&path.join(STATE_FILE)).state
         else {
             panic!("learned variant index changed")
         };
         let observed = match &corrections.decode {
-            layout_v2::Correction::Fixed(fixed) => {
+            layout_v3::Correction::Fixed(fixed) => {
                 assert_eq!(fixed.min_observations, 3);
                 assert_eq!((fixed.min_faster, fixed.max_slower), (Some(0.5), Some(2.0)));
                 assert!(fixed.samples.fixed_bounds);
                 "fixed"
             }
-            layout_v2::Correction::Dynamic(dynamic) => {
+            layout_v3::Correction::Dynamic(dynamic) => {
                 assert_eq!((dynamic.ndim, dynamic.bins), (2, [4, 4]));
                 assert_eq!(
                     (dynamic.primary_capacity, dynamic.recent_capacity),
@@ -3574,7 +3585,7 @@ fn state_layout_v2_matches_an_independent_decoder() {
                 assert!(dynamic.next_admission > 0 && dynamic.log_bounds.is_some());
                 "dynamic"
             }
-            layout_v2::Correction::Hybrid(pair) => {
+            layout_v3::Correction::Hybrid(pair) => {
                 assert_eq!(pair.1.recent_capacity, 16);
                 "hybrid"
             }
@@ -3592,10 +3603,10 @@ fn state_layout_v2_matches_an_independent_decoder() {
             &StateSnapshotOptions::default(),
         )
         .unwrap();
-    let layout_v2::State::CausalSelector {
+    let layout_v3::State::CausalSelector {
         corrections,
         selector,
-    } = decode_v2(&dir.path().join("selector").join(STATE_FILE)).state
+    } = decode_v3(&dir.path().join("selector").join(STATE_FILE)).state
     else {
         panic!("selector variant index changed")
     };

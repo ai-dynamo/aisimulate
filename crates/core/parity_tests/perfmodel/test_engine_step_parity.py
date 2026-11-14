@@ -27,11 +27,11 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate.legacy_cli.api import cli_estimate
-from aisimulate.sdk import common, config, errors, perf_database, rust_engine_step
-from aisimulate.sdk.backends.factory import get_backend
-from aisimulate.sdk.models import get_model
-from aisimulate.sdk.operations import util_empirical
+from aisim.legacy_cli.api import cli_estimate
+from aisim.sdk import common, config, errors, perf_database, rust_engine_step
+from aisim.sdk.backends.factory import get_backend
+from aisim.sdk.models import get_model
+from aisim.sdk.operations import util_empirical
 
 pytestmark = pytest.mark.integration
 
@@ -1209,12 +1209,12 @@ def _golden_python_metrics(
 
 def _prepare_rust_core(monkeypatch: pytest.MonkeyPatch) -> None:
     # The live path is the compiled-engine ``EngineHandle`` (Python builds the
-    # ``EngineSpec``, the PyO3 ``aisimulate_core`` extension executes it).
+    # ``EngineSpec``, the PyO3 ``aisim_core`` extension executes it).
     # The legacy ctypes dylib is gone, so the only requirement is that the
     # maturin-built extension is importable.
     pytest.importorskip(
-        "aisimulate_core",
-        reason="maturin-built aisimulate_core extension is required "
+        "aisim_core",
+        reason="maturin-built aisim_core extension is required "
         "(`uv run maturin develop -m aic-core/rust/aiconfigurator-core/Cargo.toml`)",
     )
     rust_engine_step._engine_handle_cache_clear()
@@ -1970,7 +1970,7 @@ class TestRustTypedErrorsAcrossFfi:
     (`perf_database.has_perf_data_not_available_cause`, the support-matrix
     HYBRID-miss triage on `EmpiricalNotImplementedError`) could not recognize
     rust-path misses. The boundary now raises the canonical
-    `aisimulate.sdk.errors` classes for the typed variants."""
+    `aisim.sdk.errors` classes for the typed variants."""
 
     def test_silicon_data_gap_raises_typed_perf_data_miss(
         self,
@@ -2054,8 +2054,8 @@ class TestRustTypedErrorsAcrossFfi:
         assert not perf_database.has_perf_data_not_available_cause(excinfo.value)
         # Python classifies the same query point identically.
         database = _case_database(case)
-        from aisimulate_core.sdk.engine import _evaluate_single_op
-        from aisimulate_core.sdk.operations.mla import MLABmm
+        from aisim_core.sdk.engine import _evaluate_single_op
+        from aisim_core.sdk.operations.mla import MLABmm
 
         with pytest.raises(errors.MissingSystemFlopsError):
             # The retired query_mla_bmm shim's exact twin, through the
@@ -2077,8 +2077,8 @@ class TestRustTypedErrorsAcrossFfi:
         # demanding an fp8_tc_flops entry a100 must never define (the
         # support-matrix FP8 gate is keyed on that entry's presence).
         database = _quiet_call(perf_database.get_database, "a100_sxm", "trtllm", "1.0.0")
-        from aisimulate_core.sdk.engine import _evaluate_single_op
-        from aisimulate_core.sdk.operations.mla import GenerationMLA
+        from aisim_core.sdk.engine import _evaluate_single_op
+        from aisim_core.sdk.operations.mla import GenerationMLA
 
         def _gen_mla(kv_mode):
             # The retired query_generation_mla shim's exact twin (the
@@ -2324,7 +2324,7 @@ _FPM_GENONLY_FROZEN = 4.5
 
 
 # Hybrid speculative fpm (verify-on-FPM): pinned when the config class
-# became reachable (AISimulate schema v18, FpmForwardOp.verify_width). The ngram scheme
+# became reachable (AISim schema v18, FpmForwardOp.verify_width). The ngram scheme
 # is the pure verify-width channel (no draft ops): the decode query maps the
 # widened batch to the equivalent-AR point (tokens = c*w, total KV
 # unchanged) on the same synthetic fixture. Values pinned from the compiled
@@ -2387,8 +2387,8 @@ class TestRustEngineStepFpmHybridParity:
     """Hybrid (fpm target + speculative scheme) parity pins."""
 
     def _build_ngram(self):
-        from aisimulate.sdk.config_builders import build_model_config
-        from aisimulate_core.sdk.speculation import SpeculationConfig
+        from aisim.sdk.config_builders import build_model_config
+        from aisim_core.sdk.speculation import SpeculationConfig
 
         cfg = build_model_config(
             tp_size=2,
@@ -2421,7 +2421,7 @@ class TestRustEngineStepFpmHybridParity:
             assert abs(value - _FPM_HYBRID_STATIC_GEN_FROZEN) <= allowed
 
     def test_hybrid_ngram_mixed_pin(self, fpm_systems_root):
-        from aisimulate_core.sdk.backends.base_backend import MixedStepInput
+        from aisim_core.sdk.backends.base_backend import MixedStepInput
 
         model, backend, database = self._build_ngram()
         rc = config.RuntimeConfig(batch_size=4, beam_width=1, isl=1024, osl=2)
@@ -2442,7 +2442,7 @@ class TestRustEngineStepFpmHybridParity:
 class TestRustEngineStepFpmParity:
     @pytest.mark.parametrize("database_mode", ["SILICON", "HYBRID"])
     def test_auto_skips_absent_op_tables(self, fpm_systems_root, database_mode):
-        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+        from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
         cfg = ForwardPassPerfModelConfig(
             model=_FPM_MODEL,
@@ -2477,13 +2477,13 @@ class TestRustEngineStepFpmParity:
             model.close()
         from dataclasses import replace
 
-        from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+        from aisim_core.sdk.errors import PerfDataNotAvailableError
 
         with pytest.raises(PerfDataNotAvailableError, match="required op-level data unavailable"):
             RustForwardPassPerfModel.best_available(replace(cfg, estimation_mode="op_level"))
 
     def test_sol_does_not_require_op_tables(self, fpm_systems_root):
-        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+        from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
         model = RustForwardPassPerfModel.best_available(
             ForwardPassPerfModelConfig(
@@ -2518,7 +2518,7 @@ class TestRustEngineStepFpmParity:
     """
 
     def _build(self):
-        from aisimulate.sdk.config_builders import build_model_config
+        from aisim.sdk.config_builders import build_model_config
 
         cfg = build_model_config(
             tp_size=2,
@@ -2564,7 +2564,7 @@ class TestRustEngineStepFpmParity:
         # estimate hitting the fpm_forward table's exact row proves the
         # whole-model engine was selected through the supported predictor API.
         _prepare_rust_core(monkeypatch)
-        from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+        from aisim_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
         config = {
             "schema_version": 1,
@@ -2586,7 +2586,7 @@ class TestRustEngineStepFpmParity:
             "nextn": None,
             "forward_model": "fpm",
         }
-        from aisimulate_core.sdk import ForwardPassPerfModelConfig
+        from aisim_core.sdk import ForwardPassPerfModelConfig
 
         model = RustForwardPassPerfModel.best_available(
             ForwardPassPerfModelConfig.from_legacy_engine_config(config, "aggregated")
@@ -2607,7 +2607,7 @@ class TestRustEngineStepFpmParity:
         _prepare_rust_core(monkeypatch)
         import json as _json
 
-        from aisimulate.sdk import engine as sdk_engine
+        from aisim.sdk import engine as sdk_engine
 
         model, _backend, database = self._build()
         spec = _json.loads(

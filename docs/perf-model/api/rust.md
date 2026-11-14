@@ -5,13 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # Rust performance-model API
 
-Use `aisimulate_core::perfmodel::ForwardPassPerfModel::best_available` with
+Use `aisim_core::perfmodel::ForwardPassPerfModel::best_available` with
 `ForwardPassPerfModelConfig` for estimator selection, correction, and regression.
 `AicEngineBuilder` is the lower-level compiled operation-engine entry point;
 it is not a replacement constructor for the canonical estimator.
 
 ```rust
-use aisimulate_core::perfmodel::{
+use aisim_core::perfmodel::{
     BackendKind, EstimationMode, ForwardPassPerfModel,
     ForwardPassPerfModelConfig, ForwardPassWorkerType,
 };
@@ -28,7 +28,7 @@ let model = ForwardPassPerfModel::best_available(config)?;
 ## Stable Rust facade
 
 New embedded consumers should construct engines with
-`aisimulate_core::perfmodel::AicEngineBuilder`. The
+`aisim_core::perfmodel::AicEngineBuilder`. The
 builder normalizes configuration into one private build request and enters
 Python once to compile an engine specification. Calls on the returned
 `AicEngine` are pure Rust and do not re-enter Python. Selected former AIC
@@ -37,14 +37,14 @@ crate-root types remain re-exported during the migration window, but the
 
 Native engine construction in standalone binaries requires the crate's `embed-python`
 feature; applications hosted by an initialized Python interpreter do not need
-auto-initialization. The matching `aisimulate` wheel must be importable for native
+auto-initialization. The matching `aisim` wheel must be importable for native
 construction. Explicit `fpm_regression` construction works without the Python feature. See the
 [crate README](../../../crates/core/README.md) for setup and usage examples.
 
 See [SDK entry-point migration](../../aic-backward-compatibility/migration.md#sdk-entry-points) for the removed
 flat engine adapter and constructor replacements.
 
-The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
+The supported `aisim_core::perfmodel` Rust surface is grouped as follows:
 
 - compiled engine: `AicEngineBuilder`, `AicEngine`, `AicError`;
 - forward-pass estimation: `ForwardPassPerfModel`,
@@ -54,7 +54,7 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
 - KV-cache estimation: `estimate_kv_cache`, `KvCacheEstimateRequest`,
   `KvCacheEstimateOptions`, `KvCacheMemoryFraction`, and estimate/result/error
   types;
-- FPM profile cache resources: `FpmCacheGroup`, `FpmCacheKind`, `FpmCacheLayout`,
+- FPM profile cache resources: `FpmCacheGroup`, `FpmCacheKind`, `FpmCacheLayout`, `FpmMambaCacheMode`,
   `FpmResourceConfig`, `FpmRuntimeMemoryConfig`, `FpmCacheBudgetRequest`, `FpmCacheBudget`, and
   `FpmCacheBudgetAdjusted`, through the canonical model/config budget method;
 - wire identity: `EngineConfig`, `ParallelMapping`, `QuantizationConfig`,

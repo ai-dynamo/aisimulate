@@ -1796,13 +1796,17 @@ impl SglangCore {
             decode: decode_shape
                 .as_mut()
                 .filter(|shape| shape.charged)
-                .map(|shape| DecodeWork {
-                    batch_size: shape.batch_size,
-                    active_kv_tokens: shape.active_kv_tokens,
-                    mean_context_length: shape.mean_context_length,
-                    kv_bound_tokens: self.config.total_kv_tokens,
-                    lengths: std::mem::take(&mut shape.lengths),
-                    verify_width: self.config.speculative_max_tokens.unwrap_or(1),
+                .map(|shape| {
+                    let verify_width = self.config.speculative_max_tokens.unwrap_or(1);
+                    DecodeWork {
+                        batch_size: shape.batch_size,
+                        active_kv_tokens: shape.active_kv_tokens,
+                        mean_context_length: shape.mean_context_length,
+                        kv_bound_tokens: self.config.total_kv_tokens,
+                        widths: vec![verify_width; shape.lengths.len()],
+                        lengths: std::mem::take(&mut shape.lengths),
+                        verify_width,
+                    }
                 }),
         };
         self.host_capacity_blocked = !self.model_work_in_pass

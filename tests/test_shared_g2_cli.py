@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip(
-    "aisimulate.runner",
-    reason="standalone AISimulate runtime is not installed",
+    "aisim.runner",
+    reason="standalone AISim runtime is not installed",
     exc_type=ImportError,
 )
 
@@ -21,18 +21,18 @@ import yaml
 from pydantic import ValidationError
 from test_host_offload_cli import _host_offload, _prediction_engine, _recommendation_engine, _RecordingRuntime
 
-from aisimulate import main as cli
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.engine import HostOffloadConfig
-from aisimulate.recommend import recommendation_to_sweeper
-from aisimulate.runner import EngineReplayRunnerFactory, _kv_layout_id, _materialize_engine_execution_spec
-from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.replay import ReplaySpec
-from aisimulate.sweeper.sample import unroll_sample
-from aisimulate_core.sdk.perf_database import get_version_slots
+from aisim import main as cli
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig, CoreRecommendationConfig
+from aisim.config.engine import HostOffloadConfig
+from aisim.recommend import recommendation_to_sweeper
+from aisim.runner import EngineReplayRunnerFactory, _kv_layout_id, _materialize_engine_execution_spec
+from aisim.sweeper.deploy import build_backend_deployment
+from aisim.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+from aisim.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisim.sweeper.replay import ReplaySpec
+from aisim.sweeper.sample import unroll_sample
+from aisim_core.sdk.perf_database import get_version_slots
 
 SHARED = {"scope": "cluster_shared", "shared_d2h_bandwidth_gbps": 40.0, "latency_to_first_byte_ms": 0.5}
 OPTIMIZATION = {"constraints": {"max_candidate_gpus": 8}}
@@ -272,7 +272,7 @@ def test_shared_pd_recommendation_matches_the_runtime_timing_identity(
 def test_default_timing_layout_follows_each_workers_resolved_identity(
     tmp_path, monkeypatch, section: str, field: str, value, identity: dict
 ) -> None:
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     engine = _aic_engine()
     engine["workers"]["decode"][section][field] = value
@@ -345,7 +345,7 @@ def test_sweeper_layout_reads_a_legacy_kv_cache_dtype() -> None:
 def test_shared_g2_example_runs_for_both_scopes(
     tmp_path, capsys, override: list[str], scope: str, reuse: float, host_tokens: int, domains
 ) -> None:
-    from aisimulate import _runtime
+    from aisim import _runtime
 
     argv = ["predict", "--stack", "engine", "--config", str(EXAMPLE), *override, "--output-dir", str(tmp_path)]
     assert cli.main([*argv, "--format", "json"]) == 0

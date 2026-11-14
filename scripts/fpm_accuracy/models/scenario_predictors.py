@@ -158,7 +158,7 @@ class _ScenarioInterpolation(aic_predictors.AicFpmPredictor):
         return operation()
 
     def predict(self, features: ForwardPassInput) -> Prediction:
-        from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+        from aisim_core.sdk.errors import PerfDataNotAvailableError
         from scripts.fpm_accuracy.models.scenario_interpolation import is_interpolation_support_miss
 
         try:
@@ -255,7 +255,7 @@ class _WorkerScenarioRegression(ForwardPassTimePredictor):
 
 def _import_gbdt_trainer() -> Any:
     try:
-        from aisimulate_core.sdk import fpm_learned
+        from aisim_core.sdk import fpm_learned
     except ImportError as exc:
         raise DependencyError("The evaluated AISim version does not provide the PR #280 GBDT trainer.") from exc
     if "fpm5" not in fpm_learned.FEATURE_PRESETS:

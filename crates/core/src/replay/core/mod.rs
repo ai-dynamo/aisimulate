@@ -53,7 +53,7 @@ pub trait AdmissionSource {
         now_ms: f64,
         cluster_in_flight: usize,
     ) -> Result<Vec<ReadyArrival<Self::Request, Self::Metadata>>>;
-    fn on_output_token(&mut self, request_id: Uuid, token_id: u32) -> Result<()>;
+    fn on_output_token(&mut self, request_id: Uuid, token_id: u32, now_ms: f64) -> Result<()>;
     fn on_terminal(
         &mut self,
         request_id: Uuid,

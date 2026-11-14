@@ -1078,6 +1078,7 @@ impl RankEngine for GroupRank {
                 mean_context_length: 8 / (self.dp_rank as usize + 1),
                 kv_bound_tokens: 64,
                 lengths: Vec::new(),
+                widths: Vec::new(),
                 verify_width: 1,
             }),
         }))
