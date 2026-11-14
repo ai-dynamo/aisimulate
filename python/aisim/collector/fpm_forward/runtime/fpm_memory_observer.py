@@ -709,7 +709,7 @@ def _layer_spec(spec: Any) -> dict[str, Any]:
     }
 
 
-def _state(spec: Any) -> dict[str, Any]:
+def _state(spec: Any, vllm_config: Any = None) -> dict[str, Any]:
     # A CircularBufferSpec holds one block per request (982-989).
     if _class_name(spec) != _MAMBA_SPEC:
         return {"blocks_per_request": 1}
@@ -726,10 +726,18 @@ def _state(spec: Any) -> dict[str, Any]:
     # (1140-1141). In align mode, vLLM's startup sizing counts 2 + k + c blocks (1135-1139). After a boundary, the
     # group also holds the previous state block for one or two steps: two with async scheduling, the vLLM 0.33.0
     # default (config/vllm.py:1685-1719, v1/core/single_type_kv_cache_manager.py:1640-1657).
-    return {
+    result = {
         **{key: _json_value(getattr(spec, key)) for key in fields},
         "blocks_per_request": 1 + spec.num_speculative_blocks,
     }
+    if vllm_config is not None:
+        # Read the runtime's startup reservation, independently of the steady count above
+        # (vLLM 0.33.0 v1/kv_cache_interface.py:MambaSpec.max_memory_usage_bytes, 1134-1141).
+        # Keep the actual config: this method reads its cache mode, not the spec's mode.
+        usage = _positive(spec.max_memory_usage_bytes(vllm_config), "Mamba startup memory")
+        page = _positive(spec.page_size_bytes, "Mamba page size")
+        result["startup_blocks_per_request"] = -(-usage // page)
+    return result
 
 
 def _shared(values: list[Any], label: str) -> Any:
@@ -738,13 +746,15 @@ def _shared(values: list[Any], label: str) -> Any:
     return values[0]
 
 
-def cache_groups(cache_config: Any, *, hybrid_evidence: bool = False) -> list[dict[str, Any]]:
+def cache_groups(cache_config: Any, *, hybrid_evidence: bool = False, vllm_config: Any = None) -> list[dict[str, Any]]:
     """Record every cache group with its spec class, block, page, window and dtype.
 
     ``hybrid_evidence`` maps the vLLM 0.33.0 spec classes of SPEC_KINDS and adds
     each group's kind, the spec of each layer and state evidence. A
     UniformTypeKVCacheSpecs group keeps one inner spec per layer; its layers share
     one window and one state, and the group dtype is None when layers differ.
+    Live worker/scheduler callers pass ``vllm_config`` to observe each Mamba
+    spec's startup reservation as well; without it the historical shape is kept.
     Without it, only FullAttentionSpec and SlidingWindowSpec groups are supported
     and the record is the one vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0 runtimes have.
     """
@@ -795,7 +805,8 @@ def cache_groups(cache_config: Any, *, hybrid_evidence: bool = False) -> list[di
             if kind == "state":
                 # A state group keeps blocks_per_request blocks, not a window of tokens.
                 record.update(
-                    sliding_window=None, state=_shared([_state(item) for item in specs.values()], "state evidence")
+                    sliding_window=None,
+                    state=_shared([_state(item, vllm_config) for item in specs.values()], "state evidence"),
                 )
         groups.append(record)
     if not groups:
@@ -971,7 +982,7 @@ def worker_memory(worker: Any, *, hybrid_evidence: bool = False) -> dict[str, An
     if getattr(runner, "shared_kv_cache_layers", None):
         raise ValueError("cross-layer KV sharing is not yet supported by memory finalization")
     config = runner.kv_cache_config
-    groups = cache_groups(config, hybrid_evidence=hybrid_evidence)
+    groups = cache_groups(config, hybrid_evidence=hybrid_evidence, vllm_config=worker.vllm_config)
     storages = _tensor_storages(runner.kv_caches)
     context = worker.vllm_config.compilation_config.static_forward_context
     layers = {name: context[name] for group in groups for name in group["layer_names"]}
@@ -1050,7 +1061,7 @@ def scheduler_memory(scheduler: Any, config: Any, *, hybrid_evidence: bool = Fal
         "null_block_id": pool.null_block.block_id,
         "watermark_blocks": manager.watermark_blocks,
         "pool_count": 1,
-        "groups": cache_groups(config, hybrid_evidence=hybrid_evidence),
+        "groups": cache_groups(config, hybrid_evidence=hybrid_evidence, vllm_config=scheduler.vllm_config),
     }
     if hybrid_evidence:
         # vLLM 0.33.0 Scheduler.block_size and hash_block_size (core/sched/scheduler.py:218, :350);

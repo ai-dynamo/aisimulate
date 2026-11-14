@@ -225,6 +225,13 @@ def _v033_runtime(storage, layout, blocks):
     def spec(name, **fields):
         value = _typed("vllm.v1.kv_cache_interface", name)
         vars(value).update(fields)
+        if name == "MambaSpec":
+            # Fake the audited runtime method, using the actual VllmConfig just as vLLM does.
+            value.max_memory_usage_bytes = lambda config: value.page_size_bytes * (
+                2 + value.num_speculative_blocks + value.num_prefill_checkpoint_blocks
+                if config.cache_config.mamba_cache_mode == "align"
+                else 1 + value.num_speculative_blocks
+            )
         return value
 
     def uniform_spec(**fields):
@@ -1420,6 +1427,10 @@ def test_v033_glm_records_import_complete(tmp_path, monkeypatch):
     for phase in ("prefill", "decode"):
         records = campaign.run(phase)
         assert all(record["unresolved_fields"] == [] for record in records), [record.get("error") for record in records]
+        for record in records:
+            states = [group["state"] for group in record["cache"]["groups"][:4]]
+            assert [state["startup_blocks_per_request"] for state in states] == [3] * 4
+            assert [state["blocks_per_request"] for state in states] == [1] * 4
     result = validate_observations(tmp_path / "observations.json", {"worker": campaign.launch})["worker"]
     assert result["status"] == "complete", result["diagnostics"]
     assert result["resources"]["cache_groups"] == glm_tp4_cache_groups()
@@ -1430,6 +1441,15 @@ def test_v033_glm_records_import_complete(tmp_path, monkeypatch):
         "align",
         2176,
     )
+
+
+def test_v033_missing_mamba_startup_method_leaves_evidence_unresolved(tmp_path, monkeypatch):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    spec = next(iter(campaign.cache.kv_cache_groups[0].kv_cache_spec.kv_cache_specs.values()))
+    del spec.max_memory_usage_bytes
+    worker = next(record for record in campaign.run() if record["kind"] == "worker")
+    assert "cache" in worker["unresolved_fields"]
+    assert "max_memory_usage_bytes" in worker["error"]
 
 
 def test_v033_kernel_view_records_import_complete(tmp_path, monkeypatch):

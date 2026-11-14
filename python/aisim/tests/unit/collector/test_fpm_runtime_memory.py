@@ -375,6 +375,39 @@ def test_cache_groups_record_the_prefill_checkpoint_of_a_flashkda_spec():
     assert state["blocks_per_request"] == 1
 
 
+@pytest.mark.parametrize(
+    ("mode", "usage", "startup"), [("align", PAGE * 3, 3), ("none", PAGE, 1), ("align", PAGE * 3 + 1, 4)]
+)
+def test_mamba_startup_blocks_are_read_from_the_runtime_method(mode, usage, startup):
+    spec = _mamba(page_size_bytes=PAGE)
+    config = SimpleNamespace(cache_config=SimpleNamespace(mamba_cache_mode=mode))
+    calls = []
+
+    def measured(actual):
+        calls.append(actual)
+        return usage
+
+    spec.max_memory_usage_bytes = measured
+    (group,) = observer.cache_groups(
+        SimpleNamespace(kv_cache_groups=[_group(["kda.0"], spec)]), hybrid_evidence=True, vllm_config=config
+    )
+    assert calls == [config]
+    assert group["state"]["startup_blocks_per_request"] == startup
+    assert group["state"]["blocks_per_request"] == 1
+
+
+@pytest.mark.parametrize("usage", [0, -1, True, 1.0, None])
+def test_mamba_startup_observation_refuses_invalid_runtime_memory(usage):
+    spec = _mamba()
+    spec.max_memory_usage_bytes = lambda _config: usage
+    with pytest.raises(ValueError, match="Mamba startup memory must be a positive integer"):
+        observer.cache_groups(
+            SimpleNamespace(kv_cache_groups=[_group(["kda.0"], spec)]),
+            hybrid_evidence=True,
+            vllm_config=_vllm_config(),
+        )
+
+
 @pytest.mark.parametrize(("count", "alignment"), [(1, 16), (0, None)])
 def test_import_carries_the_checkpoint_evidence_of_a_mamba_group(count, alignment):
     cache, scheduler = _hybrid_caches(
