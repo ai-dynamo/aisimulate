@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-# The wrappers whose text decoder is under llm_config. aisimulate_core.sdk.common builds the llm_config entries of
+# The wrappers whose text decoder is under llm_config. aisim_core.sdk.common builds the llm_config entries of
 # MULTIMODAL_TEXT_CONFIG_KEY from this set, so the op-level parser and decoder_config_key unwrap the same wrappers.
 LLM_CONFIG_WRAPPERS = frozenset({"NemotronH_Omni_Reasoning_V3"})
 

@@ -95,12 +95,12 @@ def test_the_registry_maps_wrappers_only_to_keys_that_the_helper_orders():
 
 
 def test_the_decoder_key_of_a_registered_wrapper_loads_no_sdk_module():
-    # FPM config intake must stay usable in a process that does not import aisimulate_core.sdk.
+    # FPM config intake must stay usable in a process that does not import aisim_core.sdk.
     probe = (
         "import json, sys\n"
-        "from aisimulate_core.decoder_config import decoder_config_key\n"
+        "from aisim_core.decoder_config import decoder_config_key\n"
         "assert decoder_config_key(json.loads(sys.argv[1])) == 'llm_config'\n"
-        "loaded = [name for name in sys.modules if name.startswith('aisimulate_core.sdk')]\n"
+        "loaded = [name for name in sys.modules if name.startswith('aisim_core.sdk')]\n"
         "assert not loaded, loaded\n"
     )
     document = json.dumps({"architectures": [_VL], **_BOTH_KEYS})

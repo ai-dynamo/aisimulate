@@ -1689,7 +1689,7 @@ def test_llm_config_markers_and_architecture_match_config_intake(tmp_path, decod
     ids=["text-in-text", "llm-in-llm", "llm-in-text", "text-in-llm"],
 )
 def test_decoder_that_nests_a_decoder_key_is_refused_as_config_intake_refuses_it(tmp_path, key, inner, ambiguity):
-    from aisimulate.support.config_profile import load_model_config as load_intake_config
+    from aisim.support.config_profile import load_model_config as load_intake_config
 
     decoder = _packaged_config(_NEMOTRON_SUPER)
     path = tmp_path / "config.json"
@@ -1711,7 +1711,7 @@ def test_decoder_that_nests_a_decoder_key_is_refused_as_config_intake_refuses_it
 
 @pytest.mark.parametrize("key", ["text_config", "llm_config"])
 def test_null_inner_llm_config_is_not_a_decoder_for_the_collector_or_intake(tmp_path, key):
-    from aisimulate.support.config_profile import load_model_config as load_intake_config
+    from aisim.support.config_profile import load_model_config as load_intake_config
 
     decoder = {**_packaged_config(_NEMOTRON_SUPER), "llm_config": None}
     path = tmp_path / "config.json"
@@ -1727,7 +1727,7 @@ def test_null_inner_llm_config_is_not_a_decoder_for_the_collector_or_intake(tmp_
 
 @pytest.mark.parametrize("text_config", [None, [], "decoder", {}], ids=["null", "list", "string", "empty-object"])
 def test_malformed_text_config_is_refused_as_config_intake_refuses_it(tmp_path, text_config):
-    from aisimulate.support.config_profile import load_model_config as load_intake_config
+    from aisim.support.config_profile import load_model_config as load_intake_config
 
     # The wrapper's flat fields describe a valid decoder, so only the refusal keeps the collector off them.
     document = {
@@ -1756,8 +1756,8 @@ def test_malformed_text_config_is_refused_as_config_intake_refuses_it(tmp_path, 
 
 @pytest.mark.parametrize("llm_config", [None, {}, "decoder", []], ids=["null", "empty-object", "string", "list"])
 def test_malformed_llm_config_of_a_registered_wrapper_is_refused_as_config_intake_refuses_it(tmp_path, llm_config):
-    from aisimulate.support.config_profile import load_model_config as load_intake_config
-    from aisimulate_core.sdk.fpm_profile import _validate_checkpoint_architecture
+    from aisim.support.config_profile import load_model_config as load_intake_config
+    from aisim_core.sdk.fpm_profile import _validate_checkpoint_architecture
 
     # The registry maps this wrapper to llm_config, so the key holds its decoder whenever it is present. The wrapper's
     # flat fields describe a valid decoder, so only the refusal keeps the readers off them.
@@ -1787,7 +1787,7 @@ def test_malformed_llm_config_of_a_registered_wrapper_is_refused_as_config_intak
     ids=["flat", "null-llm-config", "empty-llm-config", "list-llm-config", "string-llm-config"],
 )
 def test_flat_config_and_an_llm_config_that_is_no_decoder_load_in_the_collector_and_intake(tmp_path, extra):
-    from aisimulate.support.config_profile import load_model_config as load_intake_config
+    from aisim.support.config_profile import load_model_config as load_intake_config
 
     document = {**_packaged_config(_NEMOTRON_SUPER), **extra}
     path = tmp_path / "config.json"
