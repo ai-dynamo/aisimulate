@@ -28,8 +28,8 @@ The family comparison includes runtime/backend differences. Depths beyond
 
 The figure records the study values supplied with this change. Full observations,
 exclusions and fitting comparisons are in the
-[study report](https://gitlab-pages-72a7bf.gitlab-master-pages.nvidia.com/sd-unified-depth.html)
-(NVIDIA access; report revision `19ff8f8a4d6018fe0d2009af1013aae90df882a6`).
+private study report (revision `19ff8f8a4d6018fe0d2009af1013aae90df882a6`).
+Its location is omitted; the full report is not publicly available.
 
 ## Formula and numerical results
 

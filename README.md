@@ -22,21 +22,21 @@ Maintainers and agents: CI executes the bash/yaml examples in this README.
 See docs/ci/README.md and scripts/readme/check_readme_commands.py for execution details.
 -->
 
-# AISimulate
+# AISim
 
-AISimulate predicts LLM serving behavior and searches for strong deployment
+AISim predicts LLM serving behavior and searches for strong deployment
 configurations offline, without bringing up a GPU serving cluster.
 
 [Documentation](docs/README.md) ·
-[Website](https://ai-dynamo.org/aisimulate/) ·
-[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) ·
-[FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
+[Website](https://ai-dynamo.org/aisim/) ·
+[E2E Accuracy Overview](https://ai-dynamo.org/aisim/e2e-accuracy/) ·
+[FPM Accuracy Overview](https://ai-dynamo.org/aisim/fpm-accuracy/) ·
 [FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
-[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
-[Feature Support Matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/) ·
-[Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
+[FPE Support Matrix](https://ai-dynamo.org/aisim/fpe-support-matrix/) ·
+[Feature Support Matrix](https://ai-dynamo.org/aisim/feature-support-matrix/) ·
+[Legacy AIC Support Matrix](https://ai-dynamo.org/aisim/support-matrix/)
 
-AISimulate is the successor to the
+AISim is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
 repository. It brings the complete AIC application and estimator into one
 standalone home with Dynamo-independent Replay and Sweeper capabilities.
@@ -60,11 +60,11 @@ on `main` can describe features newer than the latest published wheel.
 
 ### Engine-only
 
-Install AISimulate by itself to use the built-in simulation engine without a
+Install AISim by itself to use the built-in simulation engine without a
 Dynamo dependency. Use a fresh virtual environment for each installation profile.
 This branch builds the renamed `aisim` distribution. The following commands
 require an `aisim` release on your selected index; until that publication is
-available, use a historical `aisimulate` release in its own environment or
+available, use a historical `aisim` release in its own environment or
 [develop from source](#develop-from-source).
 
 <!-- readme-check: release-install -->
@@ -73,7 +73,7 @@ python3 -m pip install aisim
 aisim --help
 ```
 
-### Migrate an existing AISimulate environment
+### Migrate an existing AISim environment
 
 `aisim` and `aisimulate` are different distribution names but install the same
 Python packages and `aisimulate` command. Uninstall `aisimulate` **before**
@@ -91,17 +91,19 @@ files. For an environment containing Dynamo, first select a Dynamo release
 whose declared dependency is `aisim`; a release that still requires
 `aisimulate` can reinstall the old distribution. Keep the historical pair below
 in a separate environment until that downstream migration is available.
-Python imports remain `aisimulate` and `aisimulate_core`.
+Use `aisim` and `aisim_core` for new Python imports; `aisimulate` and `aisimulate_core` remain compatibility aliases.
 
 ### With Dynamo
 
 > **Compatibility warning:** Older Dynamo releases may be incompatible with
-> current AISimulate source. Dynamo 1.5.0 uses removed AISimulate imports, and
+> current AISim source. Dynamo 1.5.0 uses removed AISim imports, and
 > 1.4.2 does not register the `dynamo` stack. The pinned nightly pair below is
-> validated together; it does not establish compatibility with AISimulate tip
-> of tree. Do not upgrade AISimulate independently of Dynamo's declared dependency.
+> validated together; it does not establish compatibility with AISim tip
+> of tree. Do not upgrade AISim independently of Dynamo's declared dependency.
 
 Install this pair on Linux with Python 3.12 in a **separate environment**:
+
+The Dynamo command examples below use this historical pair's `aisimulate` executable. Current source-built AISim environments use `aisim`.
 
 <!-- readme-check: dynamo-install -->
 ```bash
@@ -111,7 +113,7 @@ python3 -m pip check
 aisimulate predict --help
 ```
 
-This pair exercises the nightly AISimulate wheel, not the current source checkout.
+This pair exercises the nightly AISim wheel, not the current source checkout.
 The Full CI README checks record installed versions and run both Dynamo
 prediction and recommendation; `--help` alone does not validate the adapters.
 
@@ -126,7 +128,7 @@ In an engine-only environment, remove the former distributions before upgrading:
 
 <!-- readme-check: release-upgrade -->
 ```bash
-python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisimulate
+python3 -m pip uninstall -y aiconfigurator aiconfigurator-core aisim
 python3 -m pip install --upgrade aisim
 python3 -m pip check
 ```
@@ -151,10 +153,10 @@ engine:
 
 <!-- readme-check: engine-predict -->
 ```bash
-aisimulate predict \
+aisim predict \
   --stack engine \
   --config prediction.yaml \
-  --output-dir ./aisimulate-prediction
+  --output-dir ./aisim-prediction
 ```
 
 For offline `--stack engine` replay with vLLM/SGLang, `--capture-telemetry`
@@ -163,7 +165,7 @@ and agentic lifecycle events. Sampling defaults to 1,000 simulated milliseconds;
 adjust it with `--telemetry-sample-interval-ms`. See the
 [telemetry output contract](docs/getting-started/understand-results.md#replay-telemetry).
 
-Add `--export-html` to `aisimulate predict` to capture telemetry and write a
+Add `--export-html` to `aisim predict` to capture telemetry and write a
 standalone `report.html` dashboard with profiling, warmup, and request timelines.
 Open it directly in a browser; charts and data are embedded for offline use.
 See the [dashboard guide](docs/getting-started/understand-results.md#replay-dashboard).
@@ -181,7 +183,7 @@ See the API reference for the runnable example, arguments and results.
 aisimulate predict \
   --stack dynamo \
   --config prediction.yaml \
-  --output-dir ./aisimulate-dynamo-prediction
+  --output-dir ./aisim-dynamo-prediction
 ```
 
 The CLI prints a concise summary and writes the selected runner's complete
@@ -194,12 +196,12 @@ previous output with a JSON summary:
 
 <!-- readme-check: engine-options -->
 ```bash
-aisimulate predict \
+aisim predict \
   --stack engine \
   --config prediction.yaml \
   --set engine.workers.aggregated.parallelism.tensor=2 \
   --capture-per-request --format json --overwrite \
-  --output-dir ./aisimulate-prediction > prediction-summary.json
+  --output-dir ./aisim-prediction > prediction-summary.json
 ```
 
 For agentic trace replay, follow the [AgentX simulation quickstart](docs/replay/agentic/quickstart.md).
@@ -244,10 +246,10 @@ for the default 320-trial search, which can take substantially longer.
 
 <!-- readme-check: engine-recommend -->
 ```bash
-aisimulate recommend \
+aisim recommend \
   --stack engine \
   --config recommendation.yaml \
-  --output-dir ./aisimulate-recommendation
+  --output-dir ./aisim-recommendation
 ```
 
 ### Python recommendation API
@@ -263,7 +265,7 @@ See the API reference for the runnable example, arguments and results.
 aisimulate recommend \
   --stack dynamo \
   --config recommendation.yaml \
-  --output-dir ./aisimulate-dynamo-recommendation
+  --output-dir ./aisim-dynamo-recommendation
 ```
 
 Each file under `<output-dir>/recommendations/` is a fully materialized,
@@ -272,9 +274,9 @@ directly back to `predict`:
 
 <!-- readme-check: engine-roundtrip -->
 ```bash
-aisimulate predict \
-  --config ./aisimulate-recommendation/recommendations/0001.yaml \
-  --output-dir ./aisimulate-best-prediction
+aisim predict \
+  --config ./aisim-recommendation/recommendations/0001.yaml \
+  --output-dir ./aisim-best-prediction
 ```
 
 For the Dynamo result, use the same stack on the round trip:
@@ -283,21 +285,27 @@ For the Dynamo result, use the same stack on the round trip:
 ```bash
 aisimulate predict \
   --stack dynamo \
-  --config ./aisimulate-dynamo-recommendation/recommendations/0001.yaml \
-  --output-dir ./aisimulate-dynamo-best-prediction
+  --config ./aisim-dynamo-recommendation/recommendations/0001.yaml \
+  --output-dir ./aisim-dynamo-best-prediction
 ```
 
 Both commands support `--set PATH=YAML_VALUE`, `--output-dir`, `--overwrite`,
-and `--format table|json`. See the [AISimulate CLI User Guide](docs/reference/cli.md) for the
+and `--format table|json`. See the [AISim CLI User Guide](docs/reference/cli.md) for the
 complete schema, traffic models, search domains, presets, outputs, and error
 contract.
 
 ## AIConfigurator compatibility CLI
 
-The `aisimulate` wheel preserves the established `aiconfigurator` command for
-workflows that have not yet moved to the unified CLI. AISimulate 0.13.0 keeps
+The `aisim` wheel preserves the established `aiconfigurator` command for
+workflows that have not yet moved to the unified CLI. AISim 0.13.0 keeps
 this compatibility surface, while new prediction and search integrations
-should start with `aisimulate predict` and `aisimulate recommend`.
+should start with `aisim predict` and `aisim recommend`.
+
+Support queries default to the backend's current version slot. The example
+below currently reports `NO` for both modes because that slot lacks certification
+for this model; generating a starting configuration does not certify support.
+The displayed result and the expected output in `scripts/readme/readme_commands.json`
+track the current slot and certification data; update them together when that data changes.
 
 <!-- readme-check: legacy-cli -->
 ```bash
@@ -325,8 +333,8 @@ The compatibility CLI preserves six workflows:
 | `support` | Check model and system coverage |
 
 Read the [Legacy AIC CLI User Guide](docs/aic-backward-compatibility/cli.md) for
-command examples and the [package overview](python/aisimulate/README.md)
-for installation and current AISimulate workflows. The
+command examples and the [package overview](python/aisim/README.md)
+for installation and current AISim workflows. The
 [AIC migration guide](docs/aic-backward-compatibility/migration.md)
 explains which AIC workflows map to `predict` or `recommend` and which ones
 must continue using the compatibility command for now.
@@ -335,14 +343,14 @@ must continue using the compatibility command for now.
 
 The standalone [AIConfigurator repository](https://github.com/ai-dynamo/aiconfigurator)
 will publish its final 0.12.0 `aiconfigurator` and `aiconfigurator-core`
-artifacts and then be archived. AISimulate is the canonical home for ongoing
+artifacts and then be archived. AISim is the canonical home for ongoing
 development, releases, issues, and pull requests; open all new issues and pull
 requests in this repository.
 
 The `aiconfigurator` compatibility command remains available from the
-`aisimulate` wheel through 0.13.0. It is targeted for removal in AISimulate 0.14.0,
+`aisim` wheel through 0.13.0. It is targeted for removal in AISim 0.14.0,
 after every remaining AIC workflow has a verified replacement in the unified
-`aisimulate` CLI. Until then, use the compatibility command for the workflows
+`aisim` CLI. Until then, use the compatibility command for the workflows
 identified in the migration guide.
 
 ## Experimental status and validation boundary
@@ -351,7 +359,7 @@ identified in the migration guide.
 > Replay and Sweeper are still evolving. Their APIs, schemas, search behavior,
 > and output may change without a standard deprecation period.
 
-AISimulate narrows a deployment search and identifies candidates; it does not
+AISim narrows a deployment search and identifies candidates; it does not
 replace validation on the target hardware. Benchmark shortlisted
 configurations on a real deployment before making production capacity or SLA
 decisions.
@@ -392,7 +400,7 @@ the resulting end-to-end prediction is accurate.
 ### Explicit CUDA graph reservation
 
 KV-cache estimation and engine replay accept an optional rank-local
-`cuda_graph_reserved_bytes` value. AISimulate subtracts this fixed runtime
+`cuda_graph_reserved_bytes` value. AISim subtracts this fixed runtime
 reservation before allocating KV cache and preserves it when the native replay
 runtime rematerializes capacity. For SGLang, the value is additional to the
 graph/runtime headroom already encoded by `mem_fraction_static`. The default is
@@ -401,7 +409,7 @@ zero, so existing serialized callers do not change. See the
 
 ### FPE support matrix
 
-The published [Forward Pass Engine (FPE) matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
+The published [Forward Pass Engine (FPE) matrix](https://ai-dynamo.org/aisim/fpe-support-matrix/)
 measures strict-native estimator coverage across a curated roster of current
 models, GPU systems, backends, and backend versions. It probes native prefill,
 decode-start, decode-end, and mixed forward-pass calls without fallback.
@@ -409,7 +417,7 @@ It does not certify the CLI, Replay,
 Sweeper, serving orchestration, or prediction accuracy.
 
 The matrix was introduced in
-[AISimulate PR #41](https://github.com/ai-dynamo/aisimulate/pull/41). Nightly
+[AISim PR #41](https://github.com/ai-dynamo/aisim/pull/41). Nightly
 CI refreshes the complete matrix from the staged nightly wheel at its source
 SHA. Qualification gates the later GitLab security handoff, not initial
 Artifactory staging.
@@ -419,8 +427,8 @@ Artifactory staging.
 The compatibility support matrix covers AIC command-based aggregated and
 disaggregated workflows by model, system, backend, and backend version:
 
-- [Interactive legacy AIC support matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
-- [AIC support-matrix data](python/aisimulate/src/aisimulate_core/systems/support_matrix/)
+- [Interactive legacy AIC support matrix](https://ai-dynamo.org/aisim/support-matrix/)
+- [AIC support-matrix data](python/aisim/src/aisim_core/systems/support_matrix/)
 - [Curated model roster](docs/aic-backward-compatibility/support-matrix.md)
 
 Check one exact cell from the installed package with (this cell currently reports
@@ -437,21 +445,21 @@ aiconfigurator cli support \
 
 ### E2E accuracy overview
 
-The published [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)
+The published [E2E Accuracy Overview](https://ai-dynamo.org/aisim/e2e-accuracy/)
 reports TTFT and TPOT error, curve-shape error, and prediction coverage against
 matched measured-silicon operating points. It is evidence for the measured
 configurations, not a universal support contract.
 
 Forward-pass accuracy is tracked separately; see the
 [prediction regression and accuracy design](docs/ci/accuracy.md#prediction-regression-gate)
-and the current [silicon anchor set](python/aisimulate/tools/accuracy_tracking/silicon_refs.csv).
+and the current [silicon anchor set](python/aisim/tools/accuracy_tracking/silicon_refs.csv).
 
 ## Release artifacts and compatibility
 
 Starting with 0.12.0, this repository owns the complete AIConfigurator product
 surface—not only its native core. The application, CLI, generator, SDK,
 Collector, tests, documentation, and development tooling live under
-`python/aisimulate/`.
+`python/aisim/`.
 
 This repository produces exactly two release artifacts:
 
@@ -461,24 +469,19 @@ This repository produces exactly two release artifacts:
 2. `aisim-core` Rust crate — the native estimator and simulation core for
    Rust consumers.
 
-It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a
-Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
-`aisim` wheel exposes the `aisimulate` application and `aisimulate_core`
-estimator packages. Only the legacy `aiconfigurator` executable remains; see
-[Python source migration](docs/aic-backward-compatibility/migration.md#python-imports-and-resources) for removed imports.
+It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a Python core distribution, or an `aiconfigurator-core` crate. The `aisim` wheel owns the canonical `aisim` application and `aisim_core` estimator packages, including `aisim._runtime`. The legacy `aiconfigurator` executable remains available; see [Python source migration](docs/aic-backward-compatibility/migration.md#python-imports-and-resources) for removed imports.
 
-Source builds also provide `aisim` as an alias for `aisimulate`; both commands
-use the same entry point. Python imports remain `aisimulate` and `aisimulate_core`.
+`aisim` is the canonical command. The `aisimulate` executable and Python imports remain compatibility aliases for `aisim` and `aisim_core`; both names share the same entrypoint, module objects, classes, caches, and resources. The former checkout path `python/aisimulate` is a symlink to `python/aisim`. Rust consumers use `aisim-core` and `aisim_core`; existing Rust source can retain `use aisimulate_core` by naming its Cargo dependency `aisimulate-core = { package = "aisim-core", version = "..." }`.
 
-The AISimulate wheel does not declare Dynamo as an installation dependency.
+The AISim wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
-consume AISimulate through optional adapters.
+consume AISim through optional adapters.
 
 ### Packaged legal-file copies
 
 The root [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 are the canonical repository legal files. Because the Python wheel build is
-rooted at `python/aisimulate/`, byte-identical copies are retained there so the
+rooted at `python/aisim/`, byte-identical copies are retained there so the
 wheel can declare and distribute them. These copies do not create a separate
 licensing boundary, and CI fails if either copy differs from its root original.
 See the [artifact contract](docs/ci/release.md#packaged-license-files) for
@@ -487,22 +490,22 @@ the complete packaging contract.
 ## Develop from source
 
 Install Python 3.12, `uv`, Rust/Cargo, and a C/C++ compiler first. From an empty
-working directory (set `AISIMULATE_REF` to an exact commit for reproducibility):
+working directory (set `AISIM_REF` to an exact commit for reproducibility):
 
 <!-- readme-check: source-install -->
 ```bash
-git clone https://github.com/ai-dynamo/aisimulate.git
-cd aisimulate
-git checkout "${AISIMULATE_REF:-main}"
+git clone https://github.com/ai-dynamo/aisim.git
+cd aisim
+git checkout "${AISIM_REF:-${AISIMULATE_REF:-main}}"
 
 uv venv --python 3.12 --seed .venv
 source .venv/bin/activate
-uv pip install -e ./python/aisimulate
+uv pip install -e ./python/aisim
 python -m pip check
 ```
 
 After pulling native Rust changes, rebuild the editable installation with
-`uv pip install --reinstall-package aisimulate -e ./python/aisimulate`.
+`uv pip install --reinstall-package aisim -e ./python/aisim`.
 Run the command in the environment that owns your `aiconfigurator` executable.
 
 Current performance profiles are checked-in Parquet files, so normal builds
@@ -512,7 +515,7 @@ compatibility tests.
 
 ## Accuracy evidence
 
-The published [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)
+The published [E2E Accuracy Overview](https://ai-dynamo.org/aisim/e2e-accuracy/)
 reports matched client-observed TTFT and TPOT accuracy against measured silicon
 operating points. It keeps accuracy, evidence coverage, and curve-shape error
 separate and includes a machine-readable aggregate with exact snapshot digests.
@@ -531,7 +534,7 @@ plugins and optional modules can interfere with isolated package tests.
 
 <!-- readme-check: test-install -->
 ```bash
-uv pip install -e './python/aisimulate[dev]' 'maturin>=1.12,<2' 'pip-licenses==5.5.5'
+uv pip install -e './python/aisim[dev]' 'maturin>=1.12,<2' 'pip-licenses==5.5.5'
 uv pip install -r scripts/fpm_accuracy/requirements.txt
 python -m pip check
 git fetch origin d066e918705b98e2d55eed55743ce8d225f129ea
@@ -553,13 +556,13 @@ cargo test --workspace
 <!-- readme-check: root-tests -->
 ```bash
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
-  PYTHONPATH="$PWD/python/aisimulate:$PWD/python/aisimulate/src${PYTHONPATH:+:$PYTHONPATH}" \
+  PYTHONPATH="$PWD/python/aisim:$PWD/python/aisim/src${PYTHONPATH:+:$PYTHONPATH}" \
   python -m pytest -c pytest.ini tests
 ```
 
 <!-- readme-check: package-tests -->
 ```bash
-(cd python/aisimulate && \
+(cd python/aisim && \
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
   PYTHONPATH="$PWD:$PWD/src${PYTHONPATH:+:$PYTHONPATH}" \
   python -m pytest -c pytest.ini tests -m "unit or build")
@@ -586,7 +589,7 @@ the same request lengths.
 
 ### FPM accuracy overview
 
-The [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/?branch=main)
+The [FPM Accuracy Overview](https://ai-dynamo.org/aisim/fpm-accuracy/?branch=main)
 reports daily FPM (KV warmup on), FPM (KV warmup off), and online regression accuracy against
 pinned Hugging Face measurements. It evaluates main and releases >= 0.12.0,
 with MAPE, prediction coverage, and exact source provenance. Results stay in

@@ -27,9 +27,9 @@ use super::telemetry::{
 };
 use super::{
     components::{
-        AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects, EnginePassMode,
-        PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayReadyArrival,
-        TokenizationLatency, TokenizationStage, TrafficAccumulators,
+        AdmissionEvent, AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects,
+        EnginePassMode, PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation,
+        ReplayReadyArrival, TokenizationLatency, TokenizationStage, TrafficAccumulators,
     },
     state::AggRequestState,
 };
@@ -648,7 +648,8 @@ where
             return Ok(());
         }
         if let Some(token_id) = signal.token_id {
-            self.admission.defer_output_token(signal.uuid, token_id)?;
+            self.admission
+                .defer_output_token(signal.uuid, token_id, self.now_ms)?;
             if self.detokenization.is_some() {
                 self.collector
                     .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
@@ -1013,7 +1014,7 @@ where
         Ok(changed)
     }
 
-    /// Start passes on every idle worker that can make progress at the current timestamp.
+    /// Yields to admission between passes so reactions can join unstarted work.
     fn drive_ready_workers(&mut self) -> anyhow::Result<bool> {
         let mut changed = false;
         loop {
@@ -1026,6 +1027,9 @@ where
             changed = true;
             self.handle_engine_effects(effects)?;
             if self.defer_drive && self.step_freed_slot {
+                return Ok(changed);
+            }
+            if self.admission.holds_passes() {
                 return Ok(changed);
             }
         }
@@ -1053,6 +1057,27 @@ where
         })
     }
 
+    /// Tell the placement policy about a request's first admission. Later
+    /// admissions re-run a preempted request; its prefill already started.
+    fn notify_prefill_started(&mut self, admission: &AdmissionEvent) -> anyhow::Result<()> {
+        let Some(state) = self.requests.get_mut(&admission.uuid) else {
+            bail!(
+                "offline replay missing request state for {}",
+                admission.uuid
+            );
+        };
+        if state.prefill_started {
+            return Ok(());
+        }
+        state.prefill_started = true;
+        let placements = self.placement.prefill_started(
+            admission.uuid,
+            admission.reused_input_tokens,
+            self.now_ms,
+        )?;
+        self.dispatch_placements(placements)
+    }
+
     fn handle_engine_effects(
         &mut self,
         effects: EngineEffects<Observation::Batch>,
@@ -1061,7 +1086,7 @@ where
         // generalized-engine boundary as pass-start effects. Preserve the old
         // scheduler contract by making them visible to Replay's collector at
         // the same virtual timestamp before any completion is processed.
-        for admission in effects.admissions {
+        for admission in &effects.admissions {
             if let (Some(telemetry), Some(input)) = (
                 &mut self.telemetry,
                 self.collector.first_admission_input(admission.uuid),
@@ -1102,6 +1127,9 @@ where
             sink.record_pass_start_kv_events(pass_start.at_ms, &pass_start.kv_events)?;
         }
         self.apply_engine_observations(effects.pass_start_events, KvIngestBoundary::PassStart)?;
+        for admission in &effects.admissions {
+            self.notify_prefill_started(admission)?;
+        }
         for payload in effects.immediate_completions {
             self.process_worker_completion_payload(payload)?;
         }
@@ -1162,6 +1190,19 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> anyhow::Result<()> {
+        // Empty source wakeups must not start engine work between native events.
+        let cluster_in_flight = self.cluster_in_flight();
+        if self.admission.wakeup_step(self.now_ms, cluster_in_flight)?
+            && self.drive_started
+            && self
+                .next_timestamps()
+                .1
+                .is_none_or(|next_ms| next_ms > self.now_ms)
+        {
+            // A final empty wakeup must not suppress a due periodic sample.
+            self.apply_telemetry_ticks()?;
+            return Ok(());
+        }
         #[cfg(test)]
         {
             self.stats.semantic_drain_count += 1;
@@ -1198,10 +1239,18 @@ where
                 self.drive_pending = true;
                 return Ok(());
             }
+            if self.admission.holds_passes() {
+                continue;
+            }
             changed |= self.drive_ready_workers()?;
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;
                 return Ok(());
+            }
+            // Settle current feedback before observers run, without moving native
+            // tick boundaries for feedback that emerges in a later drain iteration.
+            if self.admission.holds_passes() {
+                continue;
             }
             let removed = self
                 .engine
@@ -1874,6 +1923,13 @@ where
             return Ok(ReplayStepOutcome::Settled {
                 now_ms: self.now_ms,
             });
+        }
+        if self.admission.is_external()
+            && self.cluster_in_flight() == 0
+            && self.only_idle_events_remain()
+            && self.engine.is_drained()
+        {
+            self.admission.check_not_stalled()?;
         }
 
         loop {

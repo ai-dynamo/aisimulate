@@ -5,17 +5,17 @@ from __future__ import annotations
 
 import pytest
 
-from aisimulate.config_adapter import (
+from aisim.config_adapter import (
     ConfigAdapterResolutionError,
     resolve_config_adapters,
 )
-from aisimulate.stack import (
+from aisim.stack import (
     DuplicateStackError,
     StackNotFoundError,
     resolve_runner_factory,
 )
-from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
-from aisimulate.sweeper.replay import RunnerCapabilities
+from aisim.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
+from aisim.sweeper.replay import RunnerCapabilities
 
 
 class _EntryPoint:

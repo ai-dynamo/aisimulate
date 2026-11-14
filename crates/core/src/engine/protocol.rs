@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior adapted from SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Commands and effects exchanged with one scheduler rank.
 
@@ -81,6 +84,10 @@ pub struct Request {
     /// Optional session attribution; does not affect scheduling or cache identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// SGLang cache namespace; empty is equivalent to absent. Other backends
+    /// reject nonempty salts before accepting the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
     /// Image placeholders inside `tokens`, in prompt order; empty for text-only requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageSpec>,
@@ -181,7 +188,7 @@ pub enum TtftMilestone {
 pub struct KvBlock {
     /// Sequence-aware block hash.
     pub block_hash: u64,
-    /// Token-only local block hash.
+    /// Local block hash, including the request's cache namespace when present.
     pub tokens_hash: u64,
     /// Token IDs retained only when explicitly configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,6 +214,9 @@ pub struct StoredBlocks {
     /// Session of the request making these blocks visible, not exclusive ownership.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Namespace used to derive these blocks' identities; absent for unsalted requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_salt: Option<String>,
 }
 
 /// Runtime-neutral KV event payload.

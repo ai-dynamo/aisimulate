@@ -44,7 +44,7 @@ from scripts.e2e_accuracy.source.recipes.runtime_evidence import prepare_runtime
 from scripts.pages.build_pages_site import _accuracy_summary
 from scripts.release.package_identity import installed_distribution
 
-REPOSITORY = "https://github.com/ai-dynamo/aisimulate"
+REPOSITORY = "https://github.com/ai-dynamo/aisim"
 
 
 def encoded(value) -> bytes:
@@ -201,6 +201,7 @@ def predictor_module_names(files) -> tuple[str, str]:
     layouts = [
         (api, adapter)
         for api, adapter in (
+            ("aisim.legacy_cli.api", "aisim.sdk.config_adapter"),
             ("aisimulate.legacy_cli.api", "aisimulate.sdk.config_adapter"),
             ("aiconfigurator.cli.api", "aiconfigurator.sdk.config_adapter"),
         )
@@ -221,9 +222,13 @@ def wheel_identity(wheel: Path) -> dict:
     dist = installed_distribution()
     checked = 0
     with zipfile.ZipFile(wheel) as archive:
-        api, adapter = predictor_module_names(archive.namelist())
+        members = archive.namelist()
+        api, adapter = predictor_module_names(members)
+        application = "aisim" if "aisim/runner.py" in members else "aisimulate"
         for member in archive.namelist():
-            if member.endswith("/") or not member.startswith(("aisimulate/", "aiconfigurator/", "aisimulate_core/")):
+            if member.endswith("/") or not member.startswith(
+                ("aisim/", "aisimulate/", "aiconfigurator/", "aisim_core/", "aisimulate_core/")
+            ):
                 continue
             installed = Path(dist.locate_file(member))
             if not installed.is_file() or archive.read(member) != installed.read_bytes():
@@ -231,23 +236,23 @@ def wheel_identity(wheel: Path) -> dict:
             checked += 1
     if checked < 3:
         raise ValueError("wheel does not contain the unified package")
-    for name in ("aisimulate._runtime", "aisimulate.runner", api, adapter):
+    for name in (f"{application}._runtime", f"{application}.runner", api, adapter):
         module = importlib.import_module(name)
         if not Path(module.__file__).resolve().is_relative_to(Path(dist.locate_file("")).resolve()):
             raise ValueError("import resolved outside installed wheel")
     return {
         "wheel_sha256": digest(wheel),
-        "packages": {"aisimulate": dist.version},
+        "packages": {dist.metadata["Name"]: dist.version},
         "baseline_api": api,
         "config_adapter": adapter,
         "cli_entry_point": "aiconfigurator.main:main"
         if api.startswith("aiconfigurator.")
-        else "aisimulate.legacy_cli.entrypoint:main",
+        else api.removesuffix("api") + "entrypoint:main",
     }
 
 
 def replay_spec(request, backend_version: str):
-    from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
+    from aisim.sweeper.replay import BackendDeploymentSpec, ReplaySpec
 
     def engine(worker, system, role):
         args = {
@@ -330,7 +335,7 @@ def replay_spec(request, backend_version: str):
 def predict_point(point: dict) -> dict:
     if "source_row" in point:
         return predict_resolved_point(point)
-    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisim.runner import EngineReplayRunnerFactory
 
     api_name, adapter_name = predictor_module_names(installed_distribution().files or ())
     cli_estimate = importlib.import_module(api_name).cli_estimate
@@ -447,7 +452,7 @@ def predict_point(point: dict) -> dict:
             aisimulate_status="success",
             dynamo_ttft_ms=ttft,
             dynamo_tpot_ms=tpot,
-            aisimulate_runner="aisimulate.engine_replay",
+            aisimulate_runner="aisim.engine_replay",
             **replay_chart_metrics(metrics, total_gpus),
         )
     except Exception as exc:
@@ -510,8 +515,8 @@ def predict_resolved_point(point):
             "reason": "source_unresolved",
         }
 
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
+    from aisim.runner import EngineReplayRunnerFactory
+    from aisim.sweeper.replay import BackendDeploymentSpec, ReplaySpec
     from scripts.e2e_accuracy.source.estimate import estimate_kwargs
     from scripts.e2e_accuracy.source.model_config_snapshot import materialize_model_config
     from scripts.e2e_accuracy.source.replay import replay_spec as resolved_replay_spec
@@ -520,7 +525,7 @@ def predict_resolved_point(point):
     deployment = point["deployment"]
     config, bench = point["config"], point["benchmark"]
     api_name, adapter_name = predictor_module_names(installed_distribution().files or ())
-    namespace = "aiconfigurator" if api_name.startswith("aiconfigurator.") else "aisimulate"
+    namespace = "aiconfigurator" if api_name.startswith("aiconfigurator.") else "aisim"
     try:
         version = importlib.import_module(namespace + ".sdk.perf_database").get_latest_database_version(
             system=deployment["system"], backend=deployment["backend"]
@@ -636,7 +641,7 @@ def predict_resolved_point(point):
             aisimulate_status="success",
             dynamo_ttft_ms=ttft,
             dynamo_tpot_ms=tpot,
-            aisimulate_runner="aisimulate.engine_replay",
+            aisimulate_runner="aisim.engine_replay",
             **replay_chart_metrics(metrics, total_gpus),
         )
     except Exception as error:

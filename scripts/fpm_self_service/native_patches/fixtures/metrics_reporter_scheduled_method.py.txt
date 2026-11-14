@@ -1,0 +1,51 @@
+# Copyright 2023-2024 SGLang Team
+# SPDX-License-Identifier: Apache-2.0
+# Extracted from https://github.com/sgl-project/sglang/blob/e087e662ba1ac4ef7747537e2a9141085efd4561/python/sglang/srt/managers/scheduler_components/metrics_reporter.py#L311
+# Modified container: standalone class wrapper for isolated regression tests.
+# The enclosed upstream method is unmodified. See adjacent ../licenses/.
+
+class SchedulerMetricsReporter:
+    def _build_scheduled_request_metrics(self, batch: ScheduleBatch):
+        from sglang.srt.observability.forward_pass_metrics import (
+            ScheduledRequestMetrics,
+            WelfordAccumulator,
+        )
+
+        num_prefill_requests = 0
+        sum_prefill_tokens = 0
+        sum_prefill_kv_tokens = 0
+        prefill_lengths = WelfordAccumulator()
+
+        if batch.forward_mode.is_mixed():
+            decode_req_ids = {id(req) for req in batch.decoding_reqs or []}
+            prefill_reqs = [req for req in batch.reqs if id(req) not in decode_req_ids]
+        elif batch.forward_mode.is_extend():
+            prefill_reqs = batch.reqs
+        else:
+            prefill_reqs = []
+
+        if prefill_reqs:
+            stats = batch.prefill_stats
+            for req in prefill_reqs:
+                prefill_lengths.add(len(req.origin_input_ids))
+            num_prefill_requests = stats.num_new_seqs if stats else len(prefill_reqs)
+            sum_prefill_tokens = stats.log_input_tokens if stats else 0
+            sum_prefill_kv_tokens = sum(len(req.prefix_indices) for req in prefill_reqs)
+
+        decode_kv = WelfordAccumulator()
+        if batch.forward_mode.is_mixed():
+            for req in batch.decoding_reqs or []:
+                decode_kv.add(req.seqlen)
+        elif batch.forward_mode.is_decode():
+            for sl in batch.seq_lens_cpu:
+                decode_kv.add(int(sl))
+
+        return ScheduledRequestMetrics(
+            num_prefill_requests=num_prefill_requests,
+            sum_prefill_tokens=sum_prefill_tokens,
+            var_prefill_length=prefill_lengths.variance(),
+            sum_prefill_kv_tokens=sum_prefill_kv_tokens,
+            num_decode_requests=decode_kv.count,
+            sum_decode_kv_tokens=decode_kv.total,
+            var_decode_kv_tokens=decode_kv.variance(),
+        )

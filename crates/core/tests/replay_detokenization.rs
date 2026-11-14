@@ -3,12 +3,12 @@
 
 use std::collections::VecDeque;
 
-use aisimulate_core::engine::{Backend, EngineConfig, TimingModelConfig};
-use aisimulate_core::replay::loadgen::{
+use aisim_core::engine::{Backend, EngineConfig, SglangConfig, TimingModelConfig};
+use aisim_core::replay::loadgen::{
     AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticHashIdScope, AgenticMooncakeHeader,
     AgenticMooncakeRow, AgenticSourceProvenance, ValidatedAgenticGraph, WorkloadDriver,
 };
-use aisimulate_core::replay::{
+use aisim_core::replay::{
     CURRENT_REPLAY_SPEC_VERSION, DirectRequest, PerRequestRecord, ReplayEngineConfig,
     ReplayEngineFactory, ReplayError, ReplayReport, ReplayRuntimeInput, ReplaySpec,
     ReplayTerminalStatus, ReplayTopology, Replayer, WorkerPoolSpec,
@@ -29,6 +29,10 @@ fn engine(backend: Backend) -> ReplayEngineConfig {
             num_gpu_blocks: 64,
             max_num_seqs: 4,
             max_num_batched_tokens: 64,
+            sglang: SglangConfig {
+                num_reserved_decode_tokens: 0,
+                ..SglangConfig::default()
+            },
             timing_model: TimingModelConfig::Fixed {
                 prefill_ms: 1.0,
                 decode_ms: 1.0,
