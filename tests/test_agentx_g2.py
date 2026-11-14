@@ -168,7 +168,9 @@ def test_multi_replica_g2_restores_evicted_prefixes(name, tmp_path) -> None:
     for worker in config["engine"]["workers"].values():
         worker["kv_cache"].pop("host_offload", None)
     hbm = _run(config)
-    assert sum(row["first_admission_host_reused_input_tokens"] for row in hbm["per_request"]) == 0
+    assert all("first_admission_host_reused_input_tokens" not in row for row in hbm["per_request"])
+    hbm_restored = next(row for row in hbm["per_request"] if row["request_id"].endswith(":outer:4"))
+    assert hbm_restored["reused_input_tokens"] == 0
     assert report["committed_prefill_tokens"] < hbm["committed_prefill_tokens"]
 
 
