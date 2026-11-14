@@ -3326,4 +3326,15 @@ mod fallback_errors {
             "no coverage".into()
         )));
     }
+
+    #[test]
+    fn dense_gemma4_expert_parallelism_is_not_fallback_safe() {
+        // `py::compile_engine_from_flat` maps the SDK's
+        // `InvalidEngineConfigurationError` to `InvalidEngineConfig`, so the
+        // dense Gemma 4 rejection surfaces from `best_available` instead of
+        // degrading to the regression estimator when fallback is allowed.
+        assert!(!can_fallback_to_regression(&AicError::InvalidEngineConfig(
+            "compile_engine: dense Gemma 4 variants require moe_ep_size=1, got 2".into()
+        )));
+    }
 }

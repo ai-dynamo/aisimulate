@@ -224,6 +224,36 @@ def test_explicit_source_prevents_naive_capacity_fallback(monkeypatch):
         )
 
 
+def _call_moe_control_entry_point(entry_point: str, model_path: str, controls: dict) -> None:
+    """Drive one MoE-control validation entry point with a nonexistent system.
+
+    The rejection must happen before database access, so the missing system is
+    never reached; a validation that is missing would surface as a database
+    error instead of the expected InvalidEngineConfigurationError.
+    """
+    from aisim_core.sdk import engine, memory
+
+    if entry_point == "compile":
+        engine.compile_engine(model_path, "missing-system", "sglang", **controls)
+    elif entry_point == "native_memory":
+        memory.KVCacheEstimator.from_request(
+            model_path, "missing-system", "sglang", max_num_tokens=1, max_batch_size=1, **controls
+        )
+    else:
+        memory.estimate_num_gpu_blocks(
+            model_path,
+            "missing-system",
+            "sglang",
+            scheduler_block_size=1,
+            max_num_tokens=1,
+            max_batch_size=1,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=True,
+            **controls,
+        )
+
+
 @pytest.mark.parametrize("entry_point", ["compile", "native_memory", "memory_with_fallback"])
 @pytest.mark.parametrize(
     ("model_path", "moe_backend", "message"),
@@ -235,29 +265,42 @@ def test_explicit_source_prevents_naive_capacity_fallback(monkeypatch):
 def test_unsupported_source_is_rejected_before_database_or_capacity_fallback(
     entry_point, model_path, moe_backend, message
 ):
-    from aisim_core.sdk import engine, memory
-
     controls = {"moe_backend": moe_backend, "moe_kernel_source": SOURCE}
     with pytest.raises(InvalidEngineConfigurationError, match=message):
-        if entry_point == "compile":
-            engine.compile_engine(model_path, "missing-system", "sglang", **controls)
-        elif entry_point == "native_memory":
-            memory.KVCacheEstimator.from_request(
-                model_path, "missing-system", "sglang", max_num_tokens=1, max_batch_size=1, **controls
-            )
-        else:
-            memory.estimate_num_gpu_blocks(
-                model_path,
-                "missing-system",
-                "sglang",
-                scheduler_block_size=1,
-                max_num_tokens=1,
-                max_batch_size=1,
-                memory_fraction_kind="of_total",
-                memory_fraction_value=0.9,
-                allow_naive_fallback=True,
-                **controls,
-            )
+        _call_moe_control_entry_point(entry_point, model_path, controls)
+
+
+# Gemma 4 mixes routed-MoE and dense checkpoints under one architecture, so the
+# family-level MoE gate is now resolved from the checkpoint's expert metadata.
+# A dense checkpoint must reject every MoE control at the engine and KV-cache
+# validation entry points, and a routed one must still accept them.
+_MOE_CONTROL_CASES = [
+    pytest.param({"moe_backend": "deepep_moe"}, id="moe-backend"),
+    pytest.param({"enable_eplb": True}, id="eplb"),
+    pytest.param({"wideep_num_slots": 4}, id="wideep-slots"),
+    pytest.param({"moe_kernel_source": SOURCE}, id="kernel-source"),
+]
+_DENSE_GEMMA4 = "nvidia/Gemma-4-31B-IT-NVFP4"
+_ROUTED_GEMMA4 = "nvidia/Gemma-4-26B-A4B-NVFP4"
+
+
+@pytest.mark.parametrize("entry_point", ["compile", "native_memory", "memory_with_fallback"])
+@pytest.mark.parametrize("controls", _MOE_CONTROL_CASES)
+def test_dense_gemma4_rejects_moe_controls_before_database_or_capacity(entry_point, controls):
+    from aisim_core.sdk.models import check_is_moe
+
+    assert check_is_moe(_DENSE_GEMMA4) is False
+    with pytest.raises(InvalidEngineConfigurationError, match="require an MoE model"):
+        _call_moe_control_entry_point(entry_point, _DENSE_GEMMA4, controls)
+
+
+@pytest.mark.parametrize("controls", _MOE_CONTROL_CASES)
+def test_routed_gemma4_still_accepts_the_same_moe_controls(controls):
+    from aisim_core.sdk.config_builders import validate_moe_controls
+    from aisim_core.sdk.models import check_is_moe
+
+    assert check_is_moe(_ROUTED_GEMMA4) is True
+    validate_moe_controls(model_path=_ROUTED_GEMMA4, **controls)
 
 
 @pytest.mark.parametrize("estimation_mode", ["auto", "op_level"])
@@ -280,6 +323,27 @@ def test_canonical_source_validation_cannot_fall_back(estimation_mode, model_pat
                 "fallback_policy": "allow",
                 "moe_backend": moe_backend,
                 "moe_kernel_source": SOURCE,
+            }
+        )
+
+
+def test_corrupt_gemma4_metadata_cannot_fall_back_to_a_regression_estimator(monkeypatch):
+    """A corrupt checkpoint must surface, not select another estimator."""
+    from aisim_core.sdk import models
+
+    corrupt = dict(models._get_model_info(_DENSE_GEMMA4))
+    corrupt["num_experts"] = 128
+    corrupt["topk"] = 0
+    monkeypatch.setattr(models, "_get_model_info", lambda *args, **kwargs: corrupt)
+    with pytest.raises(ValueError, match="invalid engine config:.*inconsistent expert metadata"):
+        RustForwardPassPerfModel.best_available(
+            {
+                "model": _DENSE_GEMMA4,
+                "system": "gb300",
+                "backend": "vllm",
+                "worker_type": "aggregated",
+                "estimation_mode": "auto",
+                "fallback_policy": "allow",
             }
         )
 

@@ -528,7 +528,9 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
             r"got moe_tp_size=\d+, moe_ep_size=\d+\.",
         ),
         (AssertionError, r"num_heads \d+ should be divisible by tp_size \d+"),
-        (AssertionError, r"dense Gemma 4 variants require moe_ep_size=1, got \d+"),
+        # ``InvalidEngineConfigurationError`` subclasses ``ValueError``; the
+        # anchored diagnostic below is the dense Gemma 4 moe_ep gate.
+        (ValueError, r"dense Gemma 4 variants require moe_ep_size=1, got \d+"),
         (
             ValueError,
             r"Invalid quantized MoE configuration: \(moe_intermediate_size=\d+ / moe_tp_size=\d+\) "

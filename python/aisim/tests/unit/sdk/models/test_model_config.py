@@ -126,6 +126,64 @@ def test_model_graph_rejects_moe_kernel_source_without_a_compatible_operator(mod
         get_model(model_path, model_config, "sglang")
 
 
+@pytest.mark.parametrize(
+    ("model_path", "num_experts", "topk", "expected"),
+    [
+        ("google/gemma-4-31B-it", None, 0, False),  # dense 31B / E2B / E4B
+        ("google/gemma-4-31B-it", 0, 0, False),
+        ("google/gemma-4-26B-A4B", 128, 8, True),  # routed-MoE
+    ],
+)
+def test_gemma4_moe_detection_follows_expert_config(model_path, num_experts, topk, expected):
+    """The Gemma 4 family mixes dense and routed-MoE checkpoints.
+
+    A dense variant has no experts (topk=0, num_experts=None) and only runs the
+    shared MLP. Treating it as MoE makes the sweeper propose moe_ep_size>1
+    shapes that Gemma4MixModel rejects, aborting KV-cache feasibility for every
+    multi-GPU configuration.
+    """
+    model_info = {
+        "architecture": "Gemma4ForConditionalGeneration",
+        "num_experts": num_experts,
+        "topk": topk,
+    }
+
+    assert check_is_moe(model_path, model_info=model_info) is expected
+
+
+@pytest.mark.parametrize(
+    ("num_experts", "topk"),
+    [
+        (128, 0),
+        (0, 8),
+        (None, 8),
+        (128, None),
+        (128, 129),
+        (128, -8),
+        (-128, 8),
+    ],
+)
+def test_gemma4_rejects_inconsistent_expert_config(num_experts, topk):
+    """A checkpoint declaring impossible expert routing is corrupt, not dense.
+
+    That covers one expert field missing, a routing width above the expert
+    count, and negative values (which are truthy, so a presence check alone
+    would accept them). Treating any of these as dense would silently build a
+    graph with no routed-expert work, so classification must fail loudly
+    instead. Use the engine-config error type so the Rust bridge rejects the
+    checkpoint instead of treating the failure as an unsupported model and
+    falling back to regression.
+    """
+    model_info = {
+        "architecture": "Gemma4ForConditionalGeneration",
+        "num_experts": num_experts,
+        "topk": topk,
+    }
+
+    with pytest.raises(InvalidEngineConfigurationError, match="inconsistent expert metadata"):
+        check_is_moe("google/gemma-4-31B-it", model_info=model_info)
+
+
 def test_model_graph_rejects_source_when_layer_override_removes_all_moe_operators():
     # Kimi-K3 has a dense first layer; its checkpoint metadata still declares MoE.
     model_path = "moonshotai/Kimi-K3"
@@ -343,6 +401,22 @@ class TestMOEParallelismResolution:
         assert model_config.moe_tp_size is None
         assert model_config.moe_ep_size is None
 
+    def test_dense_gemma4_does_not_require_moe_parallelism(self):
+        model_config = config.ModelConfig(
+            tp_size=2,
+            attention_dp_size=1,
+            moe_tp_size=None,
+            moe_ep_size=None,
+        )
+
+        model = get_model("nvidia/Gemma-4-31B-IT-NVFP4", model_config, backend_name="vllm")
+
+        assert model.model_family == "GEMMA4MIX"
+        assert model_config.moe_tp_size is None
+        assert model_config.moe_ep_size is None
+        assert not any("moe" in op._name or "router" in op._name for op in model.context_ops)
+        assert not any("moe" in op._name or "router" in op._name for op in model.generation_ops)
+
 
 class TestHFModelSupport:
     """Test HuggingFace model ID support."""
@@ -418,6 +492,9 @@ class TestHFModelSupport:
             ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8", True),  # Has 'E' in derived pattern
             ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4", True),  # Has 'E' in derived pattern
             ("nvidia/Nemotron-H-56B-Base-8K", False),  # No 'E' (Mamba + Attention + MLP only)
+            # Gemma 4 mixes routed-MoE and dense checkpoints under one family.
+            ("google/gemma-4-26B-A4B", True),  # num_experts=128, top_k_experts=8
+            ("nvidia/Gemma-4-31B-IT-NVFP4", False),  # num_experts/top_k_experts null
         ],
     )
     def test_hf_id_moe_detection(self, hf_id, is_moe_expected):

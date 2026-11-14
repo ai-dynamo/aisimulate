@@ -7,7 +7,7 @@ import aisim_core.sdk.operations as ops
 from aisim_core.sdk import common
 from aisim_core.sdk.models.base import BaseModel, register_model
 from aisim_core.sdk.models.blocks.vit import build_gemma4_vision_encoder_ops
-from aisim_core.sdk.models.helpers import mtp_scale_factor, quant_exclude_patterns
+from aisim_core.sdk.models.helpers import dense_gemma4_moe_ep_error, mtp_scale_factor, quant_exclude_patterns
 
 
 @register_model("GEMMA4MIX")
@@ -107,11 +107,15 @@ class Gemma4MixModel(BaseModel):
             )
             assert num_experts >= self.config.moe_ep_size, f"ep size cannot be larger than num_experts {num_experts}"
         else:
-            # Dense Gemma 4: collapse the MoE search-space to ep=1 so pareto
-            # iteration doesn't enumerate equivalent dense configurations.
-            assert self.config.moe_ep_size == 1, (
-                f"dense Gemma 4 variants require moe_ep_size=1, got {self.config.moe_ep_size}"
-            )
+            # Dense Gemma 4: no routed-MoE block, so expert parallelism must be
+            # unset or 1. Default CLI/SDK callers leave the MoE dims unset;
+            # explicit moe_ep>1 would only enumerate equivalent dense shapes.
+            # Raise the typed error rather than asserting: ``assert`` disappears
+            # under ``python -O``, and the Rust bridge treats this type as
+            # non-fallback-safe, so a dense checkpoint can never be re-estimated
+            # by the naive fallback.
+            if self.config.moe_ep_size not in (None, 1):
+                raise dense_gemma4_moe_ep_error(self.config.moe_ep_size)
         self._topk = topk
         self._num_experts = num_experts
         self._moe_inter_size = moe_inter_size
