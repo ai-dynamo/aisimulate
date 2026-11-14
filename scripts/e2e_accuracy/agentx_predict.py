@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import importlib.resources
 import json
+import os
 import sys
 import time
 from dataclasses import asdict
@@ -32,11 +33,15 @@ def predict(config_path, output):
         return {"outcome": "unsupported", "reason": "replay_telemetry_unavailable"}
     config = json.loads(config_path.read_text())
     engine = config["engine"]
-    version = config.pop("prediction_database_version", None) or database.get_latest_database_version(
-        system=engine["hardware"], backend=engine["backend"]
-    )
+    pinned = config.pop("prediction_database_version", None)
+    version = pinned or database.get_latest_database_version(system=engine["hardware"], backend=engine["backend"])
     if not version:
         return {"outcome": "unsupported", "reason": "database_unavailable"}
+    if pinned:
+        # A reviewed pin names the collection the accuracy baselines were scored on. It leaves the
+        # query slots when newer collections are promoted and stays readable as a raw data
+        # coordinate; this process serves one prediction, so the opt-in reaches nothing else.
+        os.environ["AIC_ALLOW_UNLISTED_VERSIONS"] = "1"
     engine["backend_version"] = version
     data_root = importlib.resources.files("aisim_core") / "systems/data"
     relative = (
