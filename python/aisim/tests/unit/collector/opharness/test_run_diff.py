@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """run_diff lays a new table next to the previous release: a slow node shows as compute-bound
 rows slowing while launch-bound rows hold (the H100 gemm tables of the 2026-11 upgrade passed
-every data check and ran 1.3-4x slow), and a key the new release dropped shows as a lost bucket."""
+every data check and ran 1.3-4x slow), and a key the new release dropped shows as a lost bucket.
+The same reading against the table a recollection replaces and against a sibling system, and the
+failed tasks of a run against those of the run before."""
 
 import importlib.util
 import json
@@ -118,3 +120,88 @@ def test_failures_count_failed_tasks_per_shard(run_diff, tmp_path):
     assert (row["rows"], row["failed"]) == (200, 3)
     assert row["classes"] == {"unexpected": 2, "kernel_limit": 1}
     assert row["messages"][0] == ("K must be a multiple of N, (K=N)", 2)
+
+
+def _put(root, system, version, scale=None):
+    d = root / system / "gemm" / "trtllm" / version
+    d.mkdir(parents=True, exist_ok=True)
+    _table(scale or (lambda latency: latency)).to_parquet(d / "gemm_perf.parquet")
+
+
+def _slow(latency):
+    return latency * (1.5 if latency > 0.5 else 1.0)
+
+
+def test_a_recollection_is_read_next_to_the_table_it_replaces_and_a_sibling(run_diff, tmp_path, monkeypatch, capsys):
+    """A node that slows the compute-bound cases stands above the sibling system where the base
+    table stood with it; the table of the same version under the base root is the one replaced."""
+    monkeypatch.setattr(run_diff, "pinned_version", lambda backend, family: "2.0")
+    base, new = tmp_path / "base", tmp_path / "new"
+    for system, version in (("sys_a", "1.0"), ("sys_a", "2.0"), ("sys_b", "1.0"), ("sys_b", "2.0")):
+        _put(base, system, version)
+    _put(new, "sys_a", "2.0", _slow)
+    (row,) = run_diff.tables(new, base, siblings=["sys_b", "sys_none"])
+    assert (row["previous"], row["lead"], row["spikes"]) == ("1.0", "large-slower", 0)
+    replaces = row["replaces"]
+    assert (replaces["shared"], replaces["small"], replaces["large"]) == (200, 1.0, 1.5)
+    assert (replaces["over2"], replaces["under2"], replaces["lead"]) == (0, 0, "large-slower")
+    assert list(row["siblings"]) == ["sys_b"]  # a system without the table is left out
+    view = row["siblings"]["sys_b"]
+    assert (view["new"]["large"], view["base"]["large"], view["base_version"]) == (1.5, 1.0, "2.0")
+    assert view["lead"] == "slow host?"
+    monkeypatch.setattr(sys, "argv", ["run_diff.py", "tables", str(new), "--base", str(base), "--sibling", "sys_b"])
+    assert run_diff.main() == 0
+    out = capsys.readouterr().out
+    assert "    replaces: rows=200" in out and "    sys_b new: " in out and out.count("slow host?") == 1
+    # a first collection replaces nothing: the base table is the previous release, against the
+    # sibling at that release
+    (base / "sys_a" / "gemm" / "trtllm" / "2.0" / "gemm_perf.parquet").unlink()
+    (row,) = run_diff.tables(new, base, siblings=["sys_b"])
+    assert "replaces" not in row and row["siblings"]["sys_b"]["base_version"] == "1.0"
+    assert row["siblings"]["sys_b"]["lead"] == "slow host?"
+    # a system that stood above its sibling before is no slow host
+    _put(base, "sys_a", "1.0", _slow)
+    (row,) = run_diff.tables(new, base, siblings=["sys_b"])
+    assert (row["siblings"]["sys_b"]["base"]["large"], row["siblings"]["sys_b"]["lead"]) == (1.5, "")
+
+
+def test_cases_more_than_twice_apart_and_isolated_spikes_are_counted(run_diff):
+    old = _table()
+    new = _table(lambda latency: latency * (3.0 if latency > 0.97 else 1.0))  # m = 98, 99, 100 of both dtypes
+    assert (run_diff.compare(new, old)["over2"], run_diff.compare(old, new)["under2"]) == (6, 6)
+    assert run_diff.spikes(old) == 0
+    spiked = _table()
+    spiked.loc[(spiked.gemm_type == "fp8") & (spiked.m == 50), "latency"] *= 10
+    assert run_diff.spikes(spiked) == 1
+    # a steep sweep and its last point are a trend, not spikes
+    steep = pd.DataFrame({"gemm_type": "fp8", "m": [1, 2, 4, 8, 16], "latency": [1.0, 8.0, 64.0, 512.0, 4096.0]})
+    assert run_diff.spikes(steep) == 0
+
+
+def test_failures_against_the_previous_run_and_tasks_that_still_wrote_rows(run_diff, tmp_path, monkeypatch, capsys):
+    """A task that times several points and loses some is recorded failed with the count; the
+    others were written, so it is no whole-task failure. Tasks match across runs by their id."""
+    refused = "FIXME(kernel-limit): 3/40 point(s) refused: b=1 s=65536 prefix=0: does not fit"
+    every_point = "FIXME(kernel-limit): 40/40 point(s) of the module series failed: s=1 prefix=0: does not fit"
+    runs = {
+        "before": [("t1", "boom"), ("t2", refused)],
+        "after": [("t2", refused), ("t3", every_point), ("t4", "boom")],
+    }
+    for run, tasks in runs.items():
+        shard = tmp_path / run / "sys_a" / "moe__nvfp4"
+        shard.mkdir(parents=True)
+        _table().to_parquet(shard / "moe_perf.parquet")
+        errors = [{"task_id": task, "error_message": message} for task, message in tasks]
+        (shard / "errors_vllm.moe.json").write_text(json.dumps(errors))
+    (row,) = run_diff.failures([tmp_path / "after"], [tmp_path / "before"])
+    assert (row["new"], row["gone"], row["unchanged"], row["previous"]) == (["t3", "t4"], ["t1"], 1, True)
+    assert (row["failed"], row["partial"]) == (3, ["t2"])
+    (row,) = run_diff.failures([tmp_path / "after"])
+    assert "new" not in row and row["partial"] == ["t2"]
+    (row,) = run_diff.failures([tmp_path / "after"], [tmp_path / "no_such_run"])
+    assert row["previous"] is False and row["new"] == ["t2", "t3", "t4"]
+    argv = ["run_diff.py", "failures", str(tmp_path / "after"), "--base", str(tmp_path / "before")]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert run_diff.main() == 0
+    out = capsys.readouterr().out
+    assert "failed=3 (1.5%) partial=1 new=2 gone=1 unchanged=1" in out and "    new: t3" in out
