@@ -135,6 +135,8 @@ def run_prediction(
     runner_factory.capabilities().require_compatible(spec)
     if output_requirements is None:
         output_requirements = ReplayOutputRequirements(include_raw_report=not analytical_epd)
+    # Refuse before create(), so an unsupported capture never runs the replay.
+    runner_factory.capabilities().require_output_support(output_requirements)
     # Capacity is already computed by the runner. Retain its resolved precision
     # for ordinary output too, without recomputing a model or its memory budget.
     capture_memory_details = output_requirements.capture_memory_diagnostics

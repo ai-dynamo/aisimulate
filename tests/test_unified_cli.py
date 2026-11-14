@@ -205,7 +205,9 @@ class _Factory:
         self.runner = runner
 
     def capabilities(self):
-        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg")))
+        return RunnerCapabilities(
+            supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg")), supports_telemetry=True
+        )
 
     def create(self, worker_id: int):
         del worker_id
@@ -564,6 +566,25 @@ def test_flat_native_telemetry_stays_out_of_summary_and_stdout():
     assert "telemetry" not in result.summary
     assert "summary" not in result.native  # Flat native reports remain flat.
     assert "telemetry" not in json.loads(format_prediction_stdout(result.summary, "json"))
+
+
+def test_run_prediction_refuses_telemetry_before_creating_a_runner_without_it():
+    class NoTelemetryFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"), ("trtllm", "agg")))
+
+        def create(self, worker_id: int):
+            raise AssertionError("the runner must not be created")
+
+    factory = NoTelemetryFactory(_Runner())
+    with pytest.raises(ValueError, match="runner does not support replay telemetry"):
+        run_prediction(
+            _prediction_config(),
+            stack="engine",
+            runner_factory=factory,
+            output_requirements=ReplayOutputRequirements(capture_telemetry=True),
+        )
+    assert run_prediction(_prediction_config(), stack="engine", runner_factory=_Factory(_Runner())).summary
 
 
 @pytest.mark.parametrize("interval", ["0", "-1", "nan", "inf"])
