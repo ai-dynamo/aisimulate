@@ -1154,7 +1154,7 @@ pub(crate) mod tests {
     }
     fn db(mode: DatabaseMode) -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems");
+            .join("../../python/aisim/src/aisim_core/systems");
         PerfDatabase::load(&root, "gb300", "sglang", "0.5.14")
             .unwrap()
             .with_mode(mode, TransferPolicy::ALL)
@@ -1793,7 +1793,7 @@ pub(crate) mod tests {
     ) {
         use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems");
+            .join("../../python/aisim/src/aisim_core/systems");
         let yaml = format!("{system}.yaml");
         std::fs::copy(systems.join(&yaml), root.join(&yaml)).unwrap();
         let dir = root
@@ -1957,7 +1957,7 @@ pub(crate) mod tests {
         use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let root = tempfile::tempdir().unwrap();
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems");
+            .join("../../python/aisim/src/aisim_core/systems");
         std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
         // Context rows: prefill pair at seq 2/4, decode-path pair at seq 1
         // (as collect_kda.py publishes them), batch 1/2, 32 local heads.
@@ -2041,7 +2041,7 @@ pub(crate) mod tests {
         const RUNTIME: &str = "0.31.0";
         let root = tempfile::tempdir().unwrap();
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems");
+            .join("../../python/aisim/src/aisim_core/systems");
         std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
         let dir = root.path().join("data/gb300/mhc/vllm").join(RUNTIME);
         std::fs::create_dir_all(&dir).unwrap();

@@ -4,7 +4,7 @@
 """Export exact initial selections from an installed, pinned AIPerf reference.
 
 This tool invokes upstream code; it does not approximate NumPy's RNG in Rust.
-Run in the reference AIPerf environment, not the AISimulate runtime environment.
+Run in the reference AIPerf environment, not the AISim runtime environment.
 Source: SemiAnalysisAI/aiperf@754356e9a39acc6cc6afb242d123bb57c3fb6f75,
 src/aiperf/timing/trajectory_source.py (Apache-2.0, NVIDIA copyright).
 """
@@ -79,7 +79,7 @@ def export_snapshot(metadata, source_play_map, *, lanes, seed, trajectory_type, 
         raise ValueError("only the pinned reference's sequential sampler is supported")
     root_ids = [item.conversation_id for item in metadata.conversations if getattr(item, "is_root", True) is not False]
     if set(source_play_map) != set(root_ids) or any(not isinstance(v, str) or not v for v in source_play_map.values()):
-        raise ValueError("source-play-map must map every reference root to its normalized AISimulate source_play_id")
+        raise ValueError("source-play-map must map every reference root to its normalized AISim source_play_id")
     if len(set(source_play_map.values())) != len(root_ids):
         raise ValueError("distinct reference roots must map to distinct source plays")
     sampler = SequentialCursor(root_ids)

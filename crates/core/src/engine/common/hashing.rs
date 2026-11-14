@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Cache-salt behavior adapted from SGLang v0.5.22; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
 
 //! Engine-local KV block hashing.
 //!
@@ -13,6 +16,18 @@ pub(crate) type SequenceHash = u64;
 pub(crate) type Token = u32;
 
 pub(crate) const XXH3_SEED: u64 = 1337;
+
+/// AISim's XXH3 cache namespace. Empty salt preserves all legacy hash values.
+/// This models SGLang's namespace isolation, not its SHA256 event encoding.
+pub(crate) fn cache_salt_seed(cache_salt: Option<&str>) -> u64 {
+    match cache_salt.filter(|salt| !salt.is_empty()) {
+        Some(salt) => xxh3_64_with_seed(
+            salt.as_bytes(),
+            xxh3_64_with_seed(b"aisim-cache-salt-v1\0", XXH3_SEED),
+        ),
+        None => XXH3_SEED,
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub(crate) struct LocalBlockHash(pub(crate) u64);
@@ -68,17 +83,27 @@ pub(crate) fn block_hashes(
     tokens: &[Token],
     block_size: usize,
 ) -> impl Iterator<Item = BlockHash> + '_ {
+    block_hashes_with_salt(tokens, block_size, None)
+}
+
+pub(crate) fn block_hashes_with_salt<'a>(
+    tokens: &'a [Token],
+    block_size: usize,
+    cache_salt: Option<&str>,
+) -> impl Iterator<Item = BlockHash> + 'a {
+    let seed = cache_salt_seed(cache_salt);
     let mut previous: Option<(&[Token], BlockHash)> = None;
     tokens.chunks_exact(block_size).map(move |block| {
         let hash = match previous {
             Some((prior, hash)) if prior[0] == block[0] && prior == block => hash,
-            _ => compute_block_hash_for_tokens(block, XXH3_SEED),
+            _ => compute_block_hash_for_tokens(block, seed),
         };
         previous = Some((block, hash));
         hash
     })
 }
 
+#[cfg(test)]
 pub(crate) fn compute_block_hash_for_seq(
     tokens: &[Token],
     block_size: usize,

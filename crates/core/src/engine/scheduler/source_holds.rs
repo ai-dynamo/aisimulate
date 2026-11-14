@@ -123,6 +123,10 @@ impl<T> Default for SourceHolds<T> {
 }
 
 impl<T> SourceHolds<T> {
+    pub(crate) fn held_len(&self) -> usize {
+        self.held_prefills.len()
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         debug_assert_eq!(self.pending_by_request.len(), self.pending_by_handoff.len());
         debug_assert_eq!(self.held_prefills.len(), self.held_by_request.len());

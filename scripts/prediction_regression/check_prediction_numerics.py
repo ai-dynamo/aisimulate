@@ -96,7 +96,7 @@ def check_results(cases: list[dict], rows: list[dict]) -> list[str]:
 
 
 def collect(cases: list[dict]) -> list[dict]:
-    from aisimulate_core.sdk import EngineHandle
+    from aisim_core.sdk import EngineHandle
 
     engines = {}
     rows = []

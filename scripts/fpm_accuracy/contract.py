@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 from pathlib import PurePosixPath
 
-REPO = "ai-dynamo/aisimulate"
+REPO = "ai-dynamo/aisim"
 HF_REPO = "nvidia/aisimulate-fpm-dataset"
 # Evaluations before the learned method publish LEGACY_METHODS; both remain valid.
 LEGACY_METHODS = ("warmup", "nowarmup", "regression")
@@ -48,7 +48,7 @@ def text(value):
     require(isinstance(value, str) and 0 < len(value) <= 1024, "invalid public text")
     require(not any(ord(ch) < 32 for ch in value), "control characters in public text")
     require(
-        not any(fragment in value.lower() for fragment in ("gitlab-master", "slack.com", "linear.app", "file://")),
+        not any(fragment in value.lower() for fragment in ("gitlab", "slack.com", "linear.app", "file://")),
         "internal provenance",
     )
 
@@ -141,6 +141,8 @@ def validate_summary(summary):
                 and all(isinstance(name, str) and name for name in collection["datasets"]),
                 "invalid datasets",
             )
+            for name in collection["datasets"]:
+                text(name)
             for field in ("run_count", "unattributed_measurements"):
                 require(type(collection[field]) is int and collection[field] >= 0, "invalid collection count")
             if "serving_layouts" in collection:

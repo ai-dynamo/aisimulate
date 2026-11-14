@@ -4,7 +4,7 @@
 //! Default generalized-engine construction for offline replay.
 //!
 //! This module contains configuration and conversion helpers only. Scheduler
-//! state lives in `aisimulate_core::engine`; virtual time and worker lifecycle live
+//! state lives in `aisim_core::engine`; virtual time and worker lifecycle live
 //! in the moved aggregated/disaggregated replay runtimes.
 
 use std::num::NonZeroU32;
@@ -40,7 +40,7 @@ fn default_parallel_size() -> u32 {
     1
 }
 
-/// Serializable execution-time descriptor for the AISimulate engine.
+/// Serializable execution-time descriptor for the AISim engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ReplayEngineConfig {
@@ -174,9 +174,13 @@ impl ReplayEngineConfig {
                     "belady requires aggregated replay with dp_size=1 per worker".into(),
                 ));
             }
-            if self.rank.native_host_offload.is_some() || self.rank.g3_offload.is_some() {
+            if self.rank.native_host_offload.is_some()
+                || self.rank.g3_offload.is_some()
+                || self.rank.sglang.hicache.is_some()
+            {
                 return Err(ReplayError::InvalidSpec(
-                    "belady does not support native_host_offload or g3_offload".into(),
+                    "belady does not support native_host_offload, g3_offload or sglang.hicache"
+                        .into(),
                 ));
             }
             if !self.rank.enable_prefix_caching {
@@ -187,6 +191,7 @@ impl ReplayEngineConfig {
         }
         match topology {
             ReplayTopology::Aggregated { .. } => {
+                validate_host_mtp_dp(&self.rank, self.dp_size)?;
                 if self.rank.g3_offload.is_some() && self.dp_size != 1 {
                     return Err(ReplayError::InvalidSpec(
                         "g3_offload supports only dp_size=1".to_string(),
@@ -194,8 +199,12 @@ impl ReplayEngineConfig {
                 }
             }
             ReplayTopology::Disaggregated { .. } => {
-                let [prefill, decode] =
-                    [WorkerStage::Prefill, WorkerStage::Decode].map(|stage| self.role(stage).rank);
+                let roles =
+                    [WorkerStage::Prefill, WorkerStage::Decode].map(|stage| self.role(stage));
+                for role in &roles {
+                    validate_host_mtp_dp(&role.rank, role.dp_size)?;
+                }
+                let [prefill, decode] = roles.map(|role| role.rank);
                 if prefill.g3_offload.is_some() || decode.g3_offload.is_some() {
                     return Err(ReplayError::InvalidSpec(
                         "g3_offload supports only aggregated replay".to_string(),
@@ -227,6 +236,10 @@ pub struct ReplayRoleFactory {
     kv_cache_capacity_bytes: Option<u64>,
     /// Per-rank P/D KV transfer link bandwidth in decimal GB/s, if priced.
     kv_transfer_bandwidth: Option<f64>,
+    /// AFD pool GPU total (`n_a_nodes * gpus_per_node +
+    /// n_f_nodes * effective_f_gpus_per_node()`),
+    /// overriding the monolithic `dp * tp` accounting.
+    afd_total_gpus: Option<usize>,
     pub(crate) g3_config: Option<crate::engine::G3OffloadConfig>,
     pub(crate) g3_block_bytes: usize,
     pub(crate) g3_tier: Option<crate::engine::g3_offload::SharedG3Tier>,
@@ -338,6 +351,9 @@ impl ReplayRoleFactory {
 
     #[doc(hidden)]
     pub fn gpus_per_worker(&self) -> ReplayResult<usize> {
+        if let Some(total) = self.afd_total_gpus {
+            return Ok(total);
+        }
         usize::try_from(self.dp_size.get())
             .ok()
             .and_then(|dp| {
@@ -431,11 +447,17 @@ impl ReplayEngineFactory {
         emit_kv_events: bool,
     ) -> ReplayResult<ReplayRoleFactory> {
         let mut role = config.role(stage);
+        if role.rank.afd.is_some() && role.dp_size != 1 {
+            return Err(ReplayError::InvalidSpec(
+                "AFD uses one logical scheduler (dp_size must be 1); configure A-replica parallelism in rank.afd".into(),
+            ));
+        }
         config.validate_eviction_geometry(&role.rank)?;
         role.rank.emit_kv_events = emit_kv_events;
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
         })?;
+        validate_host_mtp_dp(&role.rank, dp_size.get())?;
         if role.tensor_parallel_size == 0 {
             return Err(ReplayError::InvalidSpec(
                 "native tensor_parallel_size must be positive".into(),
@@ -467,6 +489,14 @@ impl ReplayEngineFactory {
             .native_host_offload
             .as_ref()
             .is_some_and(|host| host.scope == G2Scope::ClusterShared);
+        let afd_total_gpus = role.rank.afd.as_ref().map(|afd| {
+            crate::engine::afd_total_gpus(
+                &afd.a_pool,
+                &afd.f_pool,
+                afd.gpus_per_node,
+                afd.effective_f_gpus_per_node(),
+            )
+        });
         let g3_config = role.rank.g3_offload.take();
         let kvcr_config = role.rank.kvcr.take();
         if kvcr_config.is_some() && pipeline_parallel_size(&role.rank.timing_model)? > 1 {
@@ -506,6 +536,7 @@ impl ReplayEngineFactory {
             total_blocks,
             kv_cache_capacity_bytes,
             kv_transfer_bandwidth,
+            afd_total_gpus,
             g3_config,
             g3_block_bytes,
             g3_tier: None,
@@ -662,6 +693,125 @@ fn pipeline_parallel_size(timing: &crate::engine::TimingModelConfig) -> Result<u
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
     ReplayError::Engine(error.to_string())
+}
+
+fn validate_host_mtp_dp(rank: &EngineConfig, dp_size: u32) -> ReplayResult<()> {
+    if rank.native_host_offload.is_some() && rank.aic_nextn.is_some() && dp_size != 1 {
+        return Err(ReplayError::InvalidSpec(
+            "native_host_offload with MTP supports only dp_size=1".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod host_mtp_dp_tests {
+    use super::*;
+    use crate::engine::NativeHostOffloadConfig;
+
+    struct TestTiming;
+    impl TimingModel for TestTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+    }
+
+    fn rank(host: bool, nextn: Option<usize>, shared: bool) -> EngineConfig {
+        let offload = NativeHostOffloadConfig::new(8).with_bandwidths(0.0, 0.0);
+        EngineConfig {
+            num_gpu_blocks: 8,
+            block_size: 4,
+            kv_cache_bytes_per_token: Some(16),
+            native_host_offload: host.then(|| {
+                if shared {
+                    offload.cluster_shared("mtp-dp-test")
+                } else {
+                    offload
+                }
+            }),
+            aic_nextn: nextn,
+            timing_model: nextn.map_or(crate::engine::TimingModelConfig::Polynomial, |depth| {
+                crate::engine::TimingModelConfig::External {
+                    provider: "aic".into(),
+                    config: serde_json::json!({"speculation": {"kind": "mtp", "params": {"depth": depth}}}),
+                }
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn g2_mtp_dp_limit_is_enforced_at_topology_and_direct_factory_entrypoints() {
+        for (host, nextn, dp_size, shared, supported) in [
+            (true, Some(2), 1, false, true),
+            (true, Some(2), 2, false, false),
+            (true, Some(2), 2, true, false),
+            (true, None, 2, false, true),
+            (true, None, 2, true, true),
+            (false, Some(2), 2, false, true),
+        ] {
+            let config = ReplayEngineConfig {
+                dp_size,
+                rank: rank(host, nextn, shared),
+                ..Default::default()
+            };
+            let validation = config.validate_topology(&ReplayTopology::aggregated(1));
+            let construction = ReplayEngineFactory::with_timing_model(Arc::new(TestTiming))
+                .role_factory(&config, WorkerStage::Aggregated, false);
+            if supported {
+                validation.unwrap();
+                assert_eq!(construction.unwrap().dp_size(), dp_size);
+            } else {
+                assert!(
+                    validation
+                        .unwrap_err()
+                        .to_string()
+                        .contains("MTP supports only dp_size=1")
+                );
+                let error = match construction {
+                    Ok(_) => {
+                        panic!("direct role construction must enforce the MTP/G2 DP limit")
+                    }
+                    Err(error) => error,
+                };
+                assert!(error.to_string().contains("MTP supports only dp_size=1"));
+            }
+        }
+    }
+
+    #[test]
+    fn role_override_cannot_bypass_the_g2_mtp_dp_limit() {
+        let config = ReplayEngineConfig {
+            prefill: Some(ReplayRoleConfig {
+                dp_size: 2,
+                rank: rank(true, Some(2), false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let topology: ReplayTopology = serde_json::from_value(serde_json::json!({
+            "kind": "disaggregated",
+            "prefill": {"initial_workers": 1},
+            "decode": {"initial_workers": 1}
+        }))
+        .unwrap();
+        assert!(
+            config
+                .validate_topology(&topology)
+                .unwrap_err()
+                .to_string()
+                .contains("MTP supports only dp_size=1")
+        );
+        let error =
+            match ReplayEngineFactory::new().role_factory(&config, WorkerStage::Prefill, false) {
+                Ok(_) => panic!("role overrides must validate their resolved DP size"),
+                Err(error) => error,
+            };
+        assert!(error.to_string().contains("MTP supports only dp_size=1"));
+    }
 }
 
 #[cfg(test)]
@@ -1148,5 +1298,101 @@ mod observation_tests {
                 (3.0, vec![hash], vec![], 1),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod afd_role_tests {
+    use super::*;
+
+    #[test]
+    fn afd_pool_cannot_be_duplicated_by_outer_dp() {
+        let rank: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang", "block_size": 1,
+            "afd": {
+                "a_pool": {"system": "h200_sxm", "a_tp_size": 1, "n_a_nodes": 1, "batch_size_per_a_replica": 18},
+                "f_pool": {"system": "h200_sxm", "f_moe_ep_size": 8, "n_f_nodes": 1},
+                "gpus_per_node": 8, "num_microbatches": 3, "comm_overhead_factor": 1.0
+            }
+        })).unwrap();
+        for dp_size in [2, 8] {
+            let config = ReplayEngineConfig {
+                rank: rank.clone(),
+                dp_size,
+                ..Default::default()
+            };
+            for stage in [
+                WorkerStage::Aggregated,
+                WorkerStage::Prefill,
+                WorkerStage::Decode,
+            ] {
+                let error = ReplayEngineFactory::new()
+                    .role_factory(&config, stage, false)
+                    .err()
+                    .expect("outer geometry must not duplicate an AFD pool");
+                assert!(error.to_string().contains("one logical scheduler"));
+            }
+        }
+    }
+
+    /// The afd+pd decode role carries the AFD pool-pair topology as rank
+    /// metadata; its per-worker GPU accounting must report the A/F pool
+    /// total instead of the monolithic dp*tp product, while the monolithic
+    /// companion keeps the standard accounting.
+    #[test]
+    fn afd_role_factory_reports_pool_pair_gpu_total() {
+        let decode_rank: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang",
+            "block_size": 1,
+            "num_gpu_blocks": 1024,
+            "worker_type": "decode",
+            "kv_transfer_bandwidth": 50.0,
+            "afd": {
+                "a_pool": {"system": "h200_sxm", "a_tp_size": 1, "n_a_nodes": 1, "batch_size_per_a_replica": 18},
+                "f_pool": {"system": "h200_sxm", "f_moe_ep_size": 16, "n_f_nodes": 2},
+                "gpus_per_node": 8,
+                "num_microbatches": 3,
+                "comm_overhead_factor": 1.0,
+            },
+        }))
+        .unwrap();
+        let prefill_rank: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang",
+            "block_size": 1,
+            "num_gpu_blocks": 1024,
+            "worker_type": "prefill",
+            "kv_transfer_bandwidth": 100.0,
+            "kv_transfer_bytes_per_token": 16,
+        }))
+        .unwrap();
+        let config = ReplayEngineConfig {
+            rank: EngineConfig::default(),
+            prefill: Some(ReplayRoleConfig {
+                dp_size: 1,
+                tensor_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
+                prefill_context_parallel_size: 1,
+                rank: prefill_rank,
+            }),
+            decode: Some(ReplayRoleConfig {
+                dp_size: 1,
+                tensor_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
+                prefill_context_parallel_size: 1,
+                rank: decode_rank,
+            }),
+            ..Default::default()
+        };
+        let factory = ReplayEngineFactory::new();
+        let decode_factory = factory
+            .role_factory(&config, WorkerStage::Decode, false)
+            .unwrap();
+        assert_eq!(decode_factory.gpus_per_worker().unwrap(), 24);
+        assert_eq!(decode_factory.kv_transfer_bandwidth(), Some(50.0));
+        let prefill_factory = factory
+            .role_factory(&config, WorkerStage::Prefill, false)
+            .unwrap();
+        assert_eq!(prefill_factory.gpus_per_worker().unwrap(), 1);
+        assert_eq!(prefill_factory.kv_transfer_bandwidth(), Some(100.0));
     }
 }

@@ -34,7 +34,7 @@ concurrency:
 jobs:
   resolve:
     name: Resolve exact accuracy source
-    if: github.repository == 'ai-dynamo/aisimulate' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'ai-dynamo/aisim' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

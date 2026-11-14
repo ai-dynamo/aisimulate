@@ -1,0 +1,73 @@
+{
+  "schema_version": "aisimulate-support-request/v2",
+  "identity": {
+    "model": "example/checkpoint-test",
+    "model_revision": "revision-123",
+    "model_kind": "dense",
+    "framework": "vllm",
+    "framework_version": "0.27.0",
+    "gpu": "h200_sxm",
+    "interconnect": "nvswitch"
+  },
+  "workload": {
+    "input_tokens": 1024,
+    "output_tokens": 128,
+    "concurrency": 1,
+    "request_count": 4,
+    "slo": {
+      "ttft_ms": 1000.0,
+      "tpot_ms": 100.0
+    }
+  },
+  "search": {
+    "tensor_parallel": 1,
+    "context_length": 16384,
+    "objective": "throughput",
+    "seed": 42
+  },
+  "collection": {
+    "prefill_cudagraph_policy": "runtime"
+  },
+  "fpm_profile": {
+    "schema_version": 1,
+    "model": "example/checkpoint-test",
+    "model_revision": "revision-123",
+    "architecture": "SyntheticDecoder",
+    "context_length": 16384,
+    "num_experts": 0,
+    "provenance": "Synthetic checkpoint test",
+    "deployments": [
+      {
+        "system": "h200_sxm",
+        "backend": "vllm",
+        "backend_version": "0.27.0",
+        "tp": 1,
+        "pp": 1,
+        "dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 1,
+        "cp": 1,
+        "gemm_quant_mode": "bfloat16",
+        "moe_quant_mode": "bfloat16",
+        "fmha_quant_mode": "bfloat16",
+        "comm_quant_mode": "half",
+        "kv_cache_dtype": "bfloat16",
+        "moe_backend": "auto",
+        "attention_backend": "auto",
+        "enable_wideep": false,
+        "enable_eplb": false,
+        "resources": {
+          "weights_bytes": 1000,
+          "activations_bytes": 100,
+          "runtime_overhead_bytes": 100,
+          "comm_overhead_bytes": 0,
+          "kv_bytes_per_token": 128,
+          "cache_layout": "linear",
+          "max_num_tokens": 8192,
+          "max_batch_size": 256,
+          "provenance": "Synthetic declared bounds"
+        }
+      }
+    ]
+  }
+}

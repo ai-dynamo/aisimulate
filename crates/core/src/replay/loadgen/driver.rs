@@ -45,7 +45,8 @@ use crate::replay::protocol::{
 };
 
 pub const AGENTIC_LIFECYCLE_SCHEMA_V1: &str = "aisimulate.agentic.lifecycle.v1";
-const AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1: &[u8] = b"aisimulate-agentic-lifecycle-v1\0";
+// AISim namespace: this intentionally changes the legacy transcript fingerprint.
+const AGENTIC_LIFECYCLE_DIGEST_DOMAIN_V1: &[u8] = b"aisim-agentic-lifecycle-v1\0";
 
 /// Output progress for one request inside a same-timestamp feedback batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +160,14 @@ struct AgenticState {
     completion_dependents: Vec<Vec<AgenticDependentEdge>>,
     node_to_play: Vec<usize>,
     plays: Vec<AgenticPlayState>,
+    // Nodes in `Ready` per play. An agentic node holds a scheduled timer
+    // exactly while it is `Ready`, so profile control can ask whether a play
+    // has a pending timer without walking the play's nodes.
+    ready_nodes: Vec<usize>,
+    // Set whenever a play's client work finishes, and cleared once the
+    // profile has replaced every finished lane play. While it is clear no
+    // active profile play is client-finished, so lane scans can be skipped.
+    finished_unscanned: bool,
     lanes: Vec<AgenticLaneState>,
     // Finite lane replay draws from one source-ordered queue whenever a slot
     // becomes free. Slot assignment must follow admission, not source modulo.
@@ -556,6 +565,8 @@ impl AgenticState {
                 root_node,
                 self.ready_after_ms[root_node],
                 &mut self.node_states,
+                &mut self.ready_nodes,
+                &self.node_to_play,
                 sessions,
                 ready_sessions,
             );
@@ -572,6 +583,8 @@ impl AgenticState {
         Self::release_edges(
             &self.dispatch_dependents[source_node],
             &mut self.node_states,
+            &mut self.ready_nodes,
+            &self.node_to_play,
             &mut self.remaining_dependencies,
             &mut self.ready_after_ms,
             sessions,
@@ -591,6 +604,8 @@ impl AgenticState {
         Self::release_edges(
             &self.completion_dependents[source_node],
             &mut self.node_states,
+            &mut self.ready_nodes,
+            &self.node_to_play,
             &mut self.remaining_dependencies,
             &mut self.ready_after_ms,
             sessions,
@@ -604,6 +619,8 @@ impl AgenticState {
     fn release_edges(
         edges: &[AgenticDependentEdge],
         node_states: &mut [AgenticNodeState],
+        ready_nodes: &mut [usize],
+        node_to_play: &[usize],
         remaining_dependencies: &mut [usize],
         ready_after_ms: &mut [f64],
         sessions: &mut [SessionRuntime],
@@ -631,6 +648,8 @@ impl AgenticState {
                 target,
                 ready_after_ms[target],
                 node_states,
+                ready_nodes,
+                node_to_play,
                 sessions,
                 ready_sessions,
             );
@@ -641,6 +660,8 @@ impl AgenticState {
         node_index: usize,
         ready_at_ms: f64,
         node_states: &mut [AgenticNodeState],
+        ready_nodes: &mut [usize],
+        node_to_play: &[usize],
         sessions: &mut [SessionRuntime],
         ready_sessions: &mut BinaryHeap<ReadySession>,
     ) {
@@ -652,6 +673,7 @@ impl AgenticState {
             return;
         }
         node_states[node_index] = AgenticNodeState::Ready;
+        ready_nodes[node_to_play[node_index]] += 1;
         session.next_ready_at_ms = Some(ready_at_ms);
         ready_sessions.push(ReadySession {
             ready_at_ms,
@@ -663,6 +685,7 @@ impl AgenticState {
     fn on_node_emitted(&mut self, node_index: usize, now_ms: f64) {
         debug_assert_eq!(self.node_states[node_index], AgenticNodeState::Ready);
         self.node_states[node_index] = AgenticNodeState::Emitted;
+        self.ready_nodes[self.node_to_play[node_index]] -= 1;
         let play = &mut self.plays[self.node_to_play[node_index]];
         play.pending_terminals += 1;
         play.emitted_in_flight += 1;
@@ -749,6 +772,9 @@ impl AgenticState {
                             self.node_states[pending_node],
                             AgenticNodeState::Blocked | AgenticNodeState::Ready
                         ) {
+                            if self.node_states[pending_node] == AgenticNodeState::Ready {
+                                self.ready_nodes[play_index] -= 1;
+                            }
                             self.node_states[pending_node] = AgenticNodeState::Skipped;
                             let session = &mut sessions[pending_node];
                             session.next_ready_at_ms = None;
@@ -797,6 +823,11 @@ impl AgenticState {
     // Client retirement can follow the final server cleanup when a profile
     // cutoff censors delayed work. Check both transitions, recording settlement
     // only once and only after every emitted request has released server state.
+    fn mark_client_finished(&mut self, play_index: usize) {
+        self.plays[play_index].client_finished = true;
+        self.finished_unscanned = true;
+    }
+
     fn finish_play_if_quiescent(&mut self, play_index: usize, now_ms: f64) {
         let play = &mut self.plays[play_index];
         if !play.quiescent
@@ -826,7 +857,7 @@ impl AgenticState {
         if self.plays[play_index].client_finished {
             return;
         }
-        self.plays[play_index].client_finished = true;
+        self.mark_client_finished(play_index);
         let Some(lane_index) = self.plays[play_index].lane_index else {
             return;
         };
@@ -1056,6 +1087,9 @@ impl WorkloadDriver {
             let mut censored = 0;
             for (index, node) in state.node_states.iter_mut().enumerate() {
                 if matches!(node, AgenticNodeState::Blocked | AgenticNodeState::Ready) {
+                    if *node == AgenticNodeState::Ready {
+                        state.ready_nodes[state.node_to_play[index]] -= 1;
+                    }
                     *node = AgenticNodeState::Censored;
                     self.sessions[index].next_ready_at_ms = None;
                     self.sessions[index].next_turn_index = self.sessions[index].turns.len();
@@ -1065,7 +1099,7 @@ impl WorkloadDriver {
             }
             for play_index in 0..state.plays.len() {
                 if state.plays[play_index].pending_terminals == 0 {
-                    state.plays[play_index].client_finished = true;
+                    state.mark_client_finished(play_index);
                     state.finish_play_if_quiescent(play_index, now_ms);
                 }
             }
@@ -1073,37 +1107,46 @@ impl WorkloadDriver {
             self.agentic_profile.as_mut().unwrap().never_issued_requests += censored;
             return Ok(true);
         }
-        let mut progressed = false;
-        // Iterating lanes, rather than terminal feedback arrival order, makes
-        // simultaneous replacement source selection deterministic.
-        let active = self.agentic_profile.as_ref().unwrap().active_plays.clone();
-        for (lane, play_index) in active.into_iter().enumerate() {
-            let SchedulingPolicy::Agentic(state) = &self.policy else {
-                unreachable!()
-            };
-            if state.plays[play_index].client_finished {
-                self.append_agentic_profile_play(lane, now_ms)?;
-                progressed = true;
-            }
+        let lanes = self.agentic_profile.as_ref().unwrap().active_plays.len();
+        // Only a client-finished play needs replacing, so lanes are scanned
+        // only after some play has finished. Lane order, rather than terminal
+        // feedback arrival order, makes simultaneous replacement source
+        // selection deterministic. A replacement rewrites only its own lane.
+        let SchedulingPolicy::Agentic(state) = &self.policy else {
+            unreachable!()
+        };
+        let finished_lanes: Vec<usize> = if state.finished_unscanned {
+            let active = &self.agentic_profile.as_ref().unwrap().active_plays;
+            (0..lanes)
+                .filter(|&lane| state.plays[active[lane]].client_finished)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut progressed = !finished_lanes.is_empty();
+        for lane in finished_lanes {
+            self.append_agentic_profile_play(lane, now_ms)?;
         }
+        let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+            unreachable!()
+        };
+        state.finished_unscanned = false;
         // Both watchdogs shift only currently scheduled workload timers. Future
         // causal delays are created on their dependency event without warping
-        // engine, router, transfer or timeout clocks.
-        let (tree_cap, global_cap, tree_idle, global_idle) = {
+        // engine, router, transfer or timeout clocks. Shifting timers changes
+        // neither the active plays nor their idle stamps.
+        let (tree_cap, global_cap, global_idle) = {
             let profile = self.agentic_profile.as_ref().unwrap();
             (
                 profile.options.tree_idle_cap_seconds * 1000.0,
                 profile.options.global_idle_cap_seconds * 1000.0,
-                profile
-                    .active_plays
-                    .iter()
-                    .map(|&play| (play, profile.tree_idle_since_ms[play]))
-                    .collect::<Vec<_>>(),
                 profile.global_idle_since_ms,
             )
         };
-        for (play, idle_since) in tree_idle {
-            if idle_since.is_some_and(|idle| now_ms >= idle + tree_cap) {
+        for lane in 0..lanes {
+            let profile = self.agentic_profile.as_ref().unwrap();
+            let play = profile.active_plays[lane];
+            if profile.tree_idle_since_ms[play].is_some_and(|idle| now_ms >= idle + tree_cap) {
                 progressed |= self.shift_agentic_timers(Some(play), now_ms);
             }
         }
@@ -1269,6 +1312,7 @@ impl WorkloadDriver {
             .completion_dependents
             .extend(added.completion_dependents);
         state.node_to_play.extend(added.node_to_play);
+        state.ready_nodes.extend(added.ready_nodes);
         state.plays.extend(added.plays);
         self.agentic_snapshots
             .as_mut()
@@ -1412,15 +1456,24 @@ impl WorkloadDriver {
         let SchedulingPolicy::Agentic(state) = &self.policy else {
             unreachable!()
         };
-        if let Some(finished_ms) = profile
-            .active_plays
-            .iter()
-            .filter_map(|&index| {
-                let play = &state.plays[index];
-                play.client_finished
-                    .then_some(play.max_terminal_ms.unwrap_or(profile.last_advanced_ms))
-            })
-            .min_by(f64::total_cmp)
+        // Every finished active play is replaced before the flag is cleared.
+        debug_assert!(
+            state.finished_unscanned
+                || profile
+                    .active_plays
+                    .iter()
+                    .all(|&index| !state.plays[index].client_finished)
+        );
+        if state.finished_unscanned
+            && let Some(finished_ms) = profile
+                .active_plays
+                .iter()
+                .filter_map(|&index| {
+                    let play = &state.plays[index];
+                    play.client_finished
+                        .then_some(play.max_terminal_ms.unwrap_or(profile.last_advanced_ms))
+                })
+                .min_by(f64::total_cmp)
         {
             return Some(finished_ms.max(profile.last_advanced_ms));
         }
@@ -1430,10 +1483,16 @@ impl WorkloadDriver {
             since.map(|idle| (idle + cap_seconds * 1000.0).max(profile.last_advanced_ms))
         };
         let pending = |play: usize| {
-            state.plays[play]
-                .nodes
-                .iter()
-                .any(|&index| self.sessions[index].next_ready_at_ms.is_some())
+            let pending = state.ready_nodes[play] > 0;
+            debug_assert_eq!(
+                pending,
+                state.plays[play]
+                    .nodes
+                    .iter()
+                    .any(|&index| self.sessions[index].next_ready_at_ms.is_some()),
+                "ready-node count must match the play's scheduled timers"
+            );
+            pending
         };
         let global = idle_deadline(
             profile.global_idle_since_ms,
@@ -2115,7 +2174,9 @@ impl WorkloadDriver {
             dispatch_dependents,
             completion_dependents,
             node_to_play,
+            ready_nodes: vec![0; agentic_plays.len()],
             plays: agentic_plays,
+            finished_unscanned: false,
             lanes: Vec::new(),
             next_pending_play: 0,
             lifecycle: Vec::new(),
@@ -2130,6 +2191,8 @@ impl WorkloadDriver {
                     root_node,
                     state.ready_after_ms[root_node],
                     &mut state.node_states,
+                    &mut state.ready_nodes,
+                    &state.node_to_play,
                     &mut sessions,
                     &mut ready_sessions,
                 );
@@ -2457,7 +2520,9 @@ impl WorkloadDriver {
             dispatch_dependents,
             completion_dependents,
             node_to_play,
+            ready_nodes: vec![0; plays.len()],
             plays,
+            finished_unscanned: false,
             lanes,
             next_pending_play,
             lifecycle: Vec::new(),
@@ -2472,6 +2537,8 @@ impl WorkloadDriver {
                         root_node,
                         state.ready_after_ms[root_node],
                         &mut state.node_states,
+                        &mut state.ready_nodes,
+                        &state.node_to_play,
                         &mut sessions,
                         &mut ready_sessions,
                     );
@@ -2915,6 +2982,7 @@ impl WorkloadDriver {
                             (input_length, hash_ids, turn.output_token_ids.take())
                         };
                     let request_metadata = DirectRequest {
+                        cache_salt: None,
                         tokens: Vec::new(),
                         max_output_tokens: if live_warmup {
                             1
@@ -2951,6 +3019,7 @@ impl WorkloadDriver {
                         ReplayRequestHashes::from_tokens(&request_tokens, self.engine_block_size)
                     });
                     let request = ReplayRequestPayload::materialized(DirectRequest {
+                        cache_salt: None,
                         tokens: request_tokens,
                         max_output_tokens: turn.max_output_tokens,
                         output_token_ids: turn.output_token_ids.clone(),
@@ -3322,7 +3391,7 @@ impl WorkloadDriver {
             if state.plays[play_index].pending_terminals == 0 {
                 profile.tree_idle_since_ms[play_index] = Some(now_ms);
                 if profile.cutoff {
-                    state.plays[play_index].client_finished = true;
+                    state.mark_client_finished(play_index);
                     state.finish_play_if_quiescent(play_index, now_ms);
                 }
             }
@@ -4805,6 +4874,15 @@ mod tests {
     }
 
     #[test]
+    fn empty_lifecycle_digest_is_pinned_to_the_aisim_namespace() {
+        // Independent BLAKE3 of the AISim domain tag and an empty JSONL stream.
+        assert_eq!(
+            AgenticLifecycleTranscript::default().digest().unwrap(),
+            "449fd6f4d2ab59a94dbc232f45d5dc6024fbf1ea9b88045a5944c38b7784d325"
+        );
+    }
+
+    #[test]
     fn same_timestamp_feedback_is_canonicalized_by_graph_ordinal() {
         let trace = agentic_trace(vec![
             agentic_node("a", "play", 0.0, Vec::new()),
@@ -6098,6 +6176,93 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Per-play ready counts, checked against the `Ready` nodes and
+    /// scheduled timers they stand in for.
+    fn ready_counts(driver: &WorkloadDriver) -> Vec<usize> {
+        let SchedulingPolicy::Agentic(state) = &driver.policy else {
+            panic!("profile drivers are agentic")
+        };
+        assert_eq!(state.ready_nodes.len(), state.plays.len());
+        for (index, play) in state.plays.iter().enumerate() {
+            let ready = play
+                .nodes
+                .iter()
+                .filter(|&&node| state.node_states[node] == AgenticNodeState::Ready)
+                .count();
+            let timers = play
+                .nodes
+                .iter()
+                .filter(|&&node| driver.sessions[node].next_ready_at_ms.is_some())
+                .count();
+            assert_eq!(
+                (state.ready_nodes[index], ready),
+                (timers, timers),
+                "play {index}"
+            );
+        }
+        state.ready_nodes.clone()
+    }
+
+    #[test]
+    fn profile_ready_counts_follow_dispatch_failure_replacement_and_cutoff() {
+        let mut spawned = profile_row("a-spawned", "a", 0.0);
+        spawned.dependencies = vec![dependency(
+            "a-root",
+            AgenticDependencyTrigger::Dispatch,
+            5.0,
+            AgenticDependencyRelation::Spawn,
+        )];
+        let mut continuation = profile_row("a-next", "a", 0.0);
+        continuation.dependencies = vec![dependency(
+            "a-root",
+            AgenticDependencyTrigger::Completion,
+            0.0,
+            AgenticDependencyRelation::Sequence,
+        )];
+        let mut driver = profile_driver(
+            vec![
+                profile_row("a-root", "a", 0.0),
+                spawned,
+                continuation,
+                profile_row("b-root", "b", 0.0),
+            ],
+            1,
+            AgenticProfileOptions {
+                duration_seconds: 0.100,
+                ..Default::default()
+            },
+        );
+        assert_eq!(ready_counts(&driver), vec![1]);
+
+        // Dispatching the root moves its count to the spawned child's timer.
+        driver.advance_agentic_profile(0.0).unwrap();
+        let root = driver.pop_ready(0.0, usize::MAX);
+        assert_eq!(root.len(), 1);
+        assert_eq!(ready_counts(&driver), vec![1]);
+        assert_eq!(driver.next_ready_time_ms(), Some(5.0));
+
+        // A failed root skips the scheduled child and the blocked continuation,
+        // which finishes the play's client work.
+        driver
+            .on_causal_terminal(root[0].request_uuid, 1.0, ReplayTerminalStatus::Failed)
+            .unwrap();
+        assert_eq!(ready_counts(&driver), vec![0]);
+        assert_eq!(driver.next_ready_time_ms(), Some(1.0));
+
+        // Replacement clears the flag and brings the new play's ready root.
+        assert!(driver.advance_agentic_profile(1.0).unwrap());
+        assert_eq!(ready_counts(&driver), vec![0, 1]);
+        let SchedulingPolicy::Agentic(state) = &driver.policy else {
+            unreachable!()
+        };
+        assert!(!state.finished_unscanned);
+        assert_eq!(driver.next_ready_time_ms(), Some(1.0));
+
+        // The admission cutoff censors the unissued replacement root.
+        assert!(driver.advance_agentic_profile(100.0).unwrap());
+        assert_eq!(ready_counts(&driver), vec![0, 0]);
     }
 
     #[test]
