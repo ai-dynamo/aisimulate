@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from aisim.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
+from aisim_core.decoder_config import decoder_config_key
 from aisim_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
 from .capabilities import GENERIC_RUNTIME_TEMPLATE_ID
@@ -143,13 +144,13 @@ def _dense_synthetic_kv_eligible(
     ):
         return False
     source = plan.capability.model_config.payload
-    text = source.get("text_config")
+    decoder = source.get(decoder_config_key(source))
     # Dynamo checks both configs for experts before considering recurrent state:
     # https://github.com/ai-dynamo/dynamo/blob/92cf45e2e6707ac32b1fee275f949270fdd61200/components/src/dynamo/vllm/instrumented_scheduler.py#L5585
     # Its skip reason alone therefore does not establish dense full attention.
     if any(
         config.get(key)
-        for config in (source, text)
+        for config in (source, decoder)
         if isinstance(config, dict)
         for key in ("num_local_experts", "num_experts", "n_routed_experts", "moe_num_experts")
     ):

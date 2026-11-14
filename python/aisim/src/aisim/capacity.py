@@ -596,16 +596,18 @@ def estimate_kv_bytes_per_token(
 def resolve_model_context_length(model_name: str) -> int:
     """Resolve ``context_length: max`` from a local, cached, or HF config."""
 
+    from aisim_core.decoder_config import decoder_config_key, decoder_config_problem
     from aisim_core.sdk.memory import NaiveKVCacheEstimator
 
     # Both modules ship in the same distribution; reuse the canonical loader.
     config = NaiveKVCacheEstimator._load_config(model_name, allow_hf_config_download=True)
     if not isinstance(config, dict):
         raise ValueError(f"could not load Hugging Face config for {model_name!r}")
-    text_config = config.get("text_config")
-    mappings = [config]
-    if isinstance(text_config, dict):
-        mappings.insert(0, text_config)
+    key = decoder_config_key(config)
+    decoder = config.get(key)
+    if key is not None and (problem := decoder_config_problem(key, decoder)) is not None:
+        raise ValueError(f"Hugging Face config for {model_name!r}: {problem}")
+    mappings = [decoder, config] if decoder is not None else [config]
     for mapping in mappings:
         for name in (
             "max_position_embeddings",

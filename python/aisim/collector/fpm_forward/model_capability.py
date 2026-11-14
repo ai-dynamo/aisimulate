@@ -21,6 +21,7 @@ from aisim.sdk.utils import (
     _get_model_config_path,
     _parse_hf_config_json,
 )
+from aisim_core.decoder_config import decoder_config_problem
 from aisim_core.sdk.fpm_model_metadata import (
     attach_quantization_sidecar,
     decoder_config_key,
@@ -70,11 +71,17 @@ class ResolvedModelConfig:
 
     @property
     def effective_payload(self) -> dict[str, Any]:
-        """Return decoder metadata, inheriting only identity and shared precision."""
+        """Return decoder metadata, inheriting only identity and shared precision.
+
+        A decoder config that is not one nonempty object, or that holds a decoder key, raises ValueError, as config
+        intake refuses it. Only a config with no decoder key is read flat.
+        """
 
         payload = self.payload
         key = decoder_config_key(payload)
         decoder = payload.get(key)
+        if key is not None and (problem := decoder_config_problem(key, decoder)) is not None:
+            raise ValueError(f"{problem}; supply one text decoder config")
         if isinstance(decoder, dict):
             effective, _ = inherit_decoder_precision(payload, decoder)
             if effective.get("architectures") is None and payload.get("architectures") is not None:
