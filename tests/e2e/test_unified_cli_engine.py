@@ -92,6 +92,12 @@ def _assert_concrete(value: Any, *, path: str = "config") -> None:
             _assert_concrete(child, path=f"{path}[{index}]")
 
 
+def _current_version(hardware: str, backend: str) -> str:
+    from aisim_core.sdk import perf_database
+
+    return perf_database.get_version_slots(hardware, backend)["current"]
+
+
 def _check_documented_candidate_renderer(recommendation_output: Path, tmp_path: Path) -> None:
     guide = (_REPO_ROOT / "docs/sweeper/deployment-generation.md").read_text()
     script = guide.split("```python\n", 1)[1].split("\n```", 1)[0]
@@ -457,7 +463,9 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
         if config_path.name == "dynamo-deployment-recommend.yaml":
             assert json.loads(prediction.stdout)["completed_requests"] == 40
             assert raw["engine"]["model"] == "Qwen/Qwen3-32B-FP8"
-            assert raw["engine"]["backend_version"] == "0.24.0"
+            # The example asks for `current`; the recommendation records the version it resolved to.
+            assert requested.engine.backend_version == "current"
+            assert raw["engine"]["backend_version"] == _current_version("h200_sxm", "vllm")
         if config_path.name == "08-heterogeneous-pd.yaml":
             candidate = SweepResult.from_json((output / "recommendation.json").read_text()).selected_candidates[index]
             deployment = prediction_to_replay_spec(concrete).backend_deployment
@@ -479,7 +487,8 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
                 assert metrics[key] == pytest.approx(candidate.metrics[key])
         if config_path.name == "07-afd-plus-pd.yaml":
             assert concrete.engine.model == requested.engine.model == "Qwen/Qwen3-30B-A3B"
-            assert concrete.engine.backend_version == requested.engine.backend_version == "0.5.14"
+            assert requested.engine.backend_version == "current"
+            assert concrete.engine.backend_version == _current_version("h200_sxm", "sglang")
             for role in ("prefill", "decode"):
                 assert getattr(concrete.engine.workers, role).type == getattr(requested.engine.workers, role).type
             _assert_native_afd_prediction(

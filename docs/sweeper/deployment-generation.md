@@ -26,13 +26,16 @@ the workflow; it does not establish the best possible deployment.
 | Version/identity | Choice |
 |---|---|
 | AISim | Your source checkout; retain `git rev-parse HEAD` and `uv.lock`. |
-| Prediction backend/data version | vLLM `0.24.0`. |
-| Generated backend configuration | vLLM `0.24.0`, taken from the selected candidate. |
+| Prediction backend/data version | The `current` vLLM data version; the recommendation records the version it resolved to. |
+| Generated backend configuration | That resolved vLLM version, taken from the selected candidate. |
 | Dynamo deployment target | `dynamo-j2`, Dynamo `1.3.0`. |
 | Serving image | `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0`; record the pulled digest. |
 
 The Dynamo/backend pair is recorded in the generator's
 [version matrix](../../python/aisim/src/aisim/generator/facts/runtimes/dynamo.yaml).
+That matrix pairs Dynamo `1.3.0` with vLLM `0.24.0`, which is older than the
+`current` data version this example predicts on, and it lists no Dynamo release
+for the `current` version.
 These pins make the intended environment explicit; local artifact generation
 is not a GPU deployment qualification. Before serving, verify the image's
 actual versions and the target machine's driver/GPU requirements using the
@@ -152,9 +155,9 @@ sized from them. Benchmarks replay one fixed ISL/OSL, so unless
 The bridge rejects a trace for the `slurm` target, whose bundle runs that
 benchmark by default.
 
-The renderer currently reports that vLLM `0.24.0` uses the closest prior
-`cli_args.0.20.1.j2` flag template. Keep that warning with the generated artifacts
-and verify the emitted flags against the actual `0.24.0` runtime.
+The renderer currently reports that the resolved vLLM version uses the closest
+prior `cli_args.0.20.1.j2` flag template. Keep that warning with the generated
+artifacts and verify the emitted flags against the runtime in the serving image.
 
 Inspect the returned filenames and generated scripts. For this vLLM example,
 `run_0.sh` launches the frontend and worker processes; `bench_run.sh` runs an

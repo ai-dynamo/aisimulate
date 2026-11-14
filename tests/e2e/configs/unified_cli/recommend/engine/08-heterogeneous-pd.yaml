@@ -11,7 +11,7 @@ engine:
   model: meta-llama/Meta-Llama-3.1-8B
   hardware: h200_sxm
   backend: vllm
-  backend_version: 0.24.0
+  backend_version: current
   context_length: 4096
   kv_transfer: {bytes_per_token: auto, bandwidth_gb_per_second: 50}
   workers:
