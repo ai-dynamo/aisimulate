@@ -1789,6 +1789,17 @@ pub(crate) fn resolve_speculation_identity(
 pub(crate) fn speculation_replay_depth(
     config: &crate::ForwardPassSpeculationConfig,
 ) -> Result<u32, AicError> {
+    // The `python` feature also serves extension hosts, which initialize their
+    // own interpreter. Calling with_gil before that would panic. Embedders opt
+    // into PyO3's automatic initialization with the separate embed-python feature.
+    #[cfg(not(feature = "embed-python"))]
+    if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+        return Err(AicError::InvalidEngineConfig(
+            "generic speculative replay requires an initialized Python interpreter; \
+             initialize Python or enable the embed-python feature"
+                .into(),
+        ));
+    }
     Python::with_gil(|py| -> PyResult<_> {
         let encoded = serde_json::to_string(config)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;

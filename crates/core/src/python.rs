@@ -663,7 +663,7 @@ impl AicTimingConfig {
                     speculation.kind
                 ),
             }
-            return Ok(crate::py::speculation_replay_depth(speculation)?);
+            return Ok(speculation.replay_depth()?);
         }
         Ok(self.nextn)
     }
@@ -2959,14 +2959,15 @@ fn materialize_aic_capacity(
     capacity_is_explicit: bool,
     estimate: impl FnOnce(&AicTimingConfig, &ReplayRoleConfig) -> Result<usize>,
 ) -> Result<()> {
-    ensure!(
-        capacity_is_explicit
-            || config
-                .speculation
-                .as_ref()
-                .is_none_or(|spec| matches!(spec.kind.as_str(), "none" | "ngram")),
-        "speculative replay requires explicit num_gpu_blocks including draft memory"
-    );
+    if let Some(speculation) = &config.speculation
+        && let Some(message) = crate::engine::speculation::speculative_capacity_mismatch(
+            &speculation.kind,
+            capacity_is_explicit,
+            role.rank.num_gpu_blocks,
+        )
+    {
+        anyhow::bail!(message);
+    }
     config.validate_parallel_shape()?;
     let engine_backend = match role.rank.backend {
         Backend::Vllm => "vllm",
@@ -3257,19 +3258,6 @@ fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
     }
 }
 
-/// vLLM turns async scheduling off by default for prompt-lookup (ngram)
-/// drafts and rejects an explicit request for it.
-fn resolve_ngram_async_scheduling(rank: &mut EngineConfig, speculation_kind: &str) -> Result<()> {
-    if speculation_kind == "ngram" && rank.backend == Backend::Vllm {
-        ensure!(
-            rank.async_scheduling != Some(true),
-            "vLLM does not support async scheduling with ngram speculative decoding"
-        );
-        rank.async_scheduling = Some(false);
-    }
-    Ok(())
-}
-
 /// Normalize old provider payloads at the boundary. Rank identity is authoritative;
 /// redundant matching inputs are discarded and conflicting inputs fail before loading data.
 fn normalize_afd_timing_config(
@@ -3516,23 +3504,13 @@ fn resolve_role_timing(
         require_unit_decode_speedup(&pricing.model, role.rank.decode_speedup_ratio)?;
     }
     if let Some(speculation) = &config.speculation {
-        ensure!(
-            speculation.kind == "ngram"
-                || role
-                    .rank
-                    .aic_nextn_accept_rates
-                    .as_deref()
-                    .is_some_and(|rates| !rates.trim().is_empty()),
-            "generic speculative replay requires explicit aic_nextn_accept_rates; \
-             configure expected_accepted_tokens in engine.speculation"
-        );
-        let depth = config.speculative_depth()? as usize;
-        ensure!(
-            role.rank.aic_nextn.is_none_or(|value| value == depth),
-            "aic_nextn conflicts with resolved speculative depth {depth}"
-        );
-        role.rank.aic_nextn = (depth > 0).then_some(depth);
-        resolve_ngram_async_scheduling(&mut role.rank, &speculation.kind)?;
+        crate::engine::speculation::resolve_speculative_role(
+            &mut role.rank,
+            &speculation.kind,
+            &config.backend,
+            config.speculative_depth()?,
+            capacity_is_explicit,
+        )?;
     }
     if let Some(model) = &timing.fpm_model
         && model.fpm_query_coverage()?.is_some()
@@ -5466,7 +5444,11 @@ fn engine_launch_from_replay_role_json(
     startup_time: Option<f64>,
 ) -> PyResult<String> {
     let convert = || -> anyhow::Result<String> {
-        let role: crate::replay::ReplayRoleConfig = serde_json::from_str(payload)?;
+        let value: serde_json::Value = serde_json::from_str(payload)?;
+        let depth_is_omitted = value
+            .pointer("/rank/aic_nextn")
+            .is_none_or(serde_json::Value::is_null);
+        let role: crate::replay::ReplayRoleConfig = serde_json::from_value(value)?;
         let mut launch = crate::engine::EngineLaunchConfig {
             engine: role.rank,
             dp_size: role.dp_size,
@@ -5490,6 +5472,9 @@ fn engine_launch_from_replay_role_json(
                 provider: "ais".into(),
                 config: serde_json::to_value(canonical)?,
             };
+        }
+        if depth_is_omitted {
+            launch.derive_speculative_depth()?;
         }
         Ok(serde_json::to_string(&launch.normalized()?)?)
     };
@@ -8416,18 +8401,73 @@ mod tests {
     }
 
     #[test]
-    fn ngram_drafts_turn_vllm_async_scheduling_off() {
-        let mut rank = EngineConfig::default();
-        resolve_ngram_async_scheduling(&mut rank, "mtp").unwrap();
-        assert_eq!(rank.async_scheduling, None);
-        resolve_ngram_async_scheduling(&mut rank, "ngram").unwrap();
-        assert_eq!(rank.async_scheduling, Some(false));
-        rank.async_scheduling = Some(true);
-        let error = resolve_ngram_async_scheduling(&mut rank, "ngram").unwrap_err();
-        assert!(error.to_string().contains("async scheduling"), "{error}");
-        let mut sglang = EngineConfig::for_backend(Backend::Sglang);
-        resolve_ngram_async_scheduling(&mut sglang, "ngram").unwrap();
-        assert_eq!(sglang.async_scheduling, None);
+    fn native_ngram_role_derives_missing_or_null_depth_and_default_acceptance() {
+        pyo3::prepare_freethreaded_python();
+        if let Err(error) = Python::with_gil(|py| py.import("aisim_core.sdk.engine").map(|_| ())) {
+            assert!(
+                std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_none(),
+                "embedded SDK is required: {error}"
+            );
+            eprintln!("native_ngram_role: SKIP — embedded SDK is not importable: {error}");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "architectures": ["LlamaForCausalLM"], "model_type": "llama",
+                "num_hidden_layers": 4, "hidden_size": 2048,
+                "intermediate_size": 5632, "num_attention_heads": 16,
+                "num_key_value_heads": 4, "head_dim": 128,
+                "vocab_size": 32000, "max_position_embeddings": 2048
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for depth in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!(3)),
+        ] {
+            let mut value = serde_json::json!({
+                "rank": {
+                    "backend": "vllm", "num_gpu_blocks": 64, "block_size": 16,
+                    "timing_model": {"type": "external", "provider": "aic", "config": {
+                        "model": dir.path(), "system": "h200_sxm", "backend": "vllm",
+                        "backend_version": "0.24.0", "estimation_mode": "op_level",
+                        "speculation": {"kind": "ngram", "params": {"num_speculative_tokens": 3}}
+                    }}
+                }
+            });
+            if let Some(depth) = depth {
+                value["rank"]["aic_nextn"] = depth;
+            }
+            let mut role: ReplayRoleConfig = serde_json::from_value(value).unwrap();
+            assert!(
+                resolve_role_timing(
+                    &mut role,
+                    true,
+                    ForwardPassWorkerType::Aggregated,
+                    None,
+                    false,
+                    &mut Vec::new(),
+                    &mut serde_json::Map::new(),
+                )
+                .unwrap()
+                .0
+                .is_some()
+            );
+            assert_eq!(role.rank.aic_nextn, Some(3));
+            assert_eq!(role.rank.async_scheduling, Some(false));
+            assert_eq!(
+                crate::engine::normalize_conditional_accept_rates(
+                    3,
+                    role.rank.aic_nextn_accept_rates.as_deref(),
+                )
+                .unwrap(),
+                [0.85, 0.3, 0.0],
+            );
+        }
     }
 
     #[test]
@@ -8532,7 +8572,7 @@ mod tests {
             materialize_aic_capacity(&config, &mut role, false, |_, _| unreachable!())
                 .unwrap_err()
                 .to_string()
-                .contains("explicit num_gpu_blocks")
+                .contains("explicitly configured positive num_gpu_blocks")
         );
         role.rank.aic_nextn = Some(3);
         materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();

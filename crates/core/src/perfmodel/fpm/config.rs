@@ -263,6 +263,42 @@ pub struct ForwardPassSpeculationConfig {
 }
 
 impl ForwardPassSpeculationConfig {
+    /// Validate this cost identity against replay's supported linear draft depth.
+    /// Native `none` and `ngram` configurations do not require Python. Other
+    /// schemes use the shared SDK registry and require an initialized Python
+    /// interpreter, or the `embed-python` feature to initialize one on demand.
+    pub fn replay_depth(&self) -> Result<u32, AicError> {
+        match self.kind.as_str() {
+            "none" => {
+                if !self.params.is_empty()
+                    || self.draft_model_path.is_some()
+                    || self.draft_config.is_some()
+                {
+                    return Err(invalid_config(
+                        "none speculation does not accept parameters or a draft checkpoint",
+                    ));
+                }
+                Ok(0)
+            }
+            "ngram" => self.ngram_depth(),
+            kind if kind.trim().is_empty() => {
+                Err(invalid_config("speculation kind cannot be empty"))
+            }
+            _ => {
+                #[cfg(feature = "python")]
+                {
+                    crate::py::speculation_replay_depth(self)
+                }
+                #[cfg(not(feature = "python"))]
+                {
+                    Err(invalid_config(
+                        "generic speculative replay requires the python feature",
+                    ))
+                }
+            }
+        }
+    }
+
     /// Preserve the existing prompt-lookup contract for canonical and replay callers.
     pub(crate) fn ngram_depth(&self) -> Result<u32, AicError> {
         if self.kind != "ngram" {
