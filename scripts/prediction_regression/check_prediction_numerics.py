@@ -6,6 +6,10 @@
 
 This is numerical stability coverage, not predictive accuracy against hardware.
 The broad old/new modeling report remains advisory for numerical drift.
+
+The manifest records no source commit. The history of the manifest
+(`git log -p -- .github/prediction-numerical-sentinels.json`) shows which PR
+changed the expected values; see docs/ci/README.md.
 """
 
 from __future__ import annotations
@@ -15,40 +19,10 @@ import hashlib
 import json
 import math
 import os
-import re
-import subprocess
 from pathlib import Path
 
 
-def resolve_baseline(manifest: dict, *, fetch: bool = False, repository_root: Path | None = None) -> str:
-    baseline = manifest.get("baseline_source_sha")
-    if not isinstance(baseline, str) or not re.fullmatch(r"[0-9a-f]{40}", baseline):
-        raise ValueError("baseline_source_sha must be a full commit SHA")
-    root = repository_root or Path(__file__).resolve().parents[2]
-    command = ["git", "cat-file", "-e", f"{baseline}^{{commit}}"]
-    resolved = subprocess.run(
-        command,
-        cwd=root,
-        capture_output=True,
-        timeout=10,
-    )
-    if resolved.returncode and fetch:
-        # Squashed PR commits may be absent even after fetching all branch history.
-        # Fetch only the recorded source; never replace it or refresh expected values.
-        subprocess.run(
-            ["git", "fetch", "--no-tags", "--depth=1", "--no-write-fetch-head", "origin", baseline],
-            cwd=root,
-            check=True,
-            timeout=60,
-        )
-        resolved = subprocess.run(command, cwd=root, capture_output=True, timeout=10)
-    if resolved.returncode:
-        raise ValueError(f"baseline_source_sha does not resolve to a commit: {baseline}")
-    return baseline
-
-
 def validate_cases(manifest: dict) -> list[dict]:
-    resolve_baseline(manifest)
     cases = manifest["cases"]
     if manifest["schema_version"] != 1 or not cases:
         raise ValueError("sentinel manifest must have schema 1 and nonempty cases")
@@ -121,22 +95,14 @@ def main() -> int:
         type=Path,
         default=Path(__file__).resolve().parents[2] / ".github/prediction-numerical-sentinels.json",
     )
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--output", type=Path)
-    mode.add_argument(
-        "--fetch-baseline-only", action="store_true", help="Fetch the recorded commit without running predictions"
-    )
+    parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
-    if args.fetch_baseline_only:
-        print(f"Numerical baseline available: {resolve_baseline(manifest, fetch=True)}")
-        return 0
     cases = validate_cases(manifest)
     rows = collect(cases)
     failures = check_results(cases, rows)
     result = {
         "source_sha": os.environ.get("GITHUB_SHA"),
-        "baseline_source_sha": manifest["baseline_source_sha"],
         "manifest_sha256": hashlib.sha256(args.manifest.read_bytes()).hexdigest(),
         "qualification": "native_prediction_stability",
         "results": rows,

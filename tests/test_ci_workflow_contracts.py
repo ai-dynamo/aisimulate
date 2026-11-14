@@ -756,12 +756,10 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "test_engine_step_parity.py" in regression_commands
     assert "test_compile_engine_parity.py" in regression_commands
     assert regression_commands.count("-c python/aisim/pytest.ini") == 2
-    assert regression_commands.index("check_prediction_numerics.py --fetch-baseline-only") < regression_commands.index(
-        "check_prediction_numerics.py --output"
-    )
-    policy_commands = _run_commands(_workflow("fast-ci.yml")["jobs"]["policy"])
-    fetch = "check_prediction_numerics.py --fetch-baseline-only"
-    assert policy_commands.index(fetch) < policy_commands.index("tests/test_ci_qualification.py")
+    assert "check_prediction_numerics.py --output" in regression_commands
+    # The sentinel values need no extra commit: no job fetches one.
+    for workflow in ("ci.yml", "fast-ci.yml"):
+        assert "--fetch-baseline-only" not in (WORKFLOW_ROOT / workflow).read_text()
 
     feature_mode_commands = _run_commands(jobs["rust-feature-modes"])
     assert "cargo test --workspace --features embed-python,replay-bench" in feature_mode_commands

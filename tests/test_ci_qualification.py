@@ -12,10 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from scripts.prediction_regression.check_prediction_numerics import check_results, resolve_baseline, validate_cases
+from scripts.prediction_regression.check_prediction_numerics import check_results, validate_cases
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE_SHA = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())["baseline_source_sha"]
 
 
 @pytest.fixture
@@ -52,100 +51,28 @@ def test_missing_duplicate_and_skipped_sentinels_fail(case):
 def test_invalid_tolerances_or_query_rejected(case, field, value):
     case[field] = value
     with pytest.raises(ValueError):
-        validate_cases({"schema_version": 1, "baseline_source_sha": BASELINE_SHA, "cases": [case]})
+        validate_cases({"schema_version": 1, "cases": [case]})
 
 
-@pytest.mark.parametrize("baseline", [None, "", "main", "a" * 39, "z" * 40, "0" * 40])
-def test_invalid_or_unresolved_baseline_commit_fails(case, baseline):
-    with pytest.raises(ValueError, match="baseline_source_sha"):
-        validate_cases({"schema_version": 1, "baseline_source_sha": baseline, "cases": [case]})
+def test_valid_manifest_is_accepted(case):
+    assert validate_cases({"schema_version": 1, "cases": [case]}) == [case]
 
 
-def test_valid_baseline_commit_is_accepted(case):
-    assert validate_cases({"schema_version": 1, "baseline_source_sha": BASELINE_SHA, "cases": [case]}) == [case]
+def test_manifest_records_no_baseline_commit():
+    # The manifest records no source commit. Its history (git log -p) shows
+    # which PR changed the expected values.
+    manifest = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())
+    assert "baseline_source_sha" not in manifest
 
 
-def test_fetch_historical_baseline_preserves_checkout_and_works_offline_afterward(tmp_path):
-    upstream = tmp_path / "upstream"
-    checkout = tmp_path / "checkout"
-    upstream.mkdir()
-
-    def git(root, *args):
-        return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
-
-    git(upstream, "init", "-q", "-b", "main")
-    git(upstream, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "main")
-    git(upstream, "checkout", "-qb", "historical-baseline")
-    git(
-        upstream,
-        "-c",
-        "user.name=Test",
-        "-c",
-        "user.email=test@example.com",
-        "commit",
-        "--allow-empty",
-        "-qm",
-        "baseline",
-    )
-    baseline = git(upstream, "rev-parse", "HEAD")
-    git(upstream, "checkout", "main")
-    git(tmp_path, "clone", "--depth=1", "--single-branch", upstream.as_uri(), str(checkout))
-    head = git(checkout, "rev-parse", "HEAD")
-    manifest = {"baseline_source_sha": baseline}
-    with pytest.raises(ValueError, match="does not resolve"):
-        resolve_baseline(manifest, repository_root=checkout)
-    assert resolve_baseline(manifest, fetch=True, repository_root=checkout) == baseline
-    assert git(checkout, "rev-parse", "HEAD") == head
-    assert git(checkout, "branch", "--show-current") == "main"
-    git(checkout, "remote", "remove", "origin")
-    assert resolve_baseline(manifest, fetch=True, repository_root=checkout) == baseline
-    assert manifest == {"baseline_source_sha": baseline}
-
-
-@pytest.mark.parametrize("baseline", [None, "main", "--upload-pack=invalid", "a" * 39, "z" * 40])
-def test_fetch_baseline_rejects_non_sha_before_git(tmp_path, baseline):
-    with pytest.raises(ValueError, match="full commit SHA"):
-        resolve_baseline({"baseline_source_sha": baseline}, fetch=True, repository_root=tmp_path)
-
-
-def test_fetch_baseline_fails_when_origin_cannot_supply_commit(tmp_path):
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "remote", "add", "origin", str(tmp_path / "missing")], cwd=tmp_path, check=True)
-    with pytest.raises(subprocess.CalledProcessError):
-        resolve_baseline({"baseline_source_sha": "0" * 40}, fetch=True, repository_root=tmp_path)
-
-
-def test_fetch_baseline_cli_does_not_require_prediction_cases_or_write_results(tmp_path):
-    baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"baseline_source_sha": baseline}))
+def test_numerical_cli_requires_output(tmp_path):
     result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts/prediction_regression/check_prediction_numerics.py"),
-            "--manifest",
-            str(manifest),
-            "--fetch-baseline-only",
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert result.stdout.strip() == f"Numerical baseline available: {baseline}"
-    assert set(tmp_path.iterdir()) == {manifest}
-
-
-@pytest.mark.parametrize("arguments", [[], ["--fetch-baseline-only", "--output", "results.json"]])
-def test_numerical_cli_requires_exactly_one_mode(tmp_path, arguments):
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts/prediction_regression/check_prediction_numerics.py"), *arguments],
+        [sys.executable, str(ROOT / "scripts/prediction_regression/check_prediction_numerics.py")],
         cwd=tmp_path,
         capture_output=True,
         text=True,
     )
     assert result.returncode == 2
-    assert "--fetch-baseline-only" in result.stderr
     assert "--output" in result.stderr
     assert not list(tmp_path.iterdir())
 
