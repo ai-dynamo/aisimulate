@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 fn config(speculation: Value, nextn: u32) -> Value {
     json!({
         "model": "Qwen/Qwen3-8B", "system": "h200_sxm", "backend": "vllm",
-        "backend_version": "0.24.0", "worker_type": "aggregated",
+        "backend_version": "current", "worker_type": "aggregated",
         "estimation_mode": "op_level", "database_mode": "SOL",
         "speculation": speculation, "nextn": nextn,
     })
