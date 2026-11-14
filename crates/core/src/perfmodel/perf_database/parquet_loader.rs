@@ -30,12 +30,13 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::DataType;
 use parquet::arrow::arrow_reader::{
     ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
 };
-use parquet::basic::ConvertedType;
+use parquet::basic::{ConvertedType, Type as PhysicalType};
 use parquet::errors::ParquetError;
+use parquet::schema::types::{SchemaDescriptor, Type};
 
 use crate::common::error::AicError;
 
@@ -83,11 +84,13 @@ impl PerfReader {
             source,
         };
         let options = ArrowReaderOptions::new().with_skip_arrow_metadata(true);
-        let mut metadata = ArrowReaderMetadata::load(&file, options).map_err(parquet_error)?;
-        if let Some(schema) = enum_columns_as_utf8(&metadata) {
-            let options = ArrowReaderOptions::new().with_schema(schema);
-            metadata = ArrowReaderMetadata::try_new(Arc::clone(metadata.metadata()), options)
-                .map_err(parquet_error)?;
+        let mut metadata =
+            ArrowReaderMetadata::load(&file, options.clone()).map_err(parquet_error)?;
+        let retyped = record_api_schema(metadata.parquet_schema()).map_err(parquet_error)?;
+        if let Some(schema) = retyped {
+            // Decode the footer again against the retyped columns.
+            let options = options.with_parquet_schema(Arc::new(schema));
+            metadata = ArrowReaderMetadata::load(&file, options).map_err(parquet_error)?;
         }
         let column_names = metadata
             .schema()
@@ -196,37 +199,55 @@ impl PerfReader {
     }
 }
 
-/// The file's Arrow schema with ENUM-annotated BYTE_ARRAY columns typed
-/// `Utf8`, or `None` when it has none. The record API reads an ENUM cell as a
-/// string; Arrow types the column `Binary`, which no accessor reads, so the
-/// optional accessors would report a present ENUM cell as absent. As a schema
-/// hint this makes the reader decode (and UTF-8 check) those columns like
-/// UTF8 ones.
-fn enum_columns_as_utf8(metadata: &ArrowReaderMetadata) -> Option<SchemaRef> {
-    let schema = metadata.schema();
-    let file_metadata = metadata.metadata().file_metadata();
-    let columns = file_metadata.schema_descr().root_schema().get_fields();
-    if columns.len() != schema.fields().len() {
-        return None;
-    }
-    let mut any = false;
-    let fields: Vec<Field> = schema
-        .fields()
-        .iter()
-        .zip(columns)
-        .map(|(field, column)| {
-            let field = field.as_ref().clone();
-            let is_enum = field.data_type() == &DataType::Binary
-                && column.get_basic_info().converted_type() == ConvertedType::ENUM;
-            any |= is_enum;
-            if is_enum {
-                field.with_data_type(DataType::Utf8)
-            } else {
-                field
+/// `schema` with the top-level columns the Arrow reader would not hand the
+/// accessors as a checked string or an INT64 retyped so that it does, or
+/// `None` when there is none:
+/// - ENUM and JSON `BYTE_ARRAY` columns become `UTF8`. The decoder checks
+///   UTF-8 only in columns annotated `UTF8`, and types ENUM as binary.
+/// - `INT64` columns with a logical type but no converted type (nanosecond
+///   timestamp or time) become plain `INT64`.
+fn record_api_schema(schema: &SchemaDescriptor) -> Result<Option<SchemaDescriptor>, ParquetError> {
+    let root = schema.root_schema();
+    let mut retyped = false;
+    let fields = root.get_fields().iter().map(|field| {
+        let converted = match field.as_ref() {
+            Type::PrimitiveType {
+                basic_info,
+                physical_type: PhysicalType::BYTE_ARRAY,
+                ..
+            } if matches!(
+                basic_info.converted_type(),
+                ConvertedType::ENUM | ConvertedType::JSON
+            ) =>
+            {
+                ConvertedType::UTF8
             }
-        })
-        .collect();
-    any.then(|| Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())))
+            Type::PrimitiveType {
+                basic_info,
+                physical_type: PhysicalType::INT64,
+                ..
+            } if basic_info.converted_type() == ConvertedType::NONE
+                && basic_info.logical_type_ref().is_some() =>
+            {
+                ConvertedType::NONE
+            }
+            _ => return Ok(Arc::clone(field)),
+        };
+        retyped = true;
+        Type::primitive_type_builder(field.name(), field.get_physical_type())
+            .with_repetition(field.get_basic_info().repetition())
+            .with_converted_type(converted)
+            .build()
+            .map(Arc::new)
+    });
+    let fields = fields.collect::<Result<Vec<_>, ParquetError>>()?;
+    if !retyped {
+        return Ok(None);
+    }
+    let root = Type::group_type_builder(root.name())
+        .with_fields(fields)
+        .build()?;
+    Ok(Some(SchemaDescriptor::new(Arc::new(root))))
 }
 
 /// One decoded batch and the file it came from.
@@ -431,19 +452,22 @@ mod tests {
     /// Enough rows to cross a batch boundary.
     const ROWS: usize = BATCH_ROWS + 476;
 
-    /// Writes one row group of `schema`; `fill` writes its columns in schema
-    /// order.
+    /// Writes `groups` identical row groups of `schema`; `fill` writes one
+    /// group's columns in schema order.
     fn write_file(
         path: &Path,
         schema: &str,
-        fill: impl FnOnce(&mut SerializedRowGroupWriter<'_, File>),
+        groups: usize,
+        fill: impl Fn(&mut SerializedRowGroupWriter<'_, File>),
     ) {
         let schema = Arc::new(parse_message_type(schema).unwrap());
         let file = File::create(path).unwrap();
         let mut writer = SerializedFileWriter::new(file, schema, Default::default()).unwrap();
-        let mut rg = writer.next_row_group().unwrap();
-        fill(&mut rg);
-        rg.close().unwrap();
+        for _ in 0..groups {
+            let mut rg = writer.next_row_group().unwrap();
+            fill(&mut rg);
+            rg.close().unwrap();
+        }
         writer.close().unwrap();
     }
 
@@ -458,16 +482,18 @@ mod tests {
         col.close().unwrap();
     }
 
-    /// OPTIONAL columns (nulls on different rows per column), a REQUIRED
-    /// string, annotations the accessors read (INT_64, JSON, ENUM) and types
-    /// they do not (INT32, TIMESTAMP_MICROS, raw BYTE_ARRAY, REPEATED).
+    /// Two row groups of `ROWS` rows: OPTIONAL columns (nulls on different
+    /// rows per column), a REQUIRED string, annotations the accessors read
+    /// (INT_64, nanosecond timestamp, JSON, ENUM) and types they do not
+    /// (INT32, TIMESTAMP_MICROS, raw BYTE_ARRAY, REPEATED).
     fn write_fixture(path: &Path) {
         let schema = "message fixture { OPTIONAL BYTE_ARRAY s (UTF8); REQUIRED BYTE_ARRAY r (UTF8); \
              OPTIONAL INT64 i; OPTIONAL DOUBLE d; OPTIONAL BOOLEAN b; OPTIONAL INT32 x; \
              OPTIONAL INT64 a (INT_64); OPTIONAL INT64 ts (TIMESTAMP_MICROS); \
+             OPTIONAL INT64 ns (TIMESTAMP(NANOS,true)); \
              OPTIONAL BYTE_ARRAY raw; OPTIONAL BYTE_ARRAY j (JSON); \
              OPTIONAL BYTE_ARRAY e (ENUM); REPEATED INT64 rep; }";
-        write_file(path, schema, |rg| {
+        write_file(path, schema, 2, |rg| {
             let rows: Vec<usize> = (0..ROWS).collect();
             let defs = |every: usize| -> Vec<i16> {
                 rows.iter().map(|r| i16::from(r % every != 0)).collect()
@@ -487,6 +513,7 @@ mod tests {
             let ints: Vec<i32> = present(13).map(|r| r as i32).collect();
             let annotated: Vec<i64> = present(17).map(|r| r as i64).collect();
             let micros: Vec<i64> = present(19).map(|r| r as i64 * 1000).collect();
+            let nanos: Vec<i64> = present(37).map(|r| r as i64 * 1_000_000).collect();
             let repeated: Vec<i64> = rows.iter().map(|&r| r as i64).collect();
             column::<ByteArrayType>(rg, &strings, Some(&defs(7)), None);
             column::<ByteArrayType>(rg, &required, None, None);
@@ -496,6 +523,7 @@ mod tests {
             column::<Int32Type>(rg, &ints, Some(&defs(13)), None);
             column::<Int64Type>(rg, &annotated, Some(&defs(17)), None);
             column::<Int64Type>(rg, &micros, Some(&defs(19)), None);
+            column::<Int64Type>(rg, &nanos, Some(&defs(37)), None);
             column::<ByteArrayType>(rg, &raw, Some(&defs(23)), None);
             column::<ByteArrayType>(rg, &json, Some(&defs(29)), None);
             column::<ByteArrayType>(rg, &enums, Some(&defs(31)), None);
@@ -518,7 +546,7 @@ mod tests {
             .map(Result::unwrap)
             .collect();
         let rows: Vec<PerfRow> = reader.rows().unwrap().map(Result::unwrap).collect();
-        assert_eq!(rows.len(), ROWS);
+        assert_eq!(rows.len(), 2 * ROWS);
         assert_eq!(rows.len(), oracle.len());
         assert_eq!(reader.num_rows().unwrap(), oracle.len() as u64);
         for (index, (row, expected)) in rows.iter().zip(&oracle).enumerate() {
@@ -567,7 +595,7 @@ mod tests {
         let path = tmp.path().join("enum.parquet");
         let schema =
             "message t { REQUIRED BYTE_ARRAY kernel_source (ENUM); REQUIRED DOUBLE latency; }";
-        write_file(&path, schema, |rg| {
+        write_file(&path, schema, 1, |rg| {
             column::<ByteArrayType>(rg, &[ByteArray::from("measured_kernel")], None, None);
             column::<DoubleType>(rg, &[1.5], None, None);
         });
@@ -579,21 +607,28 @@ mod tests {
         assert!(crate::perf_database::kernel_source_ok(Some(&allow), ks_col, &row).unwrap());
     }
 
+    /// Every annotation read as a string: the decoder itself checks only
+    /// `UTF8` columns and would hand out the other two unchecked.
     #[test]
     fn invalid_utf8_ends_rows_with_one_path_qualified_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("bad.parquet");
-        let schema = "message bad { REQUIRED BYTE_ARRAY s (UTF8); }";
-        write_file(&path, schema, |rg| {
-            let values = [ByteArray::from(b"ok".to_vec()), ByteArray::from(vec![0xff])];
-            column::<ByteArrayType>(rg, &values, None, None);
-        });
-        let reader = PerfReader::open(&path).unwrap();
-        let mut rows = reader.rows().unwrap();
-        assert!(matches!(
-            rows.next(),
-            Some(Err(AicError::Parquet { path: at, .. })) if at == path
-        ));
-        assert!(rows.next().is_none());
+        for annotation in ["UTF8", "ENUM", "JSON"] {
+            let path = tmp.path().join(format!("{annotation}.parquet"));
+            let schema = format!("message bad {{ REQUIRED BYTE_ARRAY s ({annotation}); }}");
+            write_file(&path, &schema, 1, |rg| {
+                let values = [ByteArray::from(b"ok".to_vec()), ByteArray::from(vec![0xff])];
+                column::<ByteArrayType>(rg, &values, None, None);
+            });
+            let reader = PerfReader::open(&path).unwrap();
+            let mut rows = reader.rows().unwrap();
+            assert!(
+                matches!(
+                    rows.next(),
+                    Some(Err(AicError::Parquet { path: at, .. })) if at == path
+                ),
+                "{annotation}"
+            );
+            assert!(rows.next().is_none(), "{annotation}");
+        }
     }
 }
