@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "Benchmark Publish"
+  short_description: "Run publication gates and stage a candidate"
+  default_prompt: "Use $aisim-benchmark-publish to run the deterministic gates and stage collected data and eval records as a candidate."
+
+policy:
+  allow_implicit_invocation: true

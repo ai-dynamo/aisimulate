@@ -1,0 +1,342 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "minLength": 1,
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "bytes": {
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "format": {
+          "minLength": 1,
+          "title": "Format",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "rows": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rows"
+        },
+        "runtime_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Path"
+        },
+        "schema": {
+          "minLength": 1,
+          "title": "Schema",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "path",
+        "role",
+        "format",
+        "schema",
+        "sha256",
+        "bytes"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "properties": {
+        "deployment": {
+          "anyOf": [
+            {
+              "enum": [
+                "aggregated",
+                "disaggregated"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deployment"
+        },
+        "dp_attention": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "boolean"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dp Attention"
+        },
+        "effective_settings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Effective Settings",
+          "type": "object"
+        },
+        "framework": {
+          "title": "Framework",
+          "type": "string"
+        },
+        "framework_version": {
+          "title": "Framework Version",
+          "type": "string"
+        },
+        "hardware": {
+          "title": "Hardware",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model"
+        },
+        "multinode": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Multinode"
+        },
+        "offload_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Offload Mode"
+        },
+        "operation_family": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Operation Family"
+        },
+        "parallelism": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parallelism"
+        },
+        "parallelism_complete": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parallelism Complete"
+        },
+        "precision": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Precision"
+        },
+        "unresolved_identity": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unresolved Identity"
+        }
+      },
+      "required": [
+        "hardware",
+        "framework",
+        "framework_version",
+        "operation_family",
+        "model",
+        "effective_settings",
+        "unresolved_identity"
+      ],
+      "title": "Identity",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "$id": "aisim-artifact-manifest/v1",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      },
+      "minItems": 1,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "category": {
+      "enum": [
+        "op-latency",
+        "fpm",
+        "e2e",
+        "eval",
+        "systems"
+      ],
+      "title": "Category",
+      "type": "string"
+    },
+    "configuration_id": {
+      "pattern": "^cfg-[0-9a-f]{64}$",
+      "title": "Configuration Id",
+      "type": "string"
+    },
+    "evidence_gaps": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Evidence Gaps",
+      "type": "array"
+    },
+    "identity": {
+      "$ref": "#/$defs/Identity"
+    },
+    "provenance": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Provenance",
+      "type": "object"
+    },
+    "purpose": {
+      "enum": [
+        "operation-tables",
+        "execution-profile",
+        "e2e-configuration",
+        "evaluation-record",
+        "system-spec"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "requested_settings": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Requested Settings"
+    },
+    "schema_version": {
+      "const": "aisim-artifact-manifest/v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "category",
+    "purpose",
+    "configuration_id",
+    "identity",
+    "requested_settings",
+    "artifacts",
+    "provenance",
+    "evidence_gaps"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

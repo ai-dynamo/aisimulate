@@ -131,7 +131,12 @@ test("shared measurements and every branch consume the single resolved HF revisi
   assert.match(workflow, /retention-days: 90/);
   assert.match(workflow, /hf_revision: \$\{\{ needs\.resolve\.outputs\.hf_revision \}\}/);
   const branch = readFileSync(new URL('../.github/workflows/fpm-accuracy-branch.yml', import.meta.url), 'utf8');
-  assert.match(branch, /HF_HOME: .*inputs\.hf_revision/);
+  assert.match(branch, /AISIM_DATA_CACHE: .*inputs\.hf_revision/);
+  assert.match(workflow, /AISIM_DATA_CACHE: .*needs\.resolve\.outputs\.hf_revision/);
+  // Policy (AISIM-2313): the unified dataset's main, resolved once per campaign; the retired repository is not read.
+  assert.match(workflow, /huggingface\.co\/api\/datasets\/ai-dynamo\/aisim-data\/revision\//);
+  assert.doesNotMatch(workflow, /aisimulate-fpm-dataset/);
+  assert.match(workflow, /const requestedHf = process\.env\.HF_REVISION \|\| 'main'/);
 });
 
 test("manual migration previews pin an exact dataset revision", async () => {

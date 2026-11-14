@@ -56,6 +56,9 @@ review of its output-gate timing boundary and silicon qualification. See the
 Normal coverage and independent KDA width additions remain enabled; the missing
 native long-context route is an unmeasured gap, not zero collection cost.
 
+Follow the [benchmark guidelines](../../../docs/perf-model/collector/README.md#benchmark-guidelines)
+for settings, workload, warmup, boundaries, ranks, GPU time and provenance.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.

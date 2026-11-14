@@ -19,8 +19,11 @@ import shutil
 import tempfile
 import warnings
 from pathlib import Path, PurePosixPath
+from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from aisim_core.data.repos import retired_repo_hint
 
 
 class _HubRedirectHandler(HTTPRedirectHandler):
@@ -40,6 +43,8 @@ class _HubRedirectHandler(HTTPRedirectHandler):
 
 urlopen = build_opener(_HubRedirectHandler()).open
 _SYSTEMS_DIRECTORY = Path(__file__).resolve().parents[1] / "systems"
+# Revision written before the unified dataset is published (see scripts/ci/set_fpm_dataset_pin.py).
+PENDING_REVISION = "0" * 40
 
 
 def _unique_object(pairs):
@@ -225,6 +230,11 @@ def materialize_fpm_profile(
             UserWarning,
             stacklevel=2,
         )
+    if revision == PENDING_REVISION and not local_files_only:
+        raise ValueError(
+            "the FPM dataset pin is still the pending placeholder; set it with "
+            "scripts/ci/set_fpm_dataset_pin.py --revision <commit SHA of the published dataset>"
+        )
     cache_identity = {"repo": repo, "revision": revision, "profile": entry}
     system_file = None
     if entry.get("packaged_system") is not None:
@@ -259,8 +269,13 @@ def materialize_fpm_profile(
             output = temporary / item["target"]
             output.parent.mkdir(parents=True, exist_ok=True)
             url = f"https://huggingface.co/datasets/{repo}/resolve/{revision}/{quote(item['path'], safe='/')}"
-            with urlopen(_download_request(url), timeout=120) as response, output.open("wb") as stream:
-                shutil.copyfileobj(response, stream)
+            try:
+                with urlopen(_download_request(url), timeout=120) as response, output.open("wb") as stream:
+                    shutil.copyfileobj(response, stream)
+            except HTTPError as exc:
+                if exc.code in (401, 403, 404) and (hint := retired_repo_hint(repo)):
+                    raise ValueError(f"cannot fetch {item['path']} at {revision}: {hint}") from exc
+                raise
         _verify(temporary, files)
         try:
             temporary.rename(destination)

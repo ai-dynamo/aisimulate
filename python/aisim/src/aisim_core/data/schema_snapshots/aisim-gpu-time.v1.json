@@ -1,0 +1,221 @@
+{
+  "$defs": {
+    "Attempts": {
+      "additionalProperties": false,
+      "description": "GPU time spent on attempts that did not produce the result.",
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "gpu_seconds": {
+          "minimum": 0,
+          "title": "Gpu Seconds",
+          "type": "number"
+        },
+        "wall_seconds": {
+          "minimum": 0,
+          "title": "Wall Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "count",
+        "wall_seconds",
+        "gpu_seconds"
+      ],
+      "title": "Attempts",
+      "type": "object"
+    },
+    "Phases": {
+      "additionalProperties": false,
+      "description": "Wall-second split; every phase is independently nullable (null = not recorded).",
+      "properties": {
+        "measure": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Measure"
+        },
+        "setup_load": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Setup Load"
+        },
+        "teardown": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Teardown"
+        },
+        "warmup": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warmup"
+        }
+      },
+      "title": "Phases",
+      "type": "object"
+    }
+  },
+  "$id": "aisim-gpu-time/v1",
+  "additionalProperties": false,
+  "properties": {
+    "authority": {
+      "enum": [
+        "measured",
+        "declared",
+        "unknown"
+      ],
+      "title": "Authority",
+      "type": "string"
+    },
+    "failed": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Attempts"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "gpu_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gpu Count"
+    },
+    "gpu_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gpu Seconds"
+    },
+    "gpu_type": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gpu Type"
+    },
+    "node_hours": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Node Hours"
+    },
+    "phases": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Phases"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "retried": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Attempts"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema": {
+      "const": "aisim-gpu-time/v1",
+      "default": "aisim-gpu-time/v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Source",
+      "type": "object"
+    },
+    "wall_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Wall Seconds"
+    }
+  },
+  "required": [
+    "authority"
+  ],
+  "title": "GpuTime",
+  "type": "object"
+}

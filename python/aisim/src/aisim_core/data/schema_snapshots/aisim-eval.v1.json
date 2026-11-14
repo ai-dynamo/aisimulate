@@ -1,0 +1,1011 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "minLength": 1,
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "bytes": {
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "format": {
+          "minLength": 1,
+          "title": "Format",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "rows": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rows"
+        },
+        "runtime_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Path"
+        },
+        "schema": {
+          "minLength": 1,
+          "title": "Schema",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "path",
+        "role",
+        "format",
+        "schema",
+        "sha256",
+        "bytes"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "Assumption": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "truth",
+            "calibration"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "verified",
+            "estimated"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "name",
+        "value",
+        "status",
+        "kind"
+      ],
+      "title": "Assumption",
+      "type": "object"
+    },
+    "Attempts": {
+      "additionalProperties": false,
+      "description": "GPU time spent on attempts that did not produce the result.",
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "gpu_seconds": {
+          "minimum": 0,
+          "title": "Gpu Seconds",
+          "type": "number"
+        },
+        "wall_seconds": {
+          "minimum": 0,
+          "title": "Wall Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "count",
+        "wall_seconds",
+        "gpu_seconds"
+      ],
+      "title": "Attempts",
+      "type": "object"
+    },
+    "Exclusion": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "title": "Case Id",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "reason"
+      ],
+      "title": "Exclusion",
+      "type": "object"
+    },
+    "GpuTime": {
+      "additionalProperties": false,
+      "properties": {
+        "authority": {
+          "enum": [
+            "measured",
+            "declared",
+            "unknown"
+          ],
+          "title": "Authority",
+          "type": "string"
+        },
+        "failed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attempts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "gpu_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu Count"
+        },
+        "gpu_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu Seconds"
+        },
+        "gpu_type": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu Type"
+        },
+        "node_hours": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Hours"
+        },
+        "phases": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Phases"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "retried": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attempts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "schema": {
+          "const": "aisim-gpu-time/v1",
+          "default": "aisim-gpu-time/v1",
+          "title": "Schema",
+          "type": "string"
+        },
+        "source": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Source",
+          "type": "object"
+        },
+        "wall_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wall Seconds"
+        }
+      },
+      "required": [
+        "authority"
+      ],
+      "title": "GpuTime",
+      "type": "object"
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "properties": {
+        "deployment": {
+          "anyOf": [
+            {
+              "enum": [
+                "aggregated",
+                "disaggregated"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deployment"
+        },
+        "dp_attention": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "boolean"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dp Attention"
+        },
+        "effective_settings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Effective Settings",
+          "type": "object"
+        },
+        "framework": {
+          "title": "Framework",
+          "type": "string"
+        },
+        "framework_version": {
+          "title": "Framework Version",
+          "type": "string"
+        },
+        "hardware": {
+          "title": "Hardware",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model"
+        },
+        "multinode": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Multinode"
+        },
+        "offload_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Offload Mode"
+        },
+        "operation_family": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Operation Family"
+        },
+        "parallelism": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parallelism"
+        },
+        "parallelism_complete": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parallelism Complete"
+        },
+        "precision": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Precision"
+        },
+        "unresolved_identity": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unresolved Identity"
+        }
+      },
+      "required": [
+        "hardware",
+        "framework",
+        "framework_version",
+        "operation_family",
+        "model",
+        "effective_settings",
+        "unresolved_identity"
+      ],
+      "title": "Identity",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Outlier": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "title": "Case Id",
+          "type": "string"
+        },
+        "predicted": {
+          "title": "Predicted",
+          "type": "number"
+        },
+        "rel_error_pct": {
+          "title": "Rel Error Pct",
+          "type": "number"
+        },
+        "truth": {
+          "title": "Truth",
+          "type": "number"
+        }
+      },
+      "required": [
+        "case_id",
+        "truth",
+        "predicted",
+        "rel_error_pct"
+      ],
+      "title": "Outlier",
+      "type": "object"
+    },
+    "Phases": {
+      "additionalProperties": false,
+      "description": "Wall-second split; every phase is independently nullable (null = not recorded).",
+      "properties": {
+        "measure": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Measure"
+        },
+        "setup_load": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Setup Load"
+        },
+        "teardown": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Teardown"
+        },
+        "warmup": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warmup"
+        }
+      },
+      "title": "Phases",
+      "type": "object"
+    },
+    "PredictionIdentity": {
+      "additionalProperties": false,
+      "description": "What produced the predictions. ``fingerprint`` is derived, never trusted.",
+      "properties": {
+        "code_path": {
+          "minLength": 1,
+          "title": "Code Path",
+          "type": "string"
+        },
+        "code_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Code Version"
+        },
+        "data_pins": {
+          "additionalProperties": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Data Pins",
+          "type": "object"
+        },
+        "fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "spec_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Spec Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code_path",
+        "data_pins",
+        "spec_sha256",
+        "fingerprint"
+      ],
+      "title": "PredictionIdentity",
+      "type": "object"
+    },
+    "Producer": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluator_revision": {
+          "minLength": 1,
+          "title": "Evaluator Revision",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "agent",
+            "human",
+            "ci"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "skill": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skill"
+        },
+        "skill_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skill Version"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "evaluator_revision"
+      ],
+      "title": "Producer",
+      "type": "object"
+    },
+    "Results": {
+      "additionalProperties": false,
+      "properties": {
+        "collection_quality": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collection Quality"
+        },
+        "coverage": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Coverage"
+        },
+        "exclusions": {
+          "items": {
+            "$ref": "#/$defs/Exclusion"
+          },
+          "title": "Exclusions",
+          "type": "array"
+        },
+        "mape_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Mape Pct"
+        },
+        "n_scored": {
+          "minimum": 0,
+          "title": "N Scored",
+          "type": "integer"
+        },
+        "n_total": {
+          "minimum": 0,
+          "title": "N Total",
+          "type": "integer"
+        },
+        "replay_coverage": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replay Coverage"
+        },
+        "residual_quantiles_pct": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Residual Quantiles Pct"
+        },
+        "resolved_memory": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Memory"
+        },
+        "worst_n": {
+          "items": {
+            "$ref": "#/$defs/Outlier"
+          },
+          "title": "Worst N",
+          "type": "array"
+        }
+      },
+      "required": [
+        "n_total",
+        "n_scored",
+        "mape_pct",
+        "residual_quantiles_pct",
+        "worst_n",
+        "coverage",
+        "exclusions"
+      ],
+      "title": "Results",
+      "type": "object"
+    },
+    "SimulationCost": {
+      "additionalProperties": false,
+      "properties": {
+        "gpu_seconds": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Gpu Seconds",
+          "type": "number"
+        },
+        "wall_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wall Seconds"
+        }
+      },
+      "title": "SimulationCost",
+      "type": "object"
+    },
+    "TruthIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/Artifact"
+          },
+          "minItems": 1,
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "configuration_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Configuration Ids",
+          "type": "array"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "layer": {
+          "enum": [
+            "op",
+            "fpm",
+            "e2e"
+          ],
+          "title": "Layer",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Id"
+        },
+        "truth_table_artifact_id": {
+          "title": "Truth Table Artifact Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "configuration_ids",
+        "identity",
+        "artifacts",
+        "truth_table_artifact_id"
+      ],
+      "title": "TruthIdentity",
+      "type": "object"
+    },
+    "Verification": {
+      "additionalProperties": false,
+      "properties": {
+        "recomputed_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Recomputed Fingerprint",
+          "type": "string"
+        },
+        "verified_record_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Verified Record Id",
+          "type": "string"
+        },
+        "verifier_version": {
+          "title": "Verifier Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verifier_version",
+        "recomputed_fingerprint",
+        "verified_record_id"
+      ],
+      "title": "Verification",
+      "type": "object"
+    }
+  },
+  "$id": "aisim-eval/v1",
+  "additionalProperties": false,
+  "properties": {
+    "assumptions": {
+      "items": {
+        "$ref": "#/$defs/Assumption"
+      },
+      "title": "Assumptions",
+      "type": "array"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "gpu_time": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GpuTime"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "prediction": {
+      "$ref": "#/$defs/PredictionIdentity"
+    },
+    "producer": {
+      "$ref": "#/$defs/Producer"
+    },
+    "results": {
+      "$ref": "#/$defs/Results"
+    },
+    "schema_version": {
+      "const": "aisim-eval/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "simulation_cost": {
+      "$ref": "#/$defs/SimulationCost"
+    },
+    "status": {
+      "default": "complete",
+      "enum": [
+        "complete",
+        "partial",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "status_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status Reason"
+    },
+    "supersedes": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Supersedes"
+    },
+    "tier": {
+      "enum": [
+        "submitted",
+        "verified",
+        "qualified"
+      ],
+      "title": "Tier",
+      "type": "string"
+    },
+    "truth": {
+      "$ref": "#/$defs/TruthIdentity"
+    },
+    "verification": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Verification"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "schema_version",
+    "prediction",
+    "truth",
+    "results",
+    "assumptions",
+    "simulation_cost",
+    "producer",
+    "tier",
+    "created_at"
+  ],
+  "title": "EvalRecord",
+  "type": "object"
+}

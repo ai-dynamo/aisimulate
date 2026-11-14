@@ -63,8 +63,9 @@ cover B300 TP2/TP4 and GB300 TP2 in both the `full` and
 
 The six calibration tables and collection sidecars live in
 [Hugging Face PR #12](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/12).
-`hf_dataset.json` pins dataset commit
-`c968a615d3c00cbf71b41515012925118d577e0e` and every downloaded file's SHA-256.
+`hf_dataset.json` pins the commit of the unified `ai-dynamo/aisim-data` dataset (the files are the
+byte-identical successors of `nvidia/aisimulate-fpm-dataset@c968a615d3c00cbf71b41515012925118d577e0e`,
+`data/<rest>` moved to `data/fpm/<rest>`) and every downloaded file's SHA-256.
 The wheel contains this manifest and the hardware configuration; it does not
 bundle FPM tables. Downloads are explicit, hash-verified and reusable offline.
 

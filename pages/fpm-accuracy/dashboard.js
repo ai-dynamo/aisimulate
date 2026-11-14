@@ -168,7 +168,7 @@
     if (winner?.artifact) {
       const summary = summaries[Number($('evaluation-filter').value)];
       const link = document.createElement('a');
-      link.href = `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/${summary.snapshot.hf_revision}/${winner.artifact.path.split('/').map(encodeURIComponent).join('/')}`;
+      link.href = window.fpmHf.blob(summary.snapshot, winner.artifact.path);
       link.textContent = `FPM input: ${winner.artifact.id} ↗`;
       link.target = '_blank'; link.rel = 'noopener';
       evidence.append(link);
@@ -199,8 +199,8 @@
     $('detail-evidence').textContent = '';
     maps();
     if (!selected) return;
-    const hf = `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/${summary.snapshot.hf_revision}/`;
-    $('detail-evidence').innerHTML = `<span role="img" aria-label="Hugging Face" title="Hugging Face dataset evidence">🤗</span> <a target="_blank" rel="noopener" href="${hf+selected.configuration_manifest.split('/').map(encodeURIComponent).join('/')}">Pinned configuration ↗</a> · <a target="_blank" rel="noopener" href="${hf+selected.measurement_manifest.split('/').map(encodeURIComponent).join('/')}">Measurements ↗</a> · ${esc(selected.status)} · ${selected.skipped_count} excluded or unavailable`;
+    const hf = (path) => window.fpmHf.blob(summary.snapshot, path);
+    $('detail-evidence').innerHTML = `<span role="img" aria-label="Hugging Face" title="Hugging Face dataset evidence">🤗</span> <a target="_blank" rel="noopener" href="${hf(selected.configuration_manifest)}">Pinned configuration ↗</a> · <a target="_blank" rel="noopener" href="${hf(selected.measurement_manifest)}">Measurements ↗</a> · ${esc(selected.status)} · ${selected.skipped_count} excluded or unavailable`;
     if (!entry.details_path) { status('This retained evaluation has summary data only.'); return; }
     try {
       const document = await load('data/'+entry.details_path);

@@ -440,3 +440,14 @@ def test_shipped_profiles_reference_installed_systems():
                 assert table.is_relative_to(data_dir), (row, data_dir, table)
                 # The native loader expects <data_dir>/<backend>/<version>/<table>.
                 assert len(table.relative_to(data_dir).parts) == 3, (row, table)
+
+
+def test_pending_pin_refuses_to_download_but_cached_use_is_unaffected(dataset):
+    path, manifest, _, calls, cache = dataset
+    manifest["revision"] = fpm_dataset.PENDING_REVISION
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="pending placeholder"):
+        fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    assert calls == []
+    with pytest.raises(FileNotFoundError):
+        fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, local_files_only=True)

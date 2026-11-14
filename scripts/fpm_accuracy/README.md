@@ -50,10 +50,25 @@ The evaluator never substitutes an older regression policy. Resolved native
 diagnostics retain the complete estimator configuration, and each public result
 records the evaluator commit. Historical results keep their original policy.
 
-Hub cache loading supports repository-local blobs and the marked cache-wide
-shared blob store used by huggingface-hub 1.32. Manifest hashes still bind the
-measurement and FPM bytes; arbitrary symlink targets outside these stores are
-rejected. Local dataset checkouts retain their strict root boundary. Catalogs,
+## Dataset access (unified `ai-dynamo/aisim-data`)
+
+Campaigns read `ai-dynamo/aisim-data` at `main`, resolved to one commit SHA per campaign (nightly job, or a manual run with an
+explicit `hf_revision`). New data reaches the public FPM page with the next nightly run, or earlier through a manual run.
+`HfDataset.from_hub` uses the shared library (`aisim_core.data`, bound to this checkout by `evaluator_library.py`, so
+an older wheel under test never supplies it): it reads `catalog/dataset.json` and `catalog/fpm/index.json`, selects
+configurations (`--model`, `--hardware`, `--configuration`; all current ones by default), and only then fetches the selected
+envelopes' files, hash-verified, into `AISIM_DATA_CACHE`. Artifacts of role `fpm-provenance` (source archives and logs, 75 % of the
+FPM bytes) are not read by any evaluation and are not fetched. Trust chain: dataset index, category index, envelope
+`aisim-manifest.json`, legacy `manifest.json`, then the measurement and FPM hashes it names, as before.
+
+The moved files still embed the legacy `data/<model>/...` spelling, so `configuration_path`, case IDs and observation
+identities keep their pre-move values (results stay comparable across the move) and `HfDataset` maps them to the physical
+`data/fpm/<rest>` path when reading files and building links. The legacy `catalog/index.json` layout is still read for
+checkouts that have no `catalog/dataset.json`. Historical snapshots are not in the default index; explicit history reads need
+the local tree (`HfDataset.from_local`). `parity_unified_layout.py` compares the old and new resolution on a migrated tree.
+Pins of the other consumers (profiles, recipes) are set in one step by `scripts/ci/set_fpm_dataset_pin.py`.
+
+Local dataset checkouts retain their strict root boundary. Catalogs,
 configuration and measurement manifests, and FPM sidecars share the strict
 public-contract JSON parser: duplicate keys (including nested keys) and
 non-finite constants fail even when the pinned bytes match their hashes.

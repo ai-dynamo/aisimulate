@@ -1,0 +1,92 @@
+{
+ "case_resolution_seconds": 769.2,
+ "checks": {
+  "history snapshots": {
+   "catalog_history_manifests": 10,
+   "new": 69,
+   "ok": true,
+   "old": "error",
+   "old_error": "historical manifests lack a current-manifest hash pointer: ['data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb200/vllm/0.1.dev20904-g179dd0fa9/pure-tp4/aisim-commit-unknown-dd1fa97add17-pr158/manifest.json', 'data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-commit-unknown-dd1fa97add17-pr158/manifest.json']",
+   "orphans_in_catalog": [
+    "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb200/vllm/0.1.dev20904-g179dd0fa9/pure-tp4/aisim-commit-unknown-dd1fa97add17-pr158/manifest.json",
+    "data/history/deepseek-ai--DeepSeek-V4.1-Flash/gb300/sglang/0.0.0.dev0/pure-tp4/aisim-commit-unknown-dd1fa97add17-pr158/manifest.json"
+   ],
+   "pointer_reachable_history": 8
+  },
+  "layouts": {
+   "new": "unified",
+   "ok": true,
+   "old": "legacy"
+  },
+  "legacy catalog counts": {
+   "legacy": {
+    "configuration_snapshots": 71,
+    "configurations": 61,
+    "current_fpm_files": 74,
+    "derived_truth_files": 25,
+    "fpm_files": 91,
+    "history_fpm_files": 17,
+    "history_snapshots": 10,
+    "measurement_bundles": 71,
+    "measurement_files": 291,
+    "source_fpm_files": 81,
+    "source_fpm_rows": 322643,
+    "source_measurement_files": 256,
+    "truth_files": 80
+   },
+   "ok": true
+  },
+  "no fpm-provenance fetched": {
+   "ok": true
+  },
+  "profile and recipe pins resolve at their new paths": {
+   "checked": 266,
+   "legacy_pinned_files_not_checked": 15,
+   "ok": true,
+   "problems": []
+  },
+  "selected libraries (configuration identity, order, manifest hash)": {
+   "new": 61,
+   "ok": true,
+   "old": 61
+  },
+  "truth membership, hashes, FPM artifacts, case IDs, provenance links": {
+   "configurations": 61,
+   "fpm": 74,
+   "helpers": 175,
+   "mismatches": [],
+   "observations": 2155267,
+   "ok": true,
+   "truth": 65
+  },
+  "worker configuration records": {
+   "ok": true
+  }
+ },
+ "counts": {
+  "configurations": 61,
+  "fpm": 74,
+  "helpers": 175,
+  "observations": 2155267,
+  "truth": 65
+ },
+ "download": {
+  "excluded_fpm_provenance_bytes": 1085597012,
+  "files_opened": 573,
+  "fpm_provenance_opened": 0,
+  "layout": {
+   "new": "unified",
+   "old": "legacy"
+  },
+  "new_pipeline_bytes": 353896115,
+  "tree_data_bytes": 1498398926
+ },
+ "pins": {
+  "checked": 266,
+  "legacy_pinned_files_not_checked": 15,
+  "problems": []
+ },
+ "repo_id": "ai-dynamo/aisim-data",
+ "revision_label": "0000000000000000000000000000000000000001",
+ "tree": "<AISIM-2337 migrated tree>"
+}

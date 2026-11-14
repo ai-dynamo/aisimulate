@@ -51,7 +51,7 @@ CAMPAIGN_KEYS = {
     "status",
     "advisory",
 }
-OPTIONAL_CAMPAIGN_KEYS = {"configuration", "metric_contract"}
+OPTIONAL_CAMPAIGN_KEYS = {"configuration", "dataset", "metric_contract"}
 METRICS = {
     "points",
     "ttft_mape_pct",
@@ -130,6 +130,16 @@ def public_contract(summary):
     if snapshot["corrections"] != []:
         raise ValueError("nightly campaign cannot contain unreviewed corrections")
     keys(snapshot["campaign"], CAMPAIGN_KEYS | OPTIONAL_CAMPAIGN_KEYS)
+    if "dataset" in snapshot["campaign"]:
+        dataset = snapshot["campaign"]["dataset"]
+        keys(dataset, {"repo_id", "revision", "snapshot_id", "layout"})
+        if (
+            not re.fullmatch(r"[0-9a-f]{40}", str(dataset["revision"]))
+            or not re.fullmatch(r"[0-9A-Za-z._:-]{1,128}", str(dataset["snapshot_id"]))
+            or dataset["repo_id"] != "ai-dynamo/aisim-infx-cache"
+            or dataset["layout"] not in {"legacy-inferencex", "aisim-e2e/v1"}
+        ):
+            raise ValueError("invalid dataset provenance")
     if "configuration" in snapshot["campaign"]:
         configuration = snapshot["campaign"]["configuration"]
         keys(configuration, {"profile", "counts"})

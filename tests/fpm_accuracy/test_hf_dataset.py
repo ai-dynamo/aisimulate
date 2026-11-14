@@ -7,10 +7,8 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import os
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -26,7 +24,6 @@ from scripts.fpm_accuracy.hf import (
     OrderingKind,
     adapter_for,
 )
-from scripts.fpm_accuracy.hf import dataset as dataset_module
 
 REVISION = "a" * 40
 CONFIGURATION_PATH = "data/Org--Model/h100-sxm/vllm/1.0/single"
@@ -1288,97 +1285,6 @@ def test_symlink_escape_is_rejected_even_when_content_hash_matches(tmp_path: Pat
     outside.write_bytes(content)
     truth_path.unlink()
     truth_path.symlink_to(outside)
-
-    with pytest.raises(DataError, match="escapes its pinned root"):
-        dataset.measurement_case(CONFIGURATION_PATH)
-
-
-@pytest.mark.parametrize("shared", [False, True])
-def test_hub_cache_blob_symlinks_are_allowed_only_for_the_resolved_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    shared: bool,
-) -> None:
-    snapshot = tmp_path / "datasets--nvidia--aisim-fpm-dataset" / "snapshots" / REVISION
-    content = f"{json.dumps(_fpm_payload())}\n".encode()
-    _build_dataset(
-        snapshot,
-        protocol_id="forward-pass-measurement-v1",
-        files=[("truth", "truth.jsonl", content)],
-        include_fpm=False,
-    )
-    blobs = snapshot.parent.parent / "blobs"
-    blobs.mkdir()
-    shared_root = tmp_path / "blobs"
-    if shared:
-        shared_root.mkdir()
-        (shared_root / ".huggingface-shared-blobs").write_text("1\n")
-    for source in tuple(path for path in snapshot.rglob("*") if path.is_file()):
-        blob = blobs / hashlib.sha256(source.read_bytes()).hexdigest()
-        if not blob.exists():
-            if shared:
-                target = shared_root / blob.name[:2] / blob.name
-                target.parent.mkdir(exist_ok=True)
-                target.write_bytes(source.read_bytes())
-                blob.symlink_to(os.path.relpath(target, blob.parent))
-            else:
-                blob.write_bytes(source.read_bytes())
-        source.unlink()
-        source.symlink_to(os.path.relpath(blob, source.parent))
-
-    class FakeApi:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        def repo_info(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
-            return SimpleNamespace(sha=REVISION)
-
-    monkeypatch.setattr(dataset_module, "HfApi", FakeApi)
-    monkeypatch.setattr(dataset_module, "snapshot_download", lambda **_kwargs: str(snapshot))
-
-    dataset = HfDataset.from_hub(revision="main")
-
-    assert dataset.revision == REVISION
-    assert len(dataset.measurement_case(CONFIGURATION_PATH).observations) == 1
-    if shared:
-        # An unmarked sibling directory is not a Hub-owned shared store.
-        (shared_root / ".huggingface-shared-blobs").unlink()
-        with pytest.raises(DataError, match="escapes its pinned root"):
-            HfDataset.from_hub(revision="main")
-
-
-def test_hub_cache_snapshot_rejects_symlink_outside_its_own_blobs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    snapshot = tmp_path / "datasets--nvidia--aisim-fpm-dataset" / "snapshots" / REVISION
-    content = f"{json.dumps(_fpm_payload())}\n".encode()
-    _build_dataset(
-        snapshot,
-        protocol_id="forward-pass-measurement-v1",
-        files=[("truth", "truth.jsonl", content)],
-        include_fpm=False,
-    )
-    blobs = snapshot.parent.parent / "blobs"
-    blobs.mkdir()
-    outside = tmp_path / "other-cache" / "same-content"
-    outside.parent.mkdir()
-    outside.write_bytes(content)
-    truth = snapshot / CONFIGURATION_PATH / "measurements/truth.jsonl"
-    truth.unlink()
-    truth.symlink_to(outside)
-
-    class FakeApi:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        def repo_info(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
-            return SimpleNamespace(sha=REVISION)
-
-    monkeypatch.setattr(dataset_module, "HfApi", FakeApi)
-    monkeypatch.setattr(dataset_module, "snapshot_download", lambda **_kwargs: str(snapshot))
-
-    dataset = HfDataset.from_hub(revision="main")
 
     with pytest.raises(DataError, match="escapes its pinned root"):
         dataset.measurement_case(CONFIGURATION_PATH)

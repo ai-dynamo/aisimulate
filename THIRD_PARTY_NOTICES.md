@@ -1544,6 +1544,11 @@ model weights or collection implementation are bundled in these directories.
 
 - Source: https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a
 - Immutable revision: `dbfcdd9eb62ea733efbc3f0cbd78277f2960061a`.
+- Current location: https://huggingface.co/datasets/ai-dynamo/aisim-data. The
+  files moved there byte-identically (same SHA-256) from `data/<rest>` to
+  `data/fpm/<rest>`; each `hf_dataset.json` pins the `ai-dynamo/aisim-data`
+  commit and the `data/fpm/` paths. The source revision above and its old
+  paths remain resolvable in `nvidia/aisimulate-fpm-dataset`.
 - Original paths: configuration `manifest.json` files and `fpm/*.metadata.json`
   under `data/MiniMaxAI--MiniMax-M2.7/`, `data/deepseek-ai--DeepSeek-V4-Pro/`,
   `data/deepseek-ai--DeepSeek-V4-Flash-0731/`, `data/nvidia--GLM-5.2-NVFP4/`,

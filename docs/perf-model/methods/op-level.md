@@ -188,9 +188,7 @@ does not upload or download profiles automatically.
 Public and private repositories use the same additive `catalog/dataset.json`
 contract (`aisim-dataset-index/v1`). Category entries reference hashed indexes;
 `aisim-category-index/v1` lists configuration identities and hashed manifests.
-Repository identity and authentication do not change the schema. Existing FPM
-catalogs remain accessible through an explicit `legacy-fpm` reference; their
-measurement protocols and historical paths are preserved.
+Repository identity and authentication do not change the schema.
 
 Operation tables live under
 `data/op-latency/<hardware>/<operation-family>/<framework>/<version>/`.

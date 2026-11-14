@@ -90,7 +90,7 @@ def test_archive_rejects_unsafe_paths(name):
 
 
 def test_visualization_integrity(case, tmp_path):
-    writer = VisualizationWriter(tmp_path / "points", repo_id="nvidia/aisimulate-fpm-dataset", revision="a" * 40)
+    writer = VisualizationWriter(tmp_path / "points", repo_id="ai-dynamo/aisim-data", revision="a" * 40)
     writer.add_case(case)
     writer.finish()
     files = {p.name: p.read_bytes() for p in writer.directory.iterdir()}
@@ -166,7 +166,7 @@ def test_measurement_publication_keeps_last_good_snapshot(
     summary["snapshot"]["run_attempt"] = str(evaluation_attempt)
     producer = run(summary)
     producer["run_attempt"] = max(evaluation_attempt, measurement_attempt)
-    writer = VisualizationWriter(tmp_path / "points", repo_id="nvidia/aisimulate-fpm-dataset", revision="a" * 40)
+    writer = VisualizationWriter(tmp_path / "points", repo_id="ai-dynamo/aisim-data", revision="a" * 40)
     writer.add_case(case)
     writer.finish()
     files = {p.name: p.read_bytes() for p in writer.directory.iterdir()}

@@ -14,6 +14,8 @@ import pytest
 from cryptography.exceptions import InvalidTag
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python" / "aisim" / "src"))
+from aisim_core.data.fetch import Cache
 from scripts.e2e_accuracy import hf_measurements as hf
 from scripts.e2e_accuracy import private_artifacts
 from scripts.e2e_accuracy.source import hf_bindings
@@ -66,14 +68,40 @@ def record():
     )
 
 
-def test_resolve_pins_private_commit(monkeypatch, manifest):
-    info = SimpleNamespace(private=True, sha="b" * 40)
-    monkeypatch.setattr(hf, "HfApi", lambda: SimpleNamespace(repo_info=lambda *a, **k: info))
-    resolved = hf.resolve_latest_manifest(manifest)
+class FakeTransport:
+    """In-memory stand-in for the library's HF transport; no network."""
+
+    def __init__(self, files, sha="b" * 40, private=True):
+        self.files, self.sha, self.private, self.opened = files, sha, private, []
+
+    def resolve_revision(self, repo, revision):
+        if not self.private:
+            raise ValueError("InferenceX cache must remain private")
+        return self.sha
+
+    def open_file(self, repo, sha, path):
+        self.opened.append((repo, sha, path))
+        data = self.files[path]
+        for i in range(0, len(data), 64):
+            yield data[i : i + 64]
+
+
+def test_resolve_pins_private_commit(manifest, tmp_path):
+    files = {hf.INDEX_PATH: json.dumps({"snapshot_id": "snap-1"}).encode()}
+    transport = FakeTransport(files)
+    resolved = hf.resolve_latest_manifest(manifest, transport, Cache(tmp_path))
     assert resolved["revision"] == "b" * 40 and manifest["revision"] == "a" * 40
-    info.private = False
+    assert resolved["release_tag"] == "hf/" + "b" * 40 and resolved["snapshot_id"] == "snap-1"
+    transport.private = False
     with pytest.raises(ValueError, match="private"):
-        hf.resolve_latest_manifest(manifest)
+        hf.resolve_latest_manifest(manifest, transport, Cache(tmp_path / "other"))
+
+
+def test_pin_file_stays_backward_compatible(manifest):
+    hf.validate_manifest(manifest)  # the committed format: no layout, no snapshot_id
+    hf.validate_manifest(manifest | dict(layout="aisim-e2e/v1", snapshot_id="a" * 64))
+    committed = json.loads((Path(__file__).parents[1] / ".github" / "e2e-accuracy-dataset.json").read_text())
+    hf.validate_manifest(committed)
 
 
 @pytest.mark.parametrize(
@@ -85,6 +113,9 @@ def test_resolve_pins_private_commit(monkeypatch, manifest):
         dict(schema_version=True),
         dict(max_age_days=True),
         dict(release_tag="hf/" + "b" * 40),
+        dict(layout="other"),
+        dict(snapshot_id="bad id"),
+        dict(unknown=1),
     ],
 )
 def test_invalid_hf_manifest(manifest, change):
@@ -203,15 +234,19 @@ def test_local_configuration_identity_and_cohort(record):
         hf.to_tables([record, record | dict(conc=64)], {})
 
 
-@pytest.fixture
-def cache(tmp_path, monkeypatch, record, request):
-    artifacts = {}
+RUNS = {
+    "https://github.com/SemiAnalysisAI/InferenceX/actions/runs/987/attempts/2": dict(
+        head_sha="b" * 40, github_run_id="987", run_attempt=2
+    )
+}
+PRODUCER = dict(head_sha="b" * 40, github_run_id="987", run_attempt=2)
+
+
+def _legacy_files(record, count=1):
+    files = {}
 
     def register(path, payload, schema, rows=None):
-        local = tmp_path / path
-        local.parent.mkdir(parents=True, exist_ok=True)
-        local.write_bytes(payload)
-        artifacts[path] = local
+        files[path] = payload
         return dict(
             path=path,
             sha256=hashlib.sha256(payload).hexdigest(),
@@ -225,7 +260,6 @@ def cache(tmp_path, monkeypatch, record, request):
         record_sha256=hashlib.sha256(hf.canonical(record)).hexdigest(),
         raw_record_json=hf.canonical(record).decode(),
     )
-    count = getattr(request, "param", 1)
     table = pa.Table.from_pylist([row] * count).replace_schema_metadata({b"schema_id": b"inferencex-observations-v1"})
     output = pa.BufferOutputStream()
     pq.write_table(table, output)
@@ -252,36 +286,137 @@ def cache(tmp_path, monkeypatch, record, request):
         partitions=partitions,
     )
     register(hf.INDEX_PATH, hf.canonical(index), "e2e-source-index/v1")
+    return files
+
+
+def _unified_files(tmp_path, records):
+    """The same records published as an aisim-e2e/v1 dataset (catalog, manifests, tables)."""
+    from aisim_core.data import e2e as lib
+
+    root = tmp_path / "unified"
+    root.mkdir()
+    entries = []
+    for data in lib.inferencex_to_configurations(records, RUNS):
+        manifest_path = lib.write_configuration(root, data)
+        raw = (root / manifest_path).read_bytes()
+        manifest = json.loads(raw)
+        entries.append(
+            dict(
+                configuration_id=manifest["configuration_id"],
+                purpose=manifest["purpose"],
+                identity=manifest["identity"],
+                manifest=dict(
+                    artifact_id="manifest",
+                    path=manifest_path,
+                    role="manifest",
+                    format="json",
+                    schema=manifest["schema_version"],
+                    sha256=hashlib.sha256(raw).hexdigest(),
+                    bytes=len(raw),
+                ),
+            )
+        )
+    index = json.dumps(dict(schema_version="aisim-category-index/v1", category="e2e", entries=entries)).encode()
+    (root / "catalog").mkdir()
+    (root / "catalog/e2e.json").write_bytes(index)
+    dataset = dict(
+        schema_version="aisim-dataset-index/v1",
+        dataset_id=hf.REPO_ID,
+        categories=dict(
+            e2e=dict(
+                root="e2e",
+                layout="category",
+                index=dict(
+                    artifact_id="index",
+                    path="catalog/e2e.json",
+                    role="index",
+                    format="json",
+                    schema="aisim-category-index/v1",
+                    sha256=hashlib.sha256(index).hexdigest(),
+                    bytes=len(index),
+                ),
+            )
+        ),
+    )
+    (root / "catalog/dataset.json").write_text(json.dumps(dataset))
+    return {str(f.relative_to(root)): f.read_bytes() for f in root.rglob("*") if f.is_file()}
+
+
+@pytest.fixture
+def producer(monkeypatch):
     calls = []
 
-    def download(repo, path, **kwargs):
-        calls.append((repo, path, kwargs))
-        return artifacts[path]
+    def fake(url):
+        calls.append(url)
+        return dict(PRODUCER)
 
-    monkeypatch.setattr(hf, "hf_hub_download", download)
-    monkeypatch.setattr(
-        hf, "producer_metadata", lambda url: dict(head_sha="b" * 40, github_run_id="987", run_attempt=2)
-    )
-    return artifacts, calls
+    monkeypatch.setattr(hf, "producer_metadata", fake)
+    return calls
 
 
-def test_fetch_only_verified_observations_at_exact_commit(cache, manifest, tmp_path):
-    artifacts, calls = cache
-    output = hf.fetch(manifest, tmp_path / "out")
+def _fetch(manifest, tmp_path, files, name="out", **kwargs):
+    transport = FakeTransport(files)
+    output = tmp_path / name
+    return hf.fetch(manifest, output, transport, Cache(tmp_path / (name + "-cache")), **kwargs), transport
+
+
+def test_fetch_only_verified_observations_at_exact_commit(producer, manifest, record, tmp_path):
+    files = _legacy_files(record)
+    output, transport = _fetch(manifest, tmp_path, files)
     tables = json.loads(output.read_text())
     assert len(tables["benchmark_results"]) == 1
-    assert {c[1] for c in calls} == set(artifacts)
-    assert all(c[0] == hf.REPO_ID and c[2] == dict(repo_type="dataset", revision="a" * 40) for c in calls)
-    artifacts["data/e2e/inferencex/observations.parquet"].write_bytes(b"corrupt")
-    with pytest.raises(ValueError, match="checksum"):
-        hf.fetch(manifest, tmp_path / "bad")
+    assert {c[2] for c in transport.opened} == set(files)
+    assert all(c[:2] == (hf.REPO_ID, "a" * 40) for c in transport.opened)
+    assert hf.read_dataset(output) == dict(
+        repo_id=hf.REPO_ID, revision="a" * 40, snapshot_id="test", layout=hf.LEGACY_LAYOUT
+    )
+    corrupt = dict(files) | {"data/e2e/inferencex/observations.parquet": b"corrupt"}
+    with pytest.raises(ValueError, match="SHA-256|size"):
+        _fetch(manifest, tmp_path, corrupt, "bad")
     assert not (tmp_path / "bad").exists()
 
 
-@pytest.mark.parametrize("path", ["/etc/passwd", "data/e2e/../x", "data/e2e/inferencex/../../x", "other/file"])
-def test_unsafe_artifact_paths(manifest, path):
+# SHA-256 of canonical(to_tables([record], runs)) + newline produced by the pre-library implementation.
+PRE_LIBRARY_TABLES_SHA256 = "eeb93e24556f0d819ea888a2c19603243080eaa8510cbe0bdcea5dfab00a9c4f"
+
+
+def test_tables_parity_with_pre_library_output_for_both_layouts(producer, manifest, record, tmp_path):
+    legacy, _ = _fetch(manifest, tmp_path, _legacy_files(record), "legacy")
+    unified_manifest = manifest | dict(layout=hf.UNIFIED_LAYOUT)
+    files = _unified_files(tmp_path, [record])
+    unified, _ = _fetch(unified_manifest, tmp_path, files, "unified")
+    assert hashlib.sha256(legacy.read_bytes()).hexdigest() == PRE_LIBRARY_TABLES_SHA256
+    assert unified.read_bytes() == legacy.read_bytes()
+    info = hf.read_dataset(unified)
+    assert info["layout"] == hf.UNIFIED_LAYOUT and len(info["snapshot_id"]) == 64
+    # The computed snapshot ID is a pin: a different one is refused, the same one is accepted.
+    _fetch(unified_manifest | dict(snapshot_id=info["snapshot_id"]), tmp_path, files, "again")
+    with pytest.raises(ValueError, match="pinned snapshot"):
+        _fetch(unified_manifest | dict(snapshot_id="0" * 64), tmp_path, files, "wrong")
+
+
+def test_rerun_reuses_one_commit_cache_without_network(producer, manifest, record, tmp_path):
+    files = _legacy_files(record)
+    cache = Cache(tmp_path / "shared-cache")
+    first = tmp_path / "first"
+    hf.fetch(manifest, first, FakeTransport(files), cache)
+    offline = FakeTransport({})
+    hf.fetch(manifest, tmp_path / "second", offline, cache)
+    assert offline.opened == []
+    assert (first / "tables.json").read_bytes() == (tmp_path / "second" / "tables.json").read_bytes()
+
+
+def test_pinned_snapshot_must_match(producer, manifest, record, tmp_path):
+    files = _legacy_files(record)
+    _fetch(manifest | dict(snapshot_id="test"), tmp_path, files)
+    with pytest.raises(ValueError, match="pinned snapshot"):
+        _fetch(manifest | dict(snapshot_id="other"), tmp_path, files, "mismatch")
+
+
+@pytest.mark.parametrize("path", ["/etc/passwd", "data/e2e/../x", "data/e2e/inferencex/../../x"])
+def test_unsafe_artifact_paths(tmp_path, path):
     with pytest.raises(ValueError, match="unsafe"):
-        hf.download(manifest, path)
+        hf._get(Cache(tmp_path), FakeTransport({}), "a" * 40, path)
 
 
 @pytest.fixture
@@ -333,10 +468,9 @@ def test_private_artifact_rejects_symlinks_and_plaintext(sealed):
         private_artifacts.transfer(source, opened, decrypt=True)
 
 
-@pytest.mark.parametrize("cache", [2], indirect=True)
-def test_duplicate_observations_with_valid_checksums_fail_before_output(cache, manifest, tmp_path):
+def test_duplicate_observations_with_valid_checksums_fail_before_output(producer, manifest, record, tmp_path):
     with pytest.raises(ValueError, match="duplicate HF benchmark identity"):
-        hf.fetch(manifest, tmp_path / "duplicate-output")
+        _fetch(manifest, tmp_path, _legacy_files(record, 2), "duplicate-output")
     assert not (tmp_path / "duplicate-output").exists()
 
 

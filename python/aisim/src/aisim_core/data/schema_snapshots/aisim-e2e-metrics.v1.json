@@ -1,0 +1,133 @@
+{
+  "$id": "aisim-e2e-metrics/v1",
+  "additionalProperties": false,
+  "properties": {
+    "device_count": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Device Count"
+    },
+    "metric": {
+      "minLength": 1,
+      "title": "Metric",
+      "type": "string"
+    },
+    "normalization": {
+      "default": "none",
+      "enum": [
+        "none",
+        "per_device",
+        "per_user",
+        "total"
+      ],
+      "title": "Normalization",
+      "type": "string"
+    },
+    "observation_id": {
+      "minLength": 1,
+      "title": "Observation Id",
+      "type": "string"
+    },
+    "scope": {
+      "default": "run",
+      "title": "Scope",
+      "type": "string"
+    },
+    "source_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Name"
+    },
+    "source_unit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Unit"
+    },
+    "source_value": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Value"
+    },
+    "statistic": {
+      "minLength": 1,
+      "title": "Statistic",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "valid",
+        "missing",
+        "invalid"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "timing_boundary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Timing Boundary"
+    },
+    "unit": {
+      "minLength": 1,
+      "title": "Unit",
+      "type": "string"
+    },
+    "value": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Value"
+    }
+  },
+  "required": [
+    "observation_id",
+    "metric",
+    "statistic",
+    "unit",
+    "status"
+  ],
+  "title": "MetricRow",
+  "type": "object"
+}

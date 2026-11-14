@@ -1,0 +1,57 @@
+{
+  "$id": "aisim-op-query-versions/v1",
+  "additionalProperties": false,
+  "description": "One default or per-system override slot of ``query_versions.yaml`` (``aisim-op-query-versions/v1``).",
+  "properties": {
+    "current": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Current"
+    },
+    "framework": {
+      "title": "Framework",
+      "type": "string"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Previous"
+    },
+    "scope": {
+      "title": "Scope",
+      "type": "string"
+    },
+    "system": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "System"
+    }
+  },
+  "required": [
+    "scope",
+    "system",
+    "framework",
+    "current",
+    "previous"
+  ],
+  "title": "OpQueryVersionsRow",
+  "type": "object"
+}

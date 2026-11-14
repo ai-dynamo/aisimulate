@@ -18,7 +18,7 @@ on:
         default: main
         type: string
       hf_revision:
-        description: Optional full HF dataset revision for a migration preview (defaults to main)
+        description: Optional full revision of ai-dynamo/aisim-data (defaults to main, the nightly policy)
         required: false
         type: string
 
@@ -62,7 +62,7 @@ jobs:
             }
             const requestedHf = process.env.HF_REVISION || 'main';
             if (requestedHf !== 'main' && !/^[0-9a-f]{40}$/.test(requestedHf)) throw new Error('HF revision must be a full commit SHA');
-            const hf = await fetch(`https://huggingface.co/api/datasets/nvidia/aisimulate-fpm-dataset/revision/${requestedHf}`);
+            const hf = await fetch(`https://huggingface.co/api/datasets/ai-dynamo/aisim-data/revision/${requestedHf}`);
             if (!hf.ok) throw new Error('Cannot resolve HF dataset revision');
             const hfRevision = (await hf.json()).sha;
             if (!/^[0-9a-f]{40}$/.test(hfRevision || '')) throw new Error('Invalid HF revision');
@@ -144,7 +144,8 @@ jobs:
       - name: Export latest pinned HF measurements
         env:
           HF_REVISION: ${{ needs.resolve.outputs.hf_revision }}
-          HF_HOME: ${{ runner.temp }}/hf-${{ needs.resolve.outputs.hf_revision }}
+          AISIM_DATA_CACHE: ${{ runner.temp }}/aisim-data-${{ needs.resolve.outputs.hf_revision }}
+          PYTHONPATH: python/aisim/src
         run: |
           python -m scripts.fpm_accuracy.prepare_fpm_measurements \
             --hf-revision "${HF_REVISION}" --evaluator-sha "${GITHUB_SHA}" \

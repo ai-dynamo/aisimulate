@@ -1,0 +1,199 @@
+{
+  "$id": "aisim-op-source-map/v1",
+  "additionalProperties": false,
+  "description": "One source-to-destination file mapping (``aisim-op-source-map/v1``).",
+  "properties": {
+    "configuration_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Configuration Id"
+    },
+    "conversion": {
+      "title": "Conversion",
+      "type": "string"
+    },
+    "destination_bytes": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Destination Bytes"
+    },
+    "destination_content_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Destination Content Sha256"
+    },
+    "destination_path": {
+      "title": "Destination Path",
+      "type": "string"
+    },
+    "destination_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Destination Sha256"
+    },
+    "family": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Family"
+    },
+    "framework": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Framework"
+    },
+    "hardware": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Hardware"
+    },
+    "hash_basis": {
+      "title": "Hash Basis",
+      "type": "string"
+    },
+    "kind": {
+      "title": "Kind",
+      "type": "string"
+    },
+    "rows": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Rows"
+    },
+    "source_bytes": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Bytes"
+    },
+    "source_content_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Content Sha256"
+    },
+    "source_git_blob": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Git Blob"
+    },
+    "source_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Path"
+    },
+    "source_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Sha256"
+    },
+    "version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Version"
+    }
+  },
+  "required": [
+    "source_path",
+    "destination_path",
+    "kind",
+    "conversion",
+    "hash_basis",
+    "source_sha256",
+    "source_bytes",
+    "source_git_blob",
+    "destination_sha256",
+    "destination_bytes",
+    "source_content_sha256",
+    "destination_content_sha256",
+    "rows",
+    "hardware",
+    "family",
+    "framework",
+    "version"
+  ],
+  "title": "OpSourceMapRow",
+  "type": "object"
+}

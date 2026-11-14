@@ -1,0 +1,588 @@
+{
+ "summary": {
+  "cache": {
+   "observations": 7743,
+   "metric_rows": 187347,
+   "partitions": 199
+  },
+  "dataset": {
+   "configurations": 1546,
+   "observations": 7743,
+   "metric_rows": 239443,
+   "source_configurations": 1565,
+   "redacted_raw_artifacts": {
+    "false": 1546
+   }
+  },
+  "metrics_compared": 187347,
+  "max_relative_value_difference": 0.0,
+  "metric_name_map": {
+   "e2e_latency/mean/None": [
+    [
+     "e2el",
+     "mean"
+    ]
+   ],
+   "e2e_latency/median/None": [
+    [
+     "e2el",
+     "median"
+    ]
+   ],
+   "e2e_latency/percentile/75.0": [
+    [
+     "e2el",
+     "p75"
+    ]
+   ],
+   "e2e_latency/percentile/90.0": [
+    [
+     "e2el",
+     "p90"
+    ]
+   ],
+   "e2e_latency/percentile/95.0": [
+    [
+     "e2el",
+     "p95"
+    ]
+   ],
+   "e2e_latency/percentile/99.0": [
+    [
+     "e2el",
+     "p99"
+    ]
+   ],
+   "e2e_latency/percentile/99.9": [
+    [
+     "e2el",
+     "p99.9"
+    ]
+   ],
+   "e2e_latency/stddev/None": [
+    [
+     "e2el",
+     "std"
+    ]
+   ],
+   "input_throughput/rate/None": [
+    [
+     "input_throughput",
+     "value"
+    ]
+   ],
+   "itl/mean/None": [
+    [
+     "itl",
+     "mean"
+    ]
+   ],
+   "itl/median/None": [
+    [
+     "itl",
+     "median"
+    ]
+   ],
+   "itl/percentile/75.0": [
+    [
+     "itl",
+     "p75"
+    ]
+   ],
+   "itl/percentile/90.0": [
+    [
+     "itl",
+     "p90"
+    ]
+   ],
+   "itl/percentile/95.0": [
+    [
+     "itl",
+     "p95"
+    ]
+   ],
+   "itl/percentile/99.0": [
+    [
+     "itl",
+     "p99"
+    ]
+   ],
+   "itl/percentile/99.9": [
+    [
+     "itl",
+     "p99.9"
+    ]
+   ],
+   "itl/stddev/None": [
+    [
+     "itl",
+     "std"
+    ]
+   ],
+   "output_throughput/rate/None": [
+    [
+     "output_throughput",
+     "value"
+    ]
+   ],
+   "total_throughput/rate/None": [
+    [
+     "total_throughput",
+     "value"
+    ]
+   ],
+   "tpot/mean/None": [
+    [
+     "tpot",
+     "mean"
+    ]
+   ],
+   "tpot/median/None": [
+    [
+     "tpot",
+     "median"
+    ]
+   ],
+   "tpot/percentile/75.0": [
+    [
+     "tpot",
+     "p75"
+    ]
+   ],
+   "tpot/percentile/90.0": [
+    [
+     "tpot",
+     "p90"
+    ]
+   ],
+   "tpot/percentile/95.0": [
+    [
+     "tpot",
+     "p95"
+    ]
+   ],
+   "tpot/percentile/99.0": [
+    [
+     "tpot",
+     "p99"
+    ]
+   ],
+   "tpot/percentile/99.9": [
+    [
+     "tpot",
+     "p99.9"
+    ]
+   ],
+   "tpot/stddev/None": [
+    [
+     "tpot",
+     "std"
+    ]
+   ],
+   "ttft/mean/None": [
+    [
+     "ttft",
+     "mean"
+    ]
+   ],
+   "ttft/median/None": [
+    [
+     "ttft",
+     "median"
+    ]
+   ],
+   "ttft/percentile/75.0": [
+    [
+     "ttft",
+     "p75"
+    ]
+   ],
+   "ttft/percentile/90.0": [
+    [
+     "ttft",
+     "p90"
+    ]
+   ],
+   "ttft/percentile/95.0": [
+    [
+     "ttft",
+     "p95"
+    ]
+   ],
+   "ttft/percentile/99.0": [
+    [
+     "ttft",
+     "p99"
+    ]
+   ],
+   "ttft/percentile/99.9": [
+    [
+     "ttft",
+     "p99.9"
+    ]
+   ],
+   "ttft/stddev/None": [
+    [
+     "ttft",
+     "std"
+    ]
+   ]
+  },
+  "units": {
+   "cache": [
+    [
+     "e2e_latency",
+     "ms",
+     "none"
+    ],
+    [
+     "input_throughput",
+     "tokens/s",
+     "per_device"
+    ],
+    [
+     "itl",
+     "ms",
+     "none"
+    ],
+    [
+     "output_throughput",
+     "tokens/s",
+     "per_device"
+    ],
+    [
+     "total_throughput",
+     "tokens/s",
+     "per_device"
+    ],
+    [
+     "tpot",
+     "ms",
+     "none"
+    ],
+    [
+     "ttft",
+     "ms",
+     "none"
+    ]
+   ],
+   "new": [
+    [
+     "e2el",
+     "ms",
+     "none"
+    ],
+    [
+     "input_throughput",
+     "tokens/s",
+     "per_device"
+    ],
+    [
+     "interactivity",
+     "tokens/s/user",
+     "per_user"
+    ],
+    [
+     "itl",
+     "ms",
+     "none"
+    ],
+    [
+     "output_throughput",
+     "tokens/s",
+     "per_device"
+    ],
+    [
+     "total_throughput",
+     "tokens/s",
+     "per_device"
+    ],
+    [
+     "tpot",
+     "ms",
+     "none"
+    ],
+    [
+     "ttft",
+     "ms",
+     "none"
+    ]
+   ]
+  },
+  "unmapped_source_keys": {
+   "avg_power_w": 3130,
+   "joules_per_output_token": 3130,
+   "joules_per_total_token": 3130,
+   "kv_cache_pool_tokens": 2382,
+   "dcp_size": 1751,
+   "pcp_size": 1751,
+   "pp": 1709,
+   "allocated_cpu_dram_gb": 1103,
+   "duration_seconds": 1103,
+   "input_tput_tps": 1103,
+   "kv_offloading": 1103,
+   "offload_mode": 1103,
+   "output_tput_tps": 1103,
+   "theoretical_cache_hit_rate": 1103,
+   "total_generation_tokens": 1103,
+   "total_prompt_tokens": 1103,
+   "total_requests_completed": 1103,
+   "total_tput_tps": 1103,
+   "mean_full_response_intvty": 1102,
+   "mean_full_response_itl": 1102,
+   "mean_input_tokens": 1102,
+   "mean_output_tokens_actual": 1102,
+   "mean_output_tokens_expected": 1102,
+   "mean_qps": 1102,
+   "median_full_response_intvty": 1102,
+   "median_full_response_itl": 1102,
+   "median_input_tokens": 1102,
+   "median_output_tokens_actual": 1102,
+   "median_output_tokens_expected": 1102,
+   "median_qps": 1102,
+   "p75_full_response_intvty": 1102,
+   "p75_full_response_itl": 1102,
+   "p75_input_tokens": 1102,
+   "p75_output_tokens_actual": 1102,
+   "p75_output_tokens_expected": 1102,
+   "p75_qps": 1102,
+   "p90_full_response_intvty": 1102,
+   "p90_full_response_itl": 1102,
+   "p90_input_tokens": 1102,
+   "p90_output_tokens_actual": 1102,
+   "p90_output_tokens_expected": 1102,
+   "p90_qps": 1102,
+   "p95_full_response_intvty": 1102,
+   "p95_full_response_itl": 1102,
+   "p95_input_tokens": 1102,
+   "p95_output_tokens_actual": 1102,
+   "p95_output_tokens_expected": 1102,
+   "p95_qps": 1102,
+   "std_full_response_intvty": 1102,
+   "std_full_response_itl": 1102,
+   "std_input_tokens": 1102,
+   "std_output_tokens_actual": 1102,
+   "std_output_tokens_expected": 1102,
+   "std_qps": 1102,
+   "power_valid": 1101,
+   "gpu_kv_cache_usage_pct": 1081,
+   "server_gpu_cache_hit_rate": 1071,
+   "power_metric_schema_version": 1004,
+   "joules_per_input_token": 896,
+   "avg_total_gpu_power_w": 875,
+   "joules_per_successful_query": 875,
+   "total_gpu_energy_j": 875,
+   "server_cpu_cache_hit_rate": 689,
+   "server_external_cache_hit_rate": 687,
+   "p75_power_w": 680,
+   "p75_total_gpu_power_w": 680,
+   "p90_power_w": 680,
+   "p90_total_gpu_power_w": 680,
+   "decode_dcp_size": 645,
+   "decode_pcp_size": 645,
+   "decode_pp": 645,
+   "prefill_dcp_size": 645,
+   "prefill_pcp_size": 645,
+   "prefill_pp": 645,
+   "router_name": 541,
+   "router_version": 541,
+   "kv_offload_backend": 498,
+   "kv_p2p_transfer": 483,
+   "kv_offload_backend_version": 98,
+   "p99.9_full_response_intvty": 85,
+   "p99.9_full_response_itl": 85,
+   "p99_full_response_intvty": 85,
+   "p99_full_response_itl": 85,
+   "decode_avg_power_w": 78,
+   "prefill_avg_power_w": 78,
+   "decode_gpu_energy_j": 57,
+   "decode_joules_per_output_token": 57,
+   "prefill_gpu_energy_j": 57,
+   "prefill_joules_per_input_token": 57,
+   "avg_mem_used_mb": 21,
+   "avg_util_pct": 21,
+   "decode_allocated_cpu_dram_gb": 15,
+   "dp": 9
+  },
+  "snapshot": {
+   "snapshot_id": "d06a578336dd1de39cd38e910b5be6d7be597e1097cd7d8aa82966e220d18815",
+   "legacy_snapshot_id": "5b3f34e7f28539d6a0f6633e9322dc2045a5e6cbd26ad2ca4d5eb836de21a8f7",
+   "members": 7743,
+   "completeness": "complete",
+   "selection_policy": "archive-all-returned-records-v1"
+  }
+ },
+ "identities": {
+  "identity.configuration_ids_new": {
+   "count": 1546,
+   "status": "explained",
+   "reason": "aisim-e2e/v1 configuration_id (cfg-<sha256>) replaces the cache's hf:<sha256>.",
+   "examples": []
+  },
+  "identity.configuration_merge_telemetry": {
+   "count": 4,
+   "status": "explained",
+   "reason": "Source configurations that differ only in the GPU-telemetry list `workers` share one configuration_id; per-observation source_config_id keeps the upstream grouping.",
+   "examples": [
+    [
+     "hf:2ffbb2ed8bd99d2f7959e4b48d5715b27adc0ede0dae9d8116035402c830854f",
+     "hf:350ff12c131c072e1f6c9b1ab9b0ee6ec6140f0820eb3d77f611d766fce350d3"
+    ],
+    [
+     "hf:31bc29befce020e5e3749c32e340ac817bf0d148d348aa392287541b7f79bb6e",
+     "hf:4ef6ba37b02beaba1136262eb62dc70c90ad99fdc8f35f14b83d52b8ec4ba643"
+    ],
+    [
+     "hf:25a4427400662c01eeeb5662a00c1ab777970a54ff7372c78f229a272c714399",
+     "hf:59c3409b650924b9ffd6a2ebd8826fcaf0117d2b4e7410bd351462f1d3a0837f"
+    ],
+    [
+     "hf:0bf765826428c3c5525fc615394bc818c3a2814d6627152e123ce7fdcc156e21",
+     "hf:35b83c8583874f95f10b92e708b2daa121130cb2e6f83366eab787bac17268ec"
+    ]
+   ]
+  },
+  "identity.configuration_split_parallelism": {
+   "count": 2,
+   "status": "explained",
+   "reason": "One source configuration spans several configuration_ids because pp/cp/dcp degrees are reported per observation (in metrics); per-observation source_config_id keeps the upstream grouping.",
+   "examples": [
+    {
+     "hf:12072b8ed1d915b84387b69eba0108aed0f2ee601d2134b445449d92619cb44a": [
+      "cfg-668ac5be7b55933b864b547ca159578fe914c61594521105e3049731d9ec6ed7",
+      "cfg-873c321acb7b1c3089b6125f7fd3e519cea2f4e674d08e4d881b4982bcfe42db"
+     ]
+    },
+    {
+     "hf:e2369ca941663daa4bc7fd1bdce370769585ad7cb77966eb849fd3ebf59c8e32": [
+      "cfg-32245289599f8046c277827639639209a3b6de132c613adb6775d2ed9f8b2d4a",
+      "cfg-781f78dc61868d04939c9c70f906c0783aa22eb7033a7bcf1e3f66eec7122d28"
+     ]
+    }
+   ]
+  }
+ },
+ "membership": {},
+ "metrics": {
+  "metric.explicit_missing_rows": {
+   "count": 10942,
+   "status": "explained",
+   "reason": "aisim-e2e/v1 stores every required (metric, statistic) the source did not report as a 'missing' row (never zero); the cache simply had no row.",
+   "examples": [
+    [
+     "inferencex:202470",
+     [
+      [
+       "ttft",
+       "p90"
+      ],
+      [
+       "tpot",
+       "p90"
+      ],
+      [
+       "itl",
+       "p90"
+      ]
+     ]
+    ],
+    [
+     "inferencex:202471",
+     [
+      [
+       "ttft",
+       "p90"
+      ],
+      [
+       "tpot",
+       "p90"
+      ],
+      [
+       "itl",
+       "p90"
+      ]
+     ]
+    ],
+    [
+     "inferencex:202472",
+     [
+      [
+       "ttft",
+       "p90"
+      ],
+      [
+       "tpot",
+       "p90"
+      ],
+      [
+       "itl",
+       "p90"
+      ]
+     ]
+    ],
+    [
+     "inferencex:202473",
+     [
+      [
+       "ttft",
+       "p90"
+      ],
+      [
+       "tpot",
+       "p90"
+      ],
+      [
+       "itl",
+       "p90"
+      ]
+     ]
+    ],
+    [
+     "inferencex:202474",
+     [
+      [
+       "ttft",
+       "p90"
+      ],
+      [
+       "tpot",
+       "p90"
+      ],
+      [
+       "itl",
+       "p90"
+      ]
+     ]
+    ]
+   ]
+  },
+  "metric.interactivity_added": {
+   "count": 41154,
+   "status": "explained",
+   "reason": "The cache normalizer dropped the *_intvty (tokens/s/user) statistics; aisim-e2e/v1 maps them (normalization per_user) with the source values unchanged.",
+   "examples": []
+  },
+  "metric.source_key_parallelism": {
+   "count": 9081,
+   "status": "explained",
+   "reason": "pp / pcp_size / dcp_size (and prefill_/decode_ variants) are deployment degrees the source reports under metrics. They are now parallelism dimensions pp / cp / dcp in the configuration identity, not metric rows; the cache had no row for them either.",
+   "examples": []
+  },
+  "metric.source_key_unmapped": {
+   "count": 78402,
+   "status": "explained",
+   "reason": "The source metric has no aisim-e2e/v1 mapping yet (power, qps, token counts, cache hit rates, ...); it stays in the observation's typed unmapped_metrics_json column and the hash-linked raw-output bundle. The cache had no row for it either.",
+   "examples": []
+  }
+ },
+ "units": {
+  "metric.timing_boundary_null": {
+   "count": 187347,
+   "status": "explained",
+   "reason": "The cache stamped timing_boundary='unknown' with a reason; aisim-e2e/v1 stores unknown as null.",
+   "examples": []
+  }
+ },
+ "provenance": {},
+ "unexplained": {}
+}

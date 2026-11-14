@@ -49,6 +49,7 @@
 /crates/core/src/perfmodel/                            @ai-dynamo/aisim-forward-pass-engine-codeowners
 /crates/core/tests/perfmodel/                          @ai-dynamo/aisim-forward-pass-engine-codeowners
 /tests/test_fpm_query_evidence.py                      @ai-dynamo/aisim-forward-pass-engine-codeowners
+/python/aisim/src/aisim_core/data/                     @ai-dynamo/aisim-forward-pass-engine-codeowners
 /python/aisim/src/aisim/capacity.py                    @ai-dynamo/aisim-forward-pass-engine-codeowners
 /tests/test_fpm_grouped_workflow.py                    @ai-dynamo/aisim-forward-pass-engine-codeowners
 /tests/test_fpm_profile_workflow.py                    @ai-dynamo/aisim-forward-pass-engine-codeowners
@@ -120,10 +121,12 @@
 /tests/test_agentx_inputs.py                           @ai-dynamo/aisim-infra-codeowners
 /tests/test_agentx_accuracy.py                         @ai-dynamo/aisim-infra-codeowners
 /tests/test_bundled_configs.py                         @ai-dynamo/aisim-infra-codeowners
+/tests/test_fpm_dataset_pin.py                         @ai-dynamo/aisim-infra-codeowners
 /tests/test_ci_qualification.py                        @ai-dynamo/aisim-infra-codeowners
 /tests/test_e2e_accuracy_ui.mjs                        @ai-dynamo/aisim-infra-codeowners
 /tests/test_source_compliance.py                       @ai-dynamo/aisim-infra-codeowners
 /tests/test_benchmark_features.py                      @ai-dynamo/aisim-infra-codeowners
+/tests/test_e2e_accuracy_trust.py                      @ai-dynamo/aisim-infra-codeowners
 /tests/test_e2e_hf_measurements.py                     @ai-dynamo/aisim-infra-codeowners
 /tests/test_simulation_features.py                     @ai-dynamo/aisim-infra-codeowners
 /tests/test_e2e_accuracy_nightly.py                    @ai-dynamo/aisim-infra-codeowners
@@ -131,6 +134,7 @@
 /tests/test_e2e_accuracy_overview.py                   @ai-dynamo/aisim-infra-codeowners
 /tests/test_e2e_accuracy_workflow.mjs                  @ai-dynamo/aisim-infra-codeowners
 /tests/test_fpm_accuracy_workflow.mjs                  @ai-dynamo/aisim-infra-codeowners
+/tests/test_e2e_infx_migration_parity.py               @ai-dynamo/aisim-infra-codeowners
 
 # === Path overrides: a subsystem nested inside another area's tree.
 # More specific, so they win via last-match over the area globs above. ===
@@ -222,11 +226,14 @@
 /python/aisim/.coderabbit.yaml                         @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/eslint.config.js                         @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_agentx_accuracy.py                         @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
+/tests/test_fpm_dataset_pin.py                         @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_stack_discovery.py                         @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/access-aisim-maintain
+/.claude/skills/aisim-benchmark                        @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/src/aisim/replay/                        @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_e2e_accuracy_ui.mjs                        @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_host_offload_cli.py                        @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_replay_dashboard.py                        @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain
+/.agents/skills/aisim-benchmark/                       @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/src/aisim/sweeper/                       @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_power_diagnostics.py                       @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /.github/workflows/codeowners.yml                      @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
@@ -236,6 +243,7 @@
 /python/aisim/src/aisim/runner.py                      @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_agentx_live_warmup.py                      @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_benchmark_features.py                      @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
+/tests/test_e2e_accuracy_trust.py                      @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_fpm_query_evidence.py                      @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_resource_scheduler.py                      @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_state_cache_config.py                      @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-mocker-codeowners @ai-dynamo/access-aisim-maintain
@@ -252,10 +260,12 @@
 /tests/test_fpm_grouped_workflow.py                    @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_fpm_profile_workflow.py                    @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_resource_supervision.py                    @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/access-aisim-maintain
+/.claude/skills/aisim-benchmark-plan                   @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /crates/core/parity_tests/perfmodel/                   @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/src/aisim/resources.py                   @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_ci_workflow_contracts.py                   @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_e2e_accuracy_overview.py                   @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
+/.agents/skills/aisim-benchmark-plan/                  @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /.claude/skills/aisim-fpe-performance                  @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/.pre-commit-config.yaml                  @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_agentx_snapshot_export.py                  @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain
@@ -270,8 +280,15 @@
 /tests/test_spline_estimator_config.py                 @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_unified_traffic_runtime.py                 @ai-dynamo/aisim-replay-codeowners @ai-dynamo/access-aisim-maintain
 /.agents/skills/aisim-agentx-gap-debug/                @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
+/.claude/skills/aisim-benchmark-collect                @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
+/.claude/skills/aisim-benchmark-publish                @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /tests/test_output_adapter_discovery.py                @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/access-aisim-maintain
+/.agents/skills/aisim-benchmark-collect/               @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
+/.agents/skills/aisim-benchmark-publish/               @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
+/.claude/skills/aisim-benchmark-evaluate               @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /.claude/skills/aisim-replay-performance               @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-mocker-codeowners @ai-dynamo/access-aisim-maintain
+/tests/test_e2e_infx_migration_parity.py               @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
+/.agents/skills/aisim-benchmark-evaluate/              @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /.agents/skills/aisim-replay-performance/              @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-mocker-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/tools/simulation_perf_gate/              @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-forward-pass-engine-codeowners @ai-dynamo/aisim-infra-codeowners @ai-dynamo/access-aisim-maintain
 /python/aisim/src/aisim/resource_worker.py             @ai-dynamo/aisim-replay-codeowners @ai-dynamo/aisim-sweeper-codeowners @ai-dynamo/access-aisim-maintain

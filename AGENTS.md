@@ -103,6 +103,15 @@ For adding a new Collector operation, additionally follow
 runbooks; if a skill and a `python/aisim/.claude/rules/` file ever
 disagree, the rule file wins.
 
+## Benchmark guidelines
+
+Before collecting, importing, or reporting any operation, FPM, end-to-end, or
+evaluation measurement, MUST follow the
+[benchmark guidelines](docs/perf-model/collector/README.md#benchmark-guidelines):
+effective settings, workload, warmup and cache policy, measurement boundaries,
+rank handling, GPU-time capture, and provenance. Keep run logs and results out
+of `docs/`.
+
 ## Required Third-Party Attribution
 
 Before adding code or other content copied, adapted, translated, or

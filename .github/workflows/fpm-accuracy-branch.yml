@@ -148,12 +148,12 @@ jobs:
           /tmp/fpm-accuracy-venv/bin/python -m pip install "${RUNNER_TEMP}"/accuracy-wheel/*.whl
           /tmp/fpm-accuracy-venv/bin/python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
           /tmp/fpm-accuracy-venv/bin/python -m pip check
-      - name: Evaluate the pinned HF dataset and qualify the complete campaign
+      - name: Evaluate the pinned ai-dynamo/aisim-data revision and qualify the complete campaign
         env:
           EXPECTED_SHA: ${{ inputs.sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
           HF_REVISION: ${{ inputs.hf_revision }}
-          HF_HOME: ${{ runner.temp }}/hf-${{ inputs.hf_revision }}
+          AISIM_DATA_CACHE: ${{ runner.temp }}/aisim-data-${{ inputs.hf_revision }}
         run: |
           /tmp/fpm-accuracy-venv/bin/python -m scripts.fpm_accuracy.run_fpm_accuracy \
             --wheel "${RUNNER_TEMP}"/accuracy-wheel/*.whl \

@@ -181,7 +181,8 @@ function renderSnapshot() {
       Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
       Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${["gym-resolved-config-v2", "gym-resolved-config-v3", "hf-current-view-config-v1", "hf-current-view-config-v2"].includes(snapshot.campaign.selection_policy) ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
-      <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
+      <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>
+      ${snapshot.campaign.dataset ? `<code>Dataset: ${escapeHtml(snapshot.campaign.dataset.repo_id)} @ ${escapeHtml(snapshot.campaign.dataset.revision)}, snapshot ${escapeHtml(snapshot.campaign.dataset.snapshot_id)}</code>` : ""}` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
       ? `<a href="https://github.com/ai-dynamo/aisim/blob/${state.branch.published_from_commit}/${state.branch.published_source_path || "python/aisim/docs/e2e-accuracy/summary.json"}">${escapeHtml(state.branch.branch)} @ ${state.branch.published_from_commit.slice(0, 12)}</a> (publication source, not an evaluated revision)`
       : snapshot.campaign

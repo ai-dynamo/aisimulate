@@ -31,7 +31,7 @@ configurations offline, without bringing up a GPU serving cluster.
 [Website](https://ai-dynamo.org/aisim/) ·
 [E2E Accuracy Overview](https://ai-dynamo.org/aisim/e2e-accuracy/) ·
 [FPM Accuracy Overview](https://ai-dynamo.org/aisim/fpm-accuracy/) ·
-[FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
+[AISim Data (FPM)](https://huggingface.co/datasets/ai-dynamo/aisim-data) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisim/fpe-support-matrix/) ·
 [Feature Support Matrix](https://ai-dynamo.org/aisim/feature-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisim/support-matrix/)
@@ -47,10 +47,10 @@ The performance-modeling methodology is described in
 LLM Serving](https://arxiv.org/abs/2601.06288).
 
 Versioned FPM libraries and measurement evidence are available in the
-[Hugging Face FPM dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
+[AISim dataset on Hugging Face](https://huggingface.co/datasets/ai-dynamo/aisim-data) (FPM under `data/fpm/`).
 Pin a full dataset commit SHA, select the matching runtime configuration, and
 verify the recorded file hashes. To contribute data, follow the dataset
-[developer guide and schema contracts](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset#developer-guide-contribute-a-dataset).
+[developer guide and schema contracts](https://huggingface.co/datasets/ai-dynamo/aisim-data#developer-guide-contribute-a-dataset).
 
 ## Install
 
@@ -384,7 +384,7 @@ APIs:
 ### Whole-forward FPM data
 
 Open-source whole-forward FPM datasets are hosted on
-[Hugging Face](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
+[Hugging Face](https://huggingface.co/datasets/ai-dynamo/aisim-data).
 FPM prediction requires a Parquet dataset and its adjacent, same-stem
 `.metadata.json` sidecar. See the
 [core API guide](docs/perf-model/methods/whole-forward.md#external-whole-forward-fpm-data) for

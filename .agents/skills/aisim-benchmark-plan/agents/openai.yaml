@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "Benchmark Plan"
+  short_description: "Catalog-first coverage check and GPU budget"
+  default_prompt: "Use $aisim-benchmark-plan to check what data already exists for this model and GPU and estimate the GPU budget before collecting."
+
+policy:
+  allow_implicit_invocation: true

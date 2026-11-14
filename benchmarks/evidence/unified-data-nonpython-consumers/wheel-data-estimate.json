@@ -1,0 +1,77 @@
+{
+  "source": "source-tree-estimate",
+  "total": {
+    "files": 1849,
+    "bytes": 142856670,
+    "compressed_bytes": 110075914
+  },
+  "packaged_op_data": {
+    "files": 1589,
+    "bytes": 122361067,
+    "compressed_bytes": 109047469
+  },
+  "data_share_of_compressed": 0.9907,
+  "without_data_compressed_bytes": 1028445,
+  "buckets": {
+    "data/a100_sxm": {
+      "files": 40,
+      "bytes": 1456064,
+      "compressed_bytes": 1321918
+    },
+    "data/b200_sxm": {
+      "files": 217,
+      "bytes": 22102165,
+      "compressed_bytes": 19643739
+    },
+    "data/b300_sxm": {
+      "files": 217,
+      "bytes": 17790800,
+      "compressed_bytes": 15894532
+    },
+    "data/b60": {
+      "files": 24,
+      "bytes": 1415844,
+      "compressed_bytes": 1294971
+    },
+    "data/gb200": {
+      "files": 223,
+      "bytes": 17206868,
+      "compressed_bytes": 15323189
+    },
+    "data/gb300": {
+      "files": 230,
+      "bytes": 17599023,
+      "compressed_bytes": 15646728
+    },
+    "data/h100_sxm": {
+      "files": 228,
+      "bytes": 15720641,
+      "compressed_bytes": 14058147
+    },
+    "data/h200_sxm": {
+      "files": 226,
+      "bytes": 15861231,
+      "compressed_bytes": 14012945
+    },
+    "data/l40s": {
+      "files": 94,
+      "bytes": 5394616,
+      "compressed_bytes": 4839791
+    },
+    "data/rtx_pro_6000_server": {
+      "files": 90,
+      "bytes": 7813815,
+      "compressed_bytes": 7011509
+    },
+    "other": {
+      "files": 141,
+      "bytes": 8218627,
+      "compressed_bytes": 295843
+    },
+    "systems-other": {
+      "files": 119,
+      "bytes": 12276976,
+      "compressed_bytes": 732602
+    }
+  }
+}

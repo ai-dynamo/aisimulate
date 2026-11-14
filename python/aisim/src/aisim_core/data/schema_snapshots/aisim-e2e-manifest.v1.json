@@ -1,0 +1,386 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "ProvenanceInfo": {
+      "additionalProperties": false,
+      "description": "Tier-3 evidence file linked from the manifest by artifact ID and hash.",
+      "properties": {
+        "artifact_id": {
+          "minLength": 1,
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "cap_bytes": {
+          "minimum": 1,
+          "title": "Cap Bytes",
+          "type": "integer"
+        },
+        "compression": {
+          "const": "gzip",
+          "default": "gzip",
+          "title": "Compression",
+          "type": "string"
+        },
+        "full_bytes": {
+          "minimum": 0,
+          "title": "Full Bytes",
+          "type": "integer"
+        },
+        "full_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Full Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "raw-output",
+            "raw-output-bundle",
+            "log"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "observation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observation Id"
+        },
+        "redacted": {
+          "title": "Redacted",
+          "type": "boolean"
+        },
+        "source_tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Tool"
+        },
+        "stored_bytes": {
+          "minimum": 0,
+          "title": "Stored Bytes",
+          "type": "integer"
+        },
+        "tier": {
+          "const": 3,
+          "default": 3,
+          "title": "Tier",
+          "type": "integer"
+        },
+        "truncated": {
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "kind",
+        "redacted",
+        "truncated",
+        "full_sha256",
+        "full_bytes",
+        "stored_bytes",
+        "cap_bytes"
+      ],
+      "title": "ProvenanceInfo",
+      "type": "object"
+    },
+    "Setting": {
+      "additionalProperties": false,
+      "description": "One effective setting with the authority of its value.",
+      "properties": {
+        "authority": {
+          "enum": [
+            "observed",
+            "producer_declared",
+            "source_verified_default",
+            "unknown"
+          ],
+          "title": "Authority",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "value",
+        "authority"
+      ],
+      "title": "Setting",
+      "type": "object"
+    },
+    "WorkerGroup": {
+      "additionalProperties": false,
+      "description": "Workers of one role; ``None`` means unknown, never a default.",
+      "properties": {
+        "gpus_per_worker": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpus Per Worker"
+        },
+        "num_workers": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Num Workers"
+        },
+        "total_gpus": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Gpus"
+        }
+      },
+      "title": "WorkerGroup",
+      "type": "object"
+    }
+  },
+  "$id": "aisim-e2e-manifest/v1",
+  "additionalProperties": false,
+  "description": "E2E specialization stored in ``provenance[\"e2e\"]`` of the shared envelope.",
+  "properties": {
+    "cohort_group_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cohort Group Id"
+    },
+    "deployment": {
+      "enum": [
+        "aggregated",
+        "disaggregated"
+      ],
+      "title": "Deployment",
+      "type": "string"
+    },
+    "dp_attention": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dp Attention"
+    },
+    "evidence_gaps": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Evidence Gaps",
+      "type": "array"
+    },
+    "framework": {
+      "minLength": 1,
+      "title": "Framework",
+      "type": "string"
+    },
+    "framework_version": {
+      "minLength": 1,
+      "title": "Framework Version",
+      "type": "string"
+    },
+    "hardware": {
+      "minLength": 1,
+      "title": "Hardware",
+      "type": "string"
+    },
+    "identity_settings": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Identity Settings",
+      "type": "object"
+    },
+    "model_id": {
+      "minLength": 1,
+      "title": "Model Id",
+      "type": "string"
+    },
+    "model_revision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Revision"
+    },
+    "multinode": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Multinode"
+    },
+    "offload_mode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Offload Mode"
+    },
+    "parallelism": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "type": "integer"
+        },
+        "type": "object"
+      },
+      "title": "Parallelism",
+      "type": "object"
+    },
+    "parallelism_complete": {
+      "title": "Parallelism Complete",
+      "type": "boolean"
+    },
+    "precision": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Precision",
+      "type": "object"
+    },
+    "provenance_artifacts": {
+      "items": {
+        "$ref": "#/$defs/ProvenanceInfo"
+      },
+      "title": "Provenance Artifacts",
+      "type": "array"
+    },
+    "requested_settings": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Requested Settings"
+    },
+    "schema_version": {
+      "const": "aisim-e2e-manifest/v1",
+      "default": "aisim-e2e-manifest/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "settings": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Setting"
+      },
+      "title": "Settings",
+      "type": "object"
+    },
+    "source_config_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Config Id"
+    },
+    "source_fields": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Source Fields",
+      "type": "object"
+    },
+    "source_kind": {
+      "minLength": 1,
+      "title": "Source Kind",
+      "type": "string"
+    },
+    "workers": {
+      "additionalProperties": {
+        "$ref": "#/$defs/WorkerGroup"
+      },
+      "title": "Workers",
+      "type": "object"
+    }
+  },
+  "required": [
+    "model_id",
+    "deployment",
+    "hardware",
+    "framework",
+    "framework_version",
+    "parallelism",
+    "parallelism_complete",
+    "precision",
+    "source_kind"
+  ],
+  "title": "E2eManifestBody",
+  "type": "object"
+}

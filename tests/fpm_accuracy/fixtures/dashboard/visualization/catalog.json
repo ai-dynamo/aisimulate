@@ -107,13 +107,13 @@
         {
           "path": "data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz",
           "sha256": "62cc12962b11e47d9f642caa06322b35813968e616f3ba7d693cfa02525791ad",
-          "url": "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz"
+          "url": "https://huggingface.co/datasets/ai-dynamo/aisim-data/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz"
         }
       ],
       "reason": "No accepted measurement iterations are declared.",
       "snapshot": "current",
       "snapshot_id": "aisim-commit-aaaaaaaa",
-      "source": "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/manifest.json",
+      "source": "https://huggingface.co/datasets/ai-dynamo/aisim-data/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/manifest.json",
       "warnings": []
     }
   ],
@@ -187,7 +187,7 @@
         16,
         26
       ],
-      "source": "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz",
+      "source": "https://huggingface.co/datasets/ai-dynamo/aisim-data/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz",
       "source_sha256": "62cc12962b11e47d9f642caa06322b35813968e616f3ba7d693cfa02525791ad",
       "worker": "f7009b3d36c669af32b68ac108d1cbd72fd9fb9164c00ebeffa07792a4b03ccb",
       "zoom": 54.0
@@ -246,7 +246,7 @@
         5,
         12
       ],
-      "source": "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz",
+      "source": "https://huggingface.co/datasets/ai-dynamo/aisim-data/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz",
       "source_sha256": "62cc12962b11e47d9f642caa06322b35813968e616f3ba7d693cfa02525791ad",
       "worker": "f7009b3d36c669af32b68ac108d1cbd72fd9fb9164c00ebeffa07792a4b03ccb",
       "zoom": 52.92
@@ -255,7 +255,7 @@
   "hf_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "pointsRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "policy": "native-online-rank-unit-features-v1",
-  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "repo_id": "ai-dynamo/aisim-data",
   "sampling": "stable identity hash plus each axis and latency extremes per worker/workload",
   "schema_version": 1,
   "source_feature_commit": "99d6acb722bf75e2b16119c59c79e1bad73b4efd"

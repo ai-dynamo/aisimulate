@@ -20,6 +20,7 @@ from scripts.fpm_self_service import adapt_gbdt
 if "AISIM_TEST_WHEEL" in os.environ:
     sdk = import_module("aisim_core.sdk")
 else:
+    pytest.importorskip("aisim._runtime")
     sdk = pytest.importorskip("aisim_core.sdk")
 
 

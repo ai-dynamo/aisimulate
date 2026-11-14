@@ -42,6 +42,10 @@ from CI.
 <!--
 If applicable: source, units, measured/estimated/proxy status, coverage, and
 anomaly checks. Otherwise write N/A.
+For measured data, answer each item in the
+[benchmark guidelines](../docs/perf-model/collector/README.md#benchmark-guidelines):
+effective settings, workload, warmup/cache policy, measurement boundaries, rank
+handling, GPU time, and provenance.
 -->
 
 ## Tracking

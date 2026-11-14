@@ -321,6 +321,6 @@ if __name__ == "__main__":
     if args.resolve_latest:
         resolved = resolve_latest_manifest(manifest)
         args.output.write_text(json.dumps(resolved, sort_keys=True) + "\n")
-        print(f"Resolved {resolved['release_tag']}")
+        print(f"Resolved {resolved['release_tag']} snapshot {resolved.get('snapshot_id', 'unrecorded')}")
     else:
         fetch(manifest, args.output)

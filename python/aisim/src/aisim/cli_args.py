@@ -14,6 +14,7 @@ import yaml
 
 from aisim._legacy import plugin_entry_points
 
+from .data_parser import add_data_parser
 from .detail import parse_detail_sections
 from .perf_model_cli import add_perf_model_parser
 from .support.cli import add_support_parser
@@ -121,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_support_parser(subparsers)
     add_perf_model_parser(subparsers)
+    add_data_parser(subparsers)
     return parser
 
 

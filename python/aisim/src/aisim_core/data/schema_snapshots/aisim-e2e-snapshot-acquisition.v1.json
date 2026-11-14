@@ -1,0 +1,51 @@
+{
+  "$id": "aisim-e2e-snapshot-acquisition/v1",
+  "additionalProperties": false,
+  "description": "How an input reached the snapshot; no measured data.",
+  "properties": {
+    "acquired_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Acquired At"
+    },
+    "observation_id": {
+      "minLength": 1,
+      "title": "Observation Id",
+      "type": "string"
+    },
+    "source_uri": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Uri"
+    },
+    "status": {
+      "default": "acquired",
+      "enum": [
+        "acquired",
+        "inherited",
+        "missing"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "observation_id"
+  ],
+  "title": "SnapshotAcquisition",
+  "type": "object"
+}
