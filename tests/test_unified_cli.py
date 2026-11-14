@@ -2865,8 +2865,9 @@ def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):
 
 @pytest.mark.parametrize("output_format", ["table", "json"])
 @pytest.mark.parametrize("available", [False, True])
+@pytest.mark.parametrize("database_mode", ["omitted", None, "SILICON", "HYBRID", "EMPIRICAL", "SOL"])
 def test_predict_reports_effective_timing_provenance_without_details(
-    tmp_path, monkeypatch, capsys, output_format, available
+    tmp_path, monkeypatch, capsys, output_format, available, database_mode
 ):
     provenance = {
         "aggregated": {
@@ -2876,6 +2877,8 @@ def test_predict_reports_effective_timing_provenance_without_details(
             "data_version_unavailable_reason": None,
         }
     }
+    if database_mode != "omitted":
+        provenance["aggregated"]["database_mode"] = database_mode
 
     class ProvenanceRunner(_Runner):
         def run(self, *args, **kwargs):
@@ -2900,6 +2903,10 @@ def test_predict_reports_effective_timing_provenance_without_details(
         assert json.loads(stdout)["prediction_provenance"] == saved
     elif available:
         assert "Timing (aggregated): estimator=op_level; source=aic; data_version=0.24.0" in stdout
+        if database_mode not in ("omitted", None):
+            assert f"; database_mode={database_mode}" in stdout
+        else:
+            assert "database_mode=" not in stdout
     else:
         assert "Timing (runner): unavailable (runner did not report" in stdout
 
@@ -2928,6 +2935,35 @@ def test_predict_rejects_malformed_runner_provenance_before_output(tmp_path, mon
     output = tmp_path / "out"
     assert cli.main(["predict", "-c", str(path), "--output-dir", str(output)]) == 1
     assert "runner prediction_provenance" in capsys.readouterr().err
+    assert not (output / "prediction.json").exists()
+
+
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("database_mode", [{}, [], "UNKNOWN", "hybrid", "SOL_FULL", "", True, 1])
+def test_predict_rejects_invalid_database_mode_before_output(
+    tmp_path, monkeypatch, capsys, output_format, database_mode
+):
+    class MalformedRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["prediction_provenance"] = {
+                "aggregated": {
+                    "estimator": "op_level",
+                    "timing_source": "aic",
+                    "data_version": "0.24.0",
+                    "database_mode": database_mode,
+                }
+            }
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(MalformedRunner()))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--format", output_format, "--output-dir", str(output)]) == 1
+    captured = capsys.readouterr()
+    assert "prediction_provenance.aggregated.database_mode" in captured.err
+    assert "Timing (" not in captured.out
     assert not (output / "prediction.json").exists()
 
 

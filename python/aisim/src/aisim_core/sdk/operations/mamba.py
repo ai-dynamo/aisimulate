@@ -54,7 +54,10 @@ class Mamba2Kernel(_core.Mamba2Kernel, OpShellKit):
 
     One of four kernels: causal_conv1d_fn, mamba_chunk_scan_combined (context),
     causal_conv1d_update, selective_state_update (generation).
-    Uses full (unsharded) dimensions for lookup; collector data is per-layer.
+    Dimensions are passed per tensor-parallel shard (``mamba_num_heads // tp``,
+    ``max(n_groups // tp, 1)``), the sharding the model's in_proj GEMM uses; the
+    lookup wants the exact per-shard row and reports a miss instead of
+    substituting a same-d_model row.
 
     Owns ``_data_cache`` for the packaged mamba2_perf Parquet perf table.
     """

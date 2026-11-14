@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import aisim_core.sdk.operations as ops
 from aisim_core.sdk import common
+from aisim_core.sdk.errors import InvalidEngineConfigurationError
 from aisim_core.sdk.models.base import BaseModel, register_model
 from aisim_core.sdk.models.helpers import mtp_scale_factor
 
@@ -80,6 +81,16 @@ class NemotronHModel(BaseModel):
         Args:
             hybrid_config: NemotronHConfig containing hybrid_override_pattern and layer parameters
         """
+        tp_size = self.config.tp_size
+        if hybrid_config.mamba_num_heads % tp_size:
+            raise InvalidEngineConfigurationError(
+                f"NemotronH mamba_num_heads ({hybrid_config.mamba_num_heads}) must be divisible by tp_size ({tp_size})."
+            )
+        if hybrid_config.n_groups >= tp_size and hybrid_config.n_groups % tp_size:
+            raise InvalidEngineConfigurationError(
+                f"NemotronH n_groups ({hybrid_config.n_groups}) "
+                f"must be divisible by tp_size ({tp_size}) when n_groups >= tp_size."
+            )
         self._hybrid_config = hybrid_config
         self._build_context_ops()
         self._build_generation_ops()
@@ -149,17 +160,18 @@ class NemotronHModel(BaseModel):
                         h,
                         gemm_quant_mode,
                     ),
+                    # Mamba2 kernels run on the per-rank shard; the perf table is keyed by the shard geometry.
                     ops.Mamba2Kernel(
                         "context_mamba_conv1d",
                         count,
                         "causal_conv1d_fn",
                         "context",
                         hidden_size=h,
-                        nheads=cfg.mamba_num_heads,
+                        nheads=nheads_per_gpu,
                         head_dim=cfg.mamba_head_dim,
                         d_state=cfg.ssm_state_size,
                         d_conv=cfg.conv_kernel,
-                        n_groups=cfg.n_groups,
+                        n_groups=n_groups_per_gpu,
                         chunk_size=cfg.chunk_size,
                     ),
                     ops.Mamba2Kernel(
@@ -168,11 +180,11 @@ class NemotronHModel(BaseModel):
                         "mamba_chunk_scan_combined",
                         "context",
                         hidden_size=h,
-                        nheads=cfg.mamba_num_heads,
+                        nheads=nheads_per_gpu,
                         head_dim=cfg.mamba_head_dim,
                         d_state=cfg.ssm_state_size,
                         d_conv=cfg.conv_kernel,
-                        n_groups=cfg.n_groups,
+                        n_groups=n_groups_per_gpu,
                         chunk_size=cfg.chunk_size,
                     ),
                     ops.GEMM(
@@ -443,17 +455,18 @@ class NemotronHModel(BaseModel):
                         h,
                         gemm_quant_mode,
                     ),
+                    # Mamba2 kernels run on the per-rank shard; the perf table is keyed by the shard geometry.
                     ops.Mamba2Kernel(
                         "generation_mamba_conv1d",
                         count,
                         "causal_conv1d_update",
                         "generation",
                         hidden_size=h,
-                        nheads=cfg.mamba_num_heads,
+                        nheads=nheads_per_gpu,
                         head_dim=cfg.mamba_head_dim,
                         d_state=cfg.ssm_state_size,
                         d_conv=cfg.conv_kernel,
-                        n_groups=cfg.n_groups,
+                        n_groups=n_groups_per_gpu,
                         chunk_size=cfg.chunk_size,
                     ),
                     ops.Mamba2Kernel(
@@ -462,11 +475,11 @@ class NemotronHModel(BaseModel):
                         "selective_state_update",
                         "generation",
                         hidden_size=h,
-                        nheads=cfg.mamba_num_heads,
+                        nheads=nheads_per_gpu,
                         head_dim=cfg.mamba_head_dim,
                         d_state=cfg.ssm_state_size,
                         d_conv=cfg.conv_kernel,
-                        n_groups=cfg.n_groups,
+                        n_groups=n_groups_per_gpu,
                         chunk_size=cfg.chunk_size,
                     ),
                     ops.GEMM(

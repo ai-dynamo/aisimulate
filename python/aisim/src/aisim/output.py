@@ -189,10 +189,13 @@ def format_prediction_stdout(
         version = provenance.get("data_version")
         if version is None:
             version = f"unavailable ({provenance['data_version_unavailable_reason']})"
-        provenance_lines.append(
+        line = (
             f"Timing ({role}): estimator={provenance['estimator']}; "
             f"source={provenance['timing_source']}; data_version={version}"
         )
+        if (mode := provenance.get("database_mode")) is not None:
+            line += f"; database_mode={mode}"
+        provenance_lines.append(line)
     invalid_banner = ""
     if summary.get("prediction_status") == "invalid":
         invalid_banner = f"INVALID prediction ({summary['stop_reason']}): {summary['diagnostic']}\n"

@@ -12,6 +12,7 @@ scope: AISim models the text path of this vision-language model.
 import hashlib
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,10 @@ import pytest
 import aisim_core
 from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, common, config
 from aisim_core.sdk.engine import EngineHandle, compile_engine
-from aisim_core.sdk.errors import PerfDataNotAvailableError
+from aisim_core.sdk.errors import InvalidEngineConfigurationError, PerfDataNotAvailableError
 from aisim_core.sdk.models import get_model
 from aisim_core.sdk.models.helpers import _get_model_info
+from aisim_core.sdk.models.nemotron_h import NemotronHModel
 from aisim_core.sdk.utils import _load_model_config_from_model_path, get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
@@ -161,7 +163,129 @@ def test_text_graph_compiles_in_sol_on_blackwell(backend, monkeypatch):
     }
 
 
-def _silicon(backend, version):
+@pytest.mark.parametrize(("tp", "nheads", "n_groups"), [(1, 128, 8), (2, 64, 4), (4, 32, 2), (8, 16, 1), (16, 8, 1)])
+def test_mamba2_kernels_ask_for_the_per_shard_shape(tp, nheads, n_groups):
+    # mamba_num_heads // tp and max(n_groups // tp, 1): the sharding of the in_proj GEMM and the TRT-LLM mixer.
+    model_config = config.ModelConfig(tp_size=tp, pp_size=1, moe_tp_size=1, moe_ep_size=tp, attention_dp_size=1)
+    model = get_model(MODEL, model_config, backend_name="trtllm")
+    specs = {
+        op._name: json.loads(op._spec_json())["Mamba2"]
+        for op in model.context_ops + model.generation_ops
+        if "Mamba2" in json.loads(op._spec_json())
+    }
+    assert set(specs) == {
+        "context_mamba_conv1d",
+        "context_mamba_ssm",
+        "generation_mamba_conv1d",
+        "generation_mamba_ssm",
+    }
+    for name, spec in specs.items():
+        shape = (
+            spec["d_model"],
+            spec["nheads"],
+            spec["head_dim"],
+            spec["n_groups"],
+            spec["d_state"],
+            spec["d_conv"],
+            spec["chunk_size"],
+        )
+        assert shape == (4096, nheads, 64, n_groups, 128, 4, 128), name
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("mamba_num_heads", 126), ("n_groups", 6)],
+)
+def test_mamba2_rejects_uneven_shards_before_building_pipelines(monkeypatch, field, value):
+    import aisim_core.sdk.models as models
+
+    info = dict(_get_model_info(MODEL))
+    info["extra_params"] = replace(info["extra_params"], **{field: value})
+    monkeypatch.setattr(models, "_get_model_info", lambda _: info)
+
+    def unexpected_builder(self):
+        pytest.fail("invalid Mamba2 geometry reached a pipeline builder")
+
+    monkeypatch.setattr(NemotronHModel, "_build_context_ops", unexpected_builder)
+    monkeypatch.setattr(NemotronHModel, "_build_generation_ops", unexpected_builder)
+    # The model's 32 attention heads divide TP 4, so base-model validation passes.
+    model_config = config.ModelConfig(tp_size=4, moe_tp_size=1, moe_ep_size=4)
+    diagnostic = rf"{field} \({value}\) must be divisible by tp_size \(4\)"
+    with pytest.raises(InvalidEngineConfigurationError, match=diagnostic):
+        get_model(MODEL, model_config, backend_name="trtllm")
+    for estimation_mode in ("op_level", "auto"):
+        request = ForwardPassPerfModelConfig(
+            model=MODEL,
+            system="b200_sxm",
+            backend="trtllm",
+            backend_version="1.3.0rc20",
+            worker_type="aggregated",
+            tp=4,
+            moe_tp_size=1,
+            moe_ep_size=4,
+            estimation_mode=estimation_mode,
+        )
+        # The public estimator must surface invalid geometry instead of trying another mode.
+        with pytest.raises(ValueError, match=diagnostic):
+            RustForwardPassPerfModel.best_available(request)
+
+
+def test_mamba2_replicates_groups_below_tp(monkeypatch):
+    import aisim_core.sdk.models as models
+
+    info = dict(_get_model_info(MODEL))
+    info["extra_params"] = replace(info["extra_params"], n_groups=3)
+    monkeypatch.setattr(models, "_get_model_info", lambda _: info)
+    model_config = config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8)
+    model = get_model(MODEL, model_config, backend_name="trtllm")
+    specs = [
+        json.loads(op._spec_json())["Mamba2"]
+        for op in model.context_ops + model.generation_ops
+        if "Mamba2" in json.loads(op._spec_json())
+    ]
+    assert len(specs) == 4
+    assert {(spec["nheads"], spec["n_groups"]) for spec in specs} == {(16, 1)}
+
+
+def _trtllm_hybrid_56b(tp):
+    return ForwardPassPerfModelConfig(
+        model="nvidia/Nemotron-H-56B-Base-8K",
+        system="b200_sxm",
+        backend="trtllm",
+        backend_version="1.3.0rc20",
+        worker_type="aggregated",
+        tp=tp,
+        moe_tp_size=1,
+        moe_ep_size=tp,
+        database_mode="HYBRID",
+        estimation_mode="op_level",
+        fallback_policy="deny",
+        enable_shared_layer=False,
+    )
+
+
+@pytest.mark.parametrize(("tp", "conv_source"), [(1, "silicon"), (8, "sol")])
+def test_trtllm_hybrid_prices_the_mamba2_conv_kernels_at_the_per_shard_shape(tp, conv_source):
+    # The packaged TRT-LLM rc20 table holds the TP 1 geometry (256 heads, 8 groups) of the conv kernels only:
+    # it has no scan or state-update rows, so the SSM kernels report sol at every TP and do not discriminate.
+    # The conv kernels hit their measured row at TP 1 and miss the per-shard shape (32 heads, 1 group) at TP 8,
+    # where they report the analytic estimate instead of the full-layer row. HYBRID, because SILICON readiness
+    # refuses the rc20 table for its missing scan and state-update kernels before any shape is looked up, and
+    # the rc29 data cannot build the TP 8 model (no custom all-reduce rows); SILICON and HYBRID read the same
+    # rows and answer a shape miss alike.
+    model = RustForwardPassPerfModel.best_available(_trtllm_hybrid_56b(tp))
+    try:
+        prefill, decode = _sources(model, prefill=True), _sources(model, prefill=False)
+    finally:
+        model.close()
+    assert prefill["context_mamba_conv1d"] == conv_source
+    assert decode["generation_mamba_conv1d"] == conv_source
+    assert prefill["context_mamba_ssm"] == decode["generation_mamba_ssm"] == "sol"
+    # The in_proj GEMM of the same shard still reads measured rows: only the Mamba2 lookup lacks per-shard data.
+    assert prefill["context_mamba_in_proj_gemm"] in {"silicon", "estimated"}
+
+
+def _explicit(backend, version, database_mode="SILICON"):
     return ForwardPassPerfModelConfig(
         model=MODEL,
         system="b200_sxm",
@@ -171,7 +295,7 @@ def _silicon(backend, version):
         tp=4,
         moe_tp_size=4,
         moe_ep_size=1,
-        database_mode="SILICON",
+        database_mode=database_mode,
         estimation_mode="op_level",
         fallback_policy="deny",
         enable_shared_layer=False,
@@ -183,8 +307,8 @@ def _sources(model, *, prefill):
     return {op["name"]: op["source"] for op in ops}
 
 
-def test_sglang_silicon_reads_the_packaged_moe_and_attention_tables():
-    model = RustForwardPassPerfModel.best_available(_silicon("sglang", "0.5.14"))
+def test_sglang_hybrid_reads_the_packaged_moe_and_attention_tables():
+    model = RustForwardPassPerfModel.best_available(_explicit("sglang", "0.5.14", "HYBRID"))
     try:
         prefill, decode = _sources(model, prefill=True), _sources(model, prefill=False)
     finally:
@@ -199,15 +323,33 @@ def test_sglang_silicon_reads_the_packaged_moe_and_attention_tables():
         "generation_moe": "silicon",
         "generation_attention": "silicon",
     }
-    # No SGLang Mamba2 table ships, and readiness accepts that today: both kernels price at SOL.
+    # No SGLang Mamba2 table ships. SILICON readiness reports that (AISIM-2194); HYBRID prices both kernels at SOL.
     assert {prefill["context_mamba_conv1d"], prefill["context_mamba_ssm"]} == {"sol"}
     assert {decode["generation_mamba_conv1d"], decode["generation_mamba_ssm"]} == {"sol"}
 
 
+def test_sglang_silicon_reports_the_missing_mamba2_table():
+    with pytest.raises(
+        PerfDataNotAvailableError,
+        match=r"Mamba2 SILICON data missing for kernel .* in linear_attention/sglang/\S+/mamba2_perf\.parquet",
+    ):
+        RustForwardPassPerfModel.best_available(_explicit("sglang", "0.5.14"))
+
+
 def test_vllm_silicon_has_no_nvfp4_moe_rows_at_top_k_22():
-    model = RustForwardPassPerfModel.best_available(_silicon("vllm", "0.24.0"))
-    try:
-        with pytest.raises(PerfDataNotAvailableError, match=r'MoE data missing for MoeKey \{ quant: "nvfp4".*topk: 22'):
-            model.static_phase_diagnostics(prefill=True, batch_size=1, context_length=1024)
-    finally:
-        model.close()
+    # The engine handle skips readiness, so the SILICON query reaches the MoE table despite the missing Mamba2 table.
+    handle = EngineHandle(
+        compile_engine(
+            MODEL,
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            tp_size=4,
+            moe_tp_size=4,
+            moe_ep_size=1,
+            database_mode="SILICON",
+            shared_layer=False,
+        )
+    )
+    with pytest.raises(PerfDataNotAvailableError, match=r'MoE data missing for MoeKey \{ quant: "nvfp4".*topk: 22'):
+        handle.predict_prefill_latency(1, 1024)

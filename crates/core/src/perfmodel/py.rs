@@ -3250,6 +3250,10 @@ mod tests {
                 "PerfDataNotAvailableError",
             );
             check(
+                AicError::LinearAttentionDataMissing("no Mamba2 rows".to_string()),
+                "PerfDataNotAvailableError",
+            );
+            check(
                 AicError::Io {
                     path: PathBuf::from("/nope"),
                     source: std::io::Error::new(std::io::ErrorKind::NotFound, "nope"),

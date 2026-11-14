@@ -1137,6 +1137,8 @@ def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping,
     model = RustForwardPassPerfModel.best_available(payload)
     provenance = model.diagnostics()["provenance"]
     resolved = provenance["config"]
+    assert provenance["requested_database_mode"] == "SILICON"
+    assert provenance["selected_database_mode"] is None
     assert resolved["estimator_config"]["fpm_regression"]["fit"]["rebuild_interval"] == expected_interval
     assert resolved["estimator_config"]["fpm_regression"]["sampling"] == {
         "bins_per_axis": [4, 4],
@@ -1153,6 +1155,7 @@ def test_canonical_regression_rebuild_interval_survives_saved_config(as_mapping,
     saved = json.loads(json.dumps(resolved))
     restored = RustForwardPassPerfModel.best_available(saved)
     assert restored.diagnostics()["provenance"]["config"] == resolved
+    assert restored.diagnostics()["provenance"]["requested_database_mode"] == "SILICON"
     assert restored.regression_store_diagnostics() == [
         {"workload_kind": "pure_decode", "ready": False, "retained_observations": 0}
     ]
@@ -1431,7 +1434,10 @@ def _supported_fpm_validation_config() -> dict[str, object]:
 
 @pytest.mark.integration
 def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
-    """Issue #1522: the exact deployed MoE key must estimate successfully."""
+    """Issue #1522: the exact deployed MoE key must estimate successfully.
+
+    HYBRID: vLLM ships no Mamba2 table, and SILICON readiness now reports that (AISIM-2194).
+    """
     pytest.importorskip("aisim_core")
     from aisim_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
@@ -1443,6 +1449,7 @@ def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
             "system_name": "h100_sxm",
             "backend": "vllm",
             "backend_version": "0.24.0",
+            "database_mode": "HYBRID",
             "tp_size": 4,
             "pp_size": 1,
             "attention_dp_size": 1,
@@ -1496,6 +1503,84 @@ def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
 
     assert model.diagnostics()["readiness"] == "ready"
     assert estimate_ms is not None and estimate_ms > 0.0
+    provenance = model.diagnostics()["provenance"]
+    assert provenance["config"]["database_mode"] == "HYBRID"
+    assert provenance["selection_failures"] == []
+    ops = model.static_phase_diagnostics(prefill=True, batch_size=1, context_length=4224)
+    sources = {op["name"]: op["source"] for op in ops}
+    # The MoE operations read measured rows; the Mamba2 kernels have no vLLM table and keep the analytic estimate.
+    assert sources["context_moe"] == "silicon"
+    assert {sources["context_mamba_conv1d"], sources["context_mamba_ssm"]} == {"sol"}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("systems_order", ["packaged_only", "unavailable_last", "unavailable_first"])
+def test_nemotron_super_fp8_auto_degrades_to_hybrid_on_the_missing_mamba2_table(tmp_path, systems_order) -> None:
+    """AISIM-2194: the SILICON op_level candidate misses the Mamba2 table; auto rebuilds it in HYBRID."""
+    pytest.importorskip("aisim_core")
+    from dataclasses import replace
+    from importlib import resources
+
+    from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+    from aisim_core.sdk.errors import PerfDataNotAvailableError
+
+    # An existing but empty root must not hide the packaged root's typed miss, in either order.
+    systems_paths = {
+        "packaged_only": ("default",),
+        "unavailable_last": ("default", str(tmp_path)),
+        "unavailable_first": (str(tmp_path), "default"),
+    }[systems_order]
+    config = ForwardPassPerfModelConfig(
+        model="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+        system="h100_sxm",
+        backend="vllm",
+        backend_version="0.24.0",
+        worker_type="aggregated",
+        tp=4,
+        moe_tp_size=1,
+        moe_ep_size=4,
+        kv_block_size=16,
+        systems_paths=systems_paths,
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        provenance = model.diagnostics()["provenance"]
+        assert model.diagnostics()["readiness"] == "ready"
+        assert provenance["requested_estimation_mode"] == "auto"
+        assert provenance["selected_estimation_mode"] == "op_level"
+        assert provenance["requested_database_mode"] == "SILICON"
+        assert provenance["selected_database_mode"] == "HYBRID"
+        packaged = str(resources.files("aisim_core") / "systems")
+        assert provenance["selected_systems_root"] == packaged
+        assert provenance["config"]["systems_paths"] == [packaged]
+        assert provenance["config"]["database_mode"] == "HYBRID"
+        assert provenance["config"]["estimation_mode"] == "op_level"
+        assert provenance["config"]["fallback_policy"] == "deny"
+        (failure,) = provenance["selection_failures"]
+        assert failure.startswith("OpLevel: ")
+        assert "mamba2_perf.parquet" in failure and "data missing for kernel" in failure
+        assert model.diagnostics()["last_warning"] == failure
+        resolved = provenance["config"]
+    finally:
+        model.close()
+
+    # Saved-configuration round trip: the pinned HYBRID op_level request rebuilds without a retry.
+    restored = RustForwardPassPerfModel.best_available(json.loads(json.dumps(resolved)))
+    try:
+        again = restored.diagnostics()["provenance"]
+        assert again["config"] == resolved
+        assert again["requested_database_mode"] == "HYBRID"
+        assert again["selected_database_mode"] == "HYBRID"
+        assert again["selection_failures"] == []
+    finally:
+        restored.close()
+
+    # An explicit op_level SILICON request fails with the typed miss.
+    with pytest.raises(
+        PerfDataNotAvailableError,
+        match=r"Mamba2 SILICON data missing for kernel \S+ \(context\) in linear_attention/\S+/mamba2_perf\.parquet",
+    ):
+        RustForwardPassPerfModel.best_available(replace(config, estimation_mode="op_level"))
 
 
 @pytest.mark.integration

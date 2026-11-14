@@ -1145,6 +1145,8 @@ fn restore_verified(
             model.provenance = Some(ForwardPassPerfProvenance {
                 requested_estimation_mode: config.estimation_mode,
                 selected_estimation_mode: config.estimation_mode,
+                requested_database_mode: config.database_mode,
+                selected_database_mode: None,
                 config: config.clone(),
                 selected_systems_root: None,
                 selection_failures: Vec::new(),

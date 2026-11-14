@@ -47,6 +47,11 @@ pub enum AicError {
     /// numerical resolver errors retain their separate error paths.
     #[error("perf database error: {0}")]
     InterpolationCoverage(String),
+    /// A linear-attention operation (Mamba2, GDN, KDA) has no SILICON rows for a kernel it
+    /// needs: the table is missing, empty, or without that kernel. Missing perf data for every
+    /// consumer; auto selection additionally rebuilds the op_level candidate in HYBRID.
+    #[error("perf database error: {0}")]
+    LinearAttentionDataMissing(String),
     /// Malformed or incompatible measured data is never a coverage miss.
     /// HYBRID and regression fallbacks must propagate this error.
     #[error("invalid performance data: {0}")]
@@ -112,6 +117,7 @@ impl AicError {
             Self::PerfDatabase(_)
                 | Self::FpmQueryUnsupported(_)
                 | Self::InterpolationCoverage(_)
+                | Self::LinearAttentionDataMissing(_)
                 | Self::Io { .. }
         )
     }
