@@ -672,6 +672,39 @@ def test_restored_workflows_are_active_at_repository_root() -> None:
     assert not (WORKFLOW_ROOT / "build-platform-wheels-copied-pr.yml").exists()
 
 
+def test_runner_canary_checks_both_production_architectures_with_step_home() -> None:
+    workflow = _workflow("runner-canary.yml")
+    assert set(workflow["on"]) == {"workflow_dispatch", "push"}
+    assert workflow["on"]["push"]["branches"] == ["pull-request/*"]
+    assert workflow["permissions"] == {"contents": "read"}
+    production = workflow["jobs"]["canary"]
+    pools = production["strategy"]["matrix"]["include"]
+    assert {(pool["runner"], pool["machine"], pool["scratch"]) for pool in pools} == {
+        ("prod-aisim-default-amd64-v1", "x86_64", "true"),
+        ("prod-aisim-default-arm64-v1", "aarch64", "true"),
+    }
+    assert production["runs-on"] == "${{ matrix.runner }}"
+    # container.env alone is overwritten by the runner's /github/home default.
+    assert production["env"]["HOME"] == production["container"]["env"]["HOME"] == "/__w/aisim/aisim"
+    commands = _run_commands(production)
+    assert 'test "${HOME}" = /__w/aisim/aisim' in commands
+    assert 'test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"' in commands
+    assert 'test "$(uname -m)" = "${EXPECTED_MACHINE}"' in commands
+    assert "test -w /scratch" in commands
+    shared = workflow["jobs"]["shared"]
+    assert shared["runs-on"] == "dynamo-cpu-4gi-amd64"
+    assert "container" not in shared  # Shared admission does not permit container pods.
+
+
+def test_workflow_runner_selectors_match_registered_pools_and_runbook() -> None:
+    labels = yaml.safe_load((REPOSITORY_ROOT / ".github/actionlint.yaml").read_text())["self-hosted-runner"]["labels"]
+    for name in ("prod-aisim-default-amd64-v1", "prod-aisim-default-arm64-v1", "dynamo-cpu-4gi-amd64"):
+        assert name in labels
+        assert f"`{name}`" in (REPOSITORY_ROOT / "docs/ci/README.md").read_text()
+    for path in WORKFLOW_ROOT.glob("*.yml"):
+        assert "prod-aisimulate-default-" not in path.read_text(), path
+
+
 def test_full_ci_owns_migrated_expensive_suites() -> None:
     jobs = _workflow("ci.yml")["jobs"]
 

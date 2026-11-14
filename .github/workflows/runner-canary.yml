@@ -30,6 +30,9 @@ jobs:
             scratch: true
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
+    env:
+      # Step HOME must override the runner's /github/home container default.
+      HOME: /__w/aisim/aisim
     container:
       image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
       env:
