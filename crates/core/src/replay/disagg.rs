@@ -3657,9 +3657,13 @@ where
                 .all(|state| !state.counted_in_flight && state.coordinator.is_complete()),
             "replay report requires completed disaggregated requests"
         );
+        let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
         self.collector
-            .set_runtime_evidence(std::mem::take(&mut self.evidence).finish());
-        let report = self.collector.take_report().with_wall_time_ms(wall_ms);
+            .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
+        let report = self
+            .collector
+            .take_report(self.now_ms)
+            .with_wall_time_ms(wall_ms);
         self.flow.requests.clear();
         Ok(report)
     }
