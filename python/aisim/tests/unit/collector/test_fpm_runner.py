@@ -1850,7 +1850,7 @@ def test_formal_glm_run_stages_the_full_point_list(monkeypatch, tmp_path):
 
 
 def test_non_glm_cells_keep_their_launch_and_staging(monkeypatch, tmp_path):
-    from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
+    from aisim_core.sdk.deepseek_v41 import MODEL_REVISION
 
     # The launch and staging before the GLM-5.3-Flash adapter, for the default cells of this module and for DeepSeek
     # V4.1 cells.
@@ -3776,7 +3776,7 @@ def test_runtime_default_path_is_adapter_owned():
 
 
 def test_startup_environment_activates_the_runtime_adapter_before_preflight(tmp_path):
-    from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
+    from aisim_core.sdk.deepseek_v41 import MODEL_REVISION
 
     from .test_fpm_runtime_memory import _GLM_REVISION, _glm_plan
 

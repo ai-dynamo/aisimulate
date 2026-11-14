@@ -328,7 +328,7 @@ No upstream root NOTICE exists. vLLM and SGLang implementation files are not ven
 ## Dynamo 1.7 merge checks in the GLM-5.3-Flash producer tests
 
 `dynamo_merge_refusal` in
-`python/aisimulate/tests/unit/collector/test_fpm_glm53flash_prefix_seed.py` is
+`python/aisim/tests/unit/collector/test_fpm_glm53flash_prefix_seed.py` is
 modified code adapted from `components/src/dynamo/vllm/worker_factory.py` in
 https://github.com/ai-dynamo/dynamo/tree/9abd2ef0d908c4bb323e1b8956ea76a5772a1d41
 (file SHA256 `4560426701a52a5adb56a37ef3831d905a2c677eb7d72050f840b53f71401b77`, git blob
@@ -338,7 +338,7 @@ It follows the point checks of `_merge_benchmark_rank_results` and
 saved points of one attention-DP rank of a test fake and returns the refusal text
 instead of raising. Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights
 reserved. Licensed under Apache-2.0; the upstream license is preserved in
-`python/aisimulate/collector/fpm_forward/runtime/glm53flash/LICENSE`. No upstream root
+`python/aisim/collector/fpm_forward/runtime/glm53flash/LICENSE`. No upstream root
 NOTICE exists.
 
 ## NVIDIA AIConfigurator speculative decoding

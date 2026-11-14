@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from .config import _powers_of_two_up_to
 
 if TYPE_CHECKING:
-    from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile
+    from aisim_core.sdk.fpm_profile import FpmDeploymentProfile
 
     from .config import FPMCollectionOptions
 

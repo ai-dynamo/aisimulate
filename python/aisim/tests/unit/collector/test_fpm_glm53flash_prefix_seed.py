@@ -30,7 +30,7 @@ import pytest
 from collector import glm53flash_attention_tokens as seeded
 from collector.fpm_forward.glm53flash_points import glm_align_stop
 
-from aisimulate_core.sdk import utils as sdk_utils
+from aisim_core.sdk import utils as sdk_utils
 
 pytestmark = pytest.mark.unit
 

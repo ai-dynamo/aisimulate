@@ -1954,7 +1954,7 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
 
 
 _GLM_LAUNCH_TEXT = (
-    "AISimulate launches and manages benchmark workers when collection is executed; no separately "
+    "AISim launches and manages benchmark workers when collection is executed; no separately "
     "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; the "
     "GLM-5.3-Flash producer measures the point list that the collection plan freezes. Initialization and "
     "planning do not launch GPUs."
@@ -1974,8 +1974,8 @@ def _requests_of_both_architectures(tmp_path, *extra, **changes):
 
 
 def test_plan_says_who_generates_the_points_of_a_glm_5_3_flash_collection(tmp_path):
-    from aisimulate.support.plan import create_plan
-    from aisimulate.support.schema import CollectionSpec
+    from aisim.support.plan import create_plan
+    from aisim.support.schema import CollectionSpec
 
     request, glm = _requests_of_both_architectures(tmp_path)
     ordinary = create_plan(request, tmp_path / "ordinary")["fpm"]
@@ -1988,7 +1988,7 @@ def test_plan_says_who_generates_the_points_of_a_glm_5_3_flash_collection(tmp_pa
         "do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
     )
     assert ordinary["launch"] == (
-        "AISimulate launches and manages benchmark workers when collection is executed; no separately "
+        "AISim launches and manages benchmark workers when collection is executed; no separately "
         "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; Dynamo "
         "self-benchmark generates and measures the feasible grid. Initialization and planning do not launch GPUs."
     )
@@ -2008,7 +2008,7 @@ def test_plan_says_who_generates_the_points_of_a_glm_5_3_flash_collection(tmp_pa
 
 @pytest.mark.parametrize("role,graph", [("prefill", "PIECEWISE"), ("decode", "FULL_DECODE_ONLY")])
 def test_role_plan_says_who_generates_the_points_of_a_glm_5_3_flash_role(tmp_path, role, graph):
-    from aisimulate.support.plan import create_plan
+    from aisim.support.plan import create_plan
 
     captures = ["--cudagraph-capture-sizes", "1", "2", "4", "8", "--max-cudagraph-capture-size", "8"]
     request, glm = _requests_of_both_architectures(tmp_path, *captures, worker_type=role, cudagraph_mode=graph)

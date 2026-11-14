@@ -546,7 +546,8 @@ def _plan_documents(
             )
         if "launch" in plan["fpm"]:
             plan["fpm"]["launch"] = (
-                "AISimulate launches and manages benchmark workers when collection is executed; no separately "
+                f"{'AISimulate' if legacy_cli else 'AISim'} launches and manages benchmark workers "
+                "when collection is executed; no separately "
                 "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; the "
                 "GLM-5.3-Flash producer measures the point list that the collection plan freezes. Initialization and "
                 "planning do not launch GPUs."

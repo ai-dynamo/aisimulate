@@ -805,8 +805,8 @@ def _imported(
 def test_warmup_iterations_flow_from_the_checkpoint_to_the_launch_and_the_collector_command(
     tmp_path, capsys, configured, launched, flag
 ):
-    from aisimulate.support.fpm import fpm_cli_args
-    from aisimulate.support.runtime import checkpoint_launch
+    from aisim.support.fpm import fpm_cli_args
+    from aisim.support.runtime import checkpoint_launch
 
     # Import succeeds only when the launch from the checkpoint inputs equals the launch that the probe saved.
     checkpoint, _, request, _ = _imported(tmp_path, capsys, warmup_iterations=configured)
@@ -822,7 +822,7 @@ def test_warmup_iterations_flow_from_the_checkpoint_to_the_launch_and_the_collec
 
 
 def test_request_without_warmup_iterations_keeps_its_identity(tmp_path):
-    from aisimulate.support.plan import request_id
+    from aisim.support.plan import request_id
 
     checkpoint, _, _ = _campaign(tmp_path, model="example/model")
     payload = _load(checkpoint).configurations["tp2"].draft_request
@@ -1783,7 +1783,7 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
 
 
 def test_formal_collection_and_finalization_keep_the_request_warmup_iterations(tmp_path, capsys):
-    from aisimulate.support.finalization import finalize
+    from aisim.support.finalization import finalize
 
     # The plan takes its count from the collector command, and the plan builder compares it with the probe launch.
     # Finalization compares the saved options with the options of the reviewed request, so the count reaches both.

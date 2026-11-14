@@ -18,7 +18,7 @@ from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from aisimulate.sdk.utils import _attach_inferred_quant_fields
+from aisim.sdk.utils import _attach_inferred_quant_fields
 from aisim_core.fpm_profile import FpmResourceProfile
 from aisim_core.sdk.perf_database import load_system_spec
 

@@ -445,7 +445,7 @@ def test_finalization_accepts_the_generated_glm_point_list(tmp_path, monkeypatch
     from collector.fpm_forward import glm53flash_points
     from collector.fpm_forward.glm53flash_points import GLM_POINTS_ORIGIN, glm_point_manifest
 
-    from aisimulate.fpm_profile import FpmResourceProfile
+    from aisim.fpm_profile import FpmResourceProfile
 
     # The fixture's pending profile has no runtime memory, so it has no hash block. The list is generated for its
     # deployment with the runtime memory that finalization resolves for this collection and 16-token hash blocks.

@@ -213,7 +213,7 @@ Environment:
 
 ## Guided onboarding collection
 
-`aisimulate onboard collect-fpm` runs the producer above as the runtime adapter
+`aisim onboard collect-fpm` runs the producer above as the runtime adapter
 for GLM-5.3-Flash collection. The
 [self-service guide](perf-model/fpm-self-service/implementation.md) describes
 the workflow. The collector renders the producer launch for each prefill and
@@ -249,7 +249,7 @@ the deployment environment declares its own `PYTHONPATH`. The overlay is a
 composite of two parts. The first part is the `dynamo` files of the
 `ai-dynamo 1.7.0.dev20261109` build, the Dynamo 1.7 scheduler and merge whose
 files `runtime-source-sha256.json` pins. The second part is the `collector`,
-`aisimulate_core` and `aisimulate` packages of the AISimulate checkout that
+`aisim_core` and `aisim` packages of the AISim checkout that
 plans the collection. The producer imports them. Run the runtime probe with the
 deployment of the collection, the overlay mount included, because the collector
 refuses a collection deployment that differs from the accepted probe.

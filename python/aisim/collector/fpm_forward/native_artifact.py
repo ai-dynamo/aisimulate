@@ -229,7 +229,7 @@ def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path:
     if not cell.execution_identity[0]:
         return None
     # The execution mode of each contract, by the Engram residency of the cell's execution identity.
-    # aisimulate_core.sdk.fpm_identity.execution_identity gives DeepSeek V4.1 "hbm_tp_sharded" and GLM-5.3-Flash
+    # aisim_core.sdk.fpm_identity.execution_identity gives DeepSeek V4.1 "hbm_tp_sharded" and GLM-5.3-Flash
     # "none", and every other model the legacy identity, which has no configuration hash and returned above.
     contract_modes = {"hbm_tp_sharded": "eager", "none": "native_graph_policy"}
     mode = payload.get("execution_mode")

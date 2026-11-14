@@ -618,7 +618,7 @@ def _glm_smoke(tmp_path, monkeypatch, shape=None):
     from collector.fpm_forward.config import with_kv_warmup_defaults
     from collector.fpm_forward.runtime import fpm_memory_observer as observer
 
-    from aisimulate.support.schema import SupportRequest
+    from aisim.support.schema import SupportRequest
 
     from .collector.test_fpm_glm53flash_native_collection import (
         DECODE_POINTS,

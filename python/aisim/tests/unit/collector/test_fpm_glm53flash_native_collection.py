@@ -32,10 +32,10 @@ from collector.fpm_forward.native_artifact import (
 )
 from collector.fpm_forward.planner import FPMCell
 
-from aisimulate.fpm_contract import fpm_benchmark_result_name
-from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
-from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
-from aisimulate_core.sdk.utils import get_model_config_from_model_path
+from aisim.fpm_contract import fpm_benchmark_result_name
+from aisim_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
+from aisim_core.sdk.glm53flash import MODEL_REVISIONS
+from aisim_core.sdk.utils import get_model_config_from_model_path
 
 from .test_fpm_forward import _write_v41_token_streams
 from .test_fpm_glm53flash_prefix_seed import load_producer
@@ -1024,8 +1024,8 @@ def test_glm_decode_artifact_with_a_warmup_skip_is_refused_at_validation(tmp_pat
 
 def test_published_glm_pair_loads_through_the_rust_fpm_loader(tmp_path):
     """The loader refuses a cached prefill or decode row of a cell with an execution identity unless it is real_kv."""
-    import aisimulate_core
-    from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+    import aisim_core
+    from aisim_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     plan = _glm_plan()
     plan.backend_version = "glm-published-pair"
@@ -1047,7 +1047,7 @@ def test_published_glm_pair_loads_through_the_rust_fpm_loader(tmp_path):
     systems = tmp_path / "systems"
     database.write_formal_database(plan, rows, systems_root=systems / "data")
     system_file = f"{plan.system}.yaml"
-    shutil.copyfile(Path(aisimulate_core.__file__).parent / "systems" / system_file, systems / system_file)
+    shutil.copyfile(Path(aisim_core.__file__).parent / "systems" / system_file, systems / system_file)
     engine = dict(
         schema_version=1,
         model_name=GLM_MODEL,

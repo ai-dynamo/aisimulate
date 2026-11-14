@@ -157,8 +157,8 @@ def glm_pinned_model(raw_config: dict, revision: str) -> tuple[str, str]:
     Any other revision of the same files has the same configuration, so it is accepted when its configuration equals
     the configuration of a pinned model.
     """
-    from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
-    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+    from aisim_core.sdk.glm53flash import MODEL_REVISIONS
+    from aisim_core.sdk.utils import get_model_config_from_model_path
 
     models_by_pin = {pinned_revision: model for model, pinned_revision in MODEL_REVISIONS.items()}
     if revision in models_by_pin:
