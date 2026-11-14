@@ -28,6 +28,9 @@ from .fpm import fpm_cli_args
 from .schema import SupportRequest
 
 _LOCK_NAME = ".support.lock"
+# The collection plan of this architecture freezes a point list that the planner generates. Planning must not import
+# the collector, so the name repeats collector.fpm_forward.glm53flash_points.GLM_ARCHITECTURE, and a test compares them.
+_GLM_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # Mirror collector.fpm_forward.runtime.fpm_memory_observer.MEMORY_SUPPORTED_VERSIONS, the keys of SOURCE_MANIFESTS
 # and audited_release; onboard init must not import the observer. A test keeps the copies equal.
 MEMORY_OBSERVATION_VERSIONS = ("0.27.0", "0.32.0", "0.33.0")
@@ -523,6 +526,32 @@ def _plan_documents(
                 "handoff support is outside collection qualification."
             ),
         }
+    if request.fpm_profile is not None and request.fpm_profile.architecture == _GLM_ARCHITECTURE:
+        # The texts above say that Dynamo generates the grid. The collection plan of this architecture freezes a point
+        # list that the planner generates, so these texts have their own wording.
+        if role_only:
+            plan["fpm"]["sampling"] = (
+                f"The GLM-5.3-Flash producer measures only the {request.worker_type} points of the list that the "
+                "collection plan generates and freezes for this accepted role. The other role is collected "
+                "independently. Decode initializes representative state locally; actual P/D transfer is not required. "
+                "Timing collection and qualification do not establish replay readiness."
+            )
+        else:
+            plan["fpm"]["sampling"] = (
+                "The GLM-5.3-Flash producer measures a point list that the collection plan generates from the "
+                "reviewed runtime limits and the accepted profile's hash block size and cache capacity. The new-token "
+                "budget, per-request context, scheduler sequence bound and total KV capacity are separate quantities. "
+                "The list is frozen into the plan, so the point count is fixed at plan time; validation traffic and "
+                "SLAs do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
+            )
+        if "launch" in plan["fpm"]:
+            plan["fpm"]["launch"] = (
+                f"{'AISimulate' if legacy_cli else 'AISim'} launches and manages benchmark workers "
+                "when collection is executed; no separately "
+                "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; the "
+                "GLM-5.3-Flash producer measures the point list that the collection plan freezes. Initialization and "
+                "planning do not launch GPUs."
+            )
     yaml_documents = {
         Path("request.yaml"): request.model_dump(mode="json", exclude_none=True),
         Path("worker.yaml" if role_only else "predict/pilot.yaml"): prediction,

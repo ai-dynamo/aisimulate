@@ -440,6 +440,88 @@ def test_public_finalize_binds_reviewed_collection_options(
         assert SupportRequest.from_yaml(target / "request.yaml").collection.max_prefill_cudagraph_size == 64
 
 
+@pytest.mark.parametrize("matches", [True, False], ids=["generated", "differs"])
+def test_finalization_accepts_the_generated_glm_point_list(tmp_path, monkeypatch, matches):
+    from collector.fpm_forward import glm53flash_points
+    from collector.fpm_forward.glm53flash_points import GLM_POINTS_ORIGIN, glm_point_manifest
+
+    from aisim.fpm_profile import FpmResourceProfile
+
+    # The fixture's pending profile has no runtime memory, so it has no hash block. The list is generated for its
+    # deployment with the runtime memory that finalization resolves for this collection and 16-token hash blocks.
+    measured = FpmResourceProfile.model_validate(
+        {
+            "runtime_memory": {
+                "kv_cache_bytes": 899 * 1024,
+                "gpu_memory_utilization": 0.9,
+                "max_model_len": 128,
+                "provenance": "Synthetic collection capacity, declared for this test.",
+                "enable_prefix_caching": True,
+                "hash_block_size_tokens": 16,
+            },
+            "cache_layout": "grouped",
+            "cache_groups": [
+                {
+                    "name": "attention",
+                    "kind": "attention",
+                    "num_layers": 2,
+                    "block_size_tokens": 16,
+                    "page_size_bytes": 1024,
+                }
+            ],
+            "max_num_tokens": 64,
+            "max_batch_size": 4,
+            "provenance": "Synthetic collection resources, declared for this test.",
+        }
+    )
+    generate, calls = glm53flash_points.glm_plan_manifest, []
+
+    def generate_for_measured(options, deployments):
+        calls.append((options, deployments))
+        return generate(options, [deployment.model_copy(update={"resources": measured}) for deployment in deployments])
+
+    monkeypatch.setattr(glm53flash_points, "glm_plan_manifest", generate_for_measured)
+    # The reviewed limits are 64 tokens, 4 sequences and a 128-token context, which measures 121 tokens.
+    _, canonical, digest = glm_point_manifest(
+        hash_block_size=16,
+        token_budget=64,
+        prefill_batch_limit=4,
+        decode_batch_limit=4,
+        measured_context=121,
+        kv_cache_bytes=899 * 1024,
+        page_size_bytes=1024,
+        state_groups=0,
+        checkpoint_alignment=None,
+        checkpoint_groups=0,
+    )
+    request, root = build_completed_collection(
+        tmp_path,
+        plan_changes={
+            "benchmark_points_json": canonical,
+            "benchmark_points_sha256": digest if matches else "0" * 64,
+            "benchmark_points_origin": GLM_POINTS_ORIGIN,
+        },
+    )
+    saved = json.loads(next(root.glob("fpm-artifacts/*/collection-plan.json")).read_text())
+    assert saved["options"]["benchmark_points"]["origin"] == GLM_POINTS_ORIGIN
+    target = tmp_path / "resolved"
+    if matches:
+        finalize(request, root, target)
+        resolved = SupportRequest.from_yaml(target / "request.yaml")
+        assert resolved.profile_deployment().resources.memory_source == "runtime"
+    else:
+        with pytest.raises(ValueError) as error:
+            finalize(request, root, target)
+        assert str(error.value) == (
+            "saved GLM-5.3-Flash point list differs from the list generated for the reviewed settings"
+        )
+        assert not target.exists()
+    # The list is generated again from the reviewed settings and the profile deployment, not read from the plan.
+    assert [(options.benchmark_points_json, deployments) for options, deployments in calls] == [
+        (None, [request.profile_deployment()])
+    ]
+
+
 @pytest.mark.parametrize("tamper", [None, "image", "mounts", "executor", "worker"])
 def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, monkeypatch, capsys, tamper):
     """Real CLI, Slurm campaign and finalizer; only cluster/runtime output is synthetic."""

@@ -249,7 +249,12 @@ def checkpoint_launch(
                 "max_prefill_cudagraph_size": collection.max_prefill_cudagraph_size,
                 **{
                     field: getattr(collection, field)
-                    for field in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size")
+                    for field in (
+                        "cudagraph_mode",
+                        "cudagraph_capture_sizes",
+                        "max_cudagraph_capture_size",
+                        "warmup_iterations",
+                    )
                     if getattr(collection, field) is not None
                 },
             },

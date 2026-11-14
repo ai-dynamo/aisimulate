@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import enum
+import hashlib
 import importlib.util
 import json
 import re
@@ -14,12 +15,15 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from collector.fpm_forward import planner, repeatability, runner, runtime_memory
+from collector.fpm_forward import cli, planner, repeatability, runner, runtime_memory
+from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID
+from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.types import ParallelTopology
 
 from aisim_core.fpm_profile import FpmResourceProfile
 
+from .test_fpm_forward import _MODEL_CONFIGS, _args, _mixed_attention_config
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _cell, _native_payload, _write_provenance
 
@@ -714,10 +718,12 @@ def _json_bytes(value):
     return json.dumps(value, sort_keys=True, indent=2).encode()
 
 
-def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present():
-    # Expected values are what the observer wrote before hybrid cache support, for the same objects.
-    worker, scheduler, cache = _with_engine_core_values(*_initialized())
-    resolved = {
+def _main_execution_config():
+    """The execution record that main writes for the configuration of _initialized and _with_engine_core_values.
+
+    It holds no hybrid cache field, the same for vLLM 0.27.0, 0.28.0, 0.32.0 and 0.33.0.
+    """
+    return {
         "model_config": {
             "model": "example/model",
             "revision": "immutable",
@@ -752,6 +758,14 @@ def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present(
             "type": "vllm.model_executor.layers.quantization.modelopt.ModelOptNvFp4Config",
             "quant_method": "NVFP4",
         },
+    }
+
+
+def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present():
+    # Expected values are what the observer wrote before hybrid cache support, for the same objects.
+    worker, scheduler, cache = _with_engine_core_values(*_initialized())
+    resolved = {
+        **_main_execution_config(),
         "offload_config": {
             "offload_backend": "auto",
             "uva": {"cpu_offload_gb": 0},
@@ -760,8 +774,7 @@ def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present(
     }
     for config in (worker.vllm_config, scheduler.vllm_config):
         assert _json_bytes(observer.resolved_config(config)) == _json_bytes(resolved)
-    execution = {key: value for key, value in resolved.items() if key != "offload_config"}
-    assert _json_bytes(observer.execution_config(worker.vllm_config)) == _json_bytes(execution)
+    assert _json_bytes(observer.execution_config(worker.vllm_config)) == _json_bytes(_main_execution_config())
     groups = [
         {
             "layer_names": names,
@@ -1583,7 +1596,9 @@ def test_execution_observation_records_new_versions(tmp_path, monkeypatch, versi
     worker = module.FpmExecutionWorker()
     worker.vllm_config = _vllm_config(tp=1, dp=1)
     worker.vllm_config.parallel_config.data_parallel_rank = 0
-    worker.model_runner = SimpleNamespace(attn_groups=[])
+    worker.model_runner = SimpleNamespace(
+        attn_groups=[], kv_cache_config=SimpleNamespace(kv_cache_groups=[_full_attention_group()])
+    )
     assert worker.compile_or_warm_up_model() == "compiled"
     result = json.loads((output / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
     assert result["status"] == "observed", result.get("error")
@@ -1671,6 +1686,226 @@ def _pending_plan(version="0.27.0"):
         for key in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
             deployment["resources"].pop(key)
     return _plan(profile, collector_config={"runtime_backend_version": version})
+
+
+def _full_attention_group():
+    # A plain attention model: every layer has one spec, so vLLM 0.33.0 makes one group of that spec
+    # (v1/core/kv_cache_planning.py:1138-1142).
+    full = _spec("FullAttentionSpec", block_size=16, page_size_bytes=8192, sliding_window=None, dtype="torch.bfloat16")
+    return _group(["layer.0", "layer.1"], full)
+
+
+def _uniform_group(specs):
+    # The packed path of vLLM 0.33.0 makes every group a UniformTypeKVCacheSpecs (v1/core/kv_cache_planning.py:1159,
+    # :1026, :1037-1039). The group takes the block and page of its inner specs.
+    first = next(iter(specs.values()))
+    uniform = _spec(
+        "UniformTypeKVCacheSpecs",
+        kv_cache_specs=specs,
+        block_size=first.block_size,
+        page_size_bytes=first.page_size_bytes,
+    )
+    return _group(list(specs), uniform)
+
+
+def _uniform_mla_group():
+    # The GLM-5.3-Flash sparse attention layers: MLA latent specs (models/glm5next/common/attention.py:112-179).
+    latent = _spec("MLAAttentionSpec", block_size=2176, page_size_bytes=PAGE, sliding_window=None, dtype="torch.uint8")
+    return _uniform_group({"mla.0": latent, "mla.1": latent})
+
+
+def _mamba_group():
+    # The GLM-5.3-Flash KDA state layers (models/glm5next/common/kda.py:168-176).
+    return _uniform_group({"kda.0": _mamba(), "kda.1": _mamba()})
+
+
+def _observe_execution(tmp_path, monkeypatch, *, version, groups, cache_settings=None):
+    """Write the execution record of one worker whose initialized cache holds ``groups``; return the record.
+
+    The configuration is the one of _initialized and _with_engine_core_values, updated with ``cache_settings``.
+    vLLM 0.33.0 sets Mamba align mode only for a model with Mamba layers when prefix caching is on
+    (model_executor/models/config.py:763-787), so the cache configuration holds align mode only when ``groups`` holds
+    a Mamba spec, as a group spec or as a layer spec of a uniform group.
+    """
+    worker = _with_engine_core_values(*_initialized())[0]
+    vars(worker.vllm_config.cache_config).update(cache_settings or {})
+    mamba = any(
+        type(inner).__name__ == "MambaSpec"
+        for group in groups
+        for inner in getattr(group.kv_cache_spec, "kv_cache_specs", {"": group.kv_cache_spec}).values()
+    )
+    if mamba:
+        vars(worker.vllm_config.cache_config).update(mamba_cache_mode="align", mamba_block_size=2176)
+    attention = SimpleNamespace(
+        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+        layer_names=list(groups[0].layer_names),
+        kv_cache_group_id=0,
+    )
+    worker.model_runner = SimpleNamespace(
+        attn_groups=[[attention]], kv_cache_config=SimpleNamespace(kv_cache_groups=groups)
+    )
+    monkeypatch.setattr(observer, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
+    for name in ("FPM_EXECUTION_OUTPUT_DIR", "FPM_EXECUTION_PROVENANCE_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / "collector-provenance.json").write_text("{}")
+    path = tmp_path / "fpm-execution-worker-dp0-tp0-pp0.json"
+    path.unlink(missing_ok=True)
+    observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    record = json.loads(path.read_text())
+    assert record["status"] == "observed", record.get("error")
+    return record
+
+
+def _mla_group():
+    # An MLA-only model gets one MLAAttentionSpec group (v1/core/kv_cache_planning.py:1138-1142, :314-327, :206-214).
+    latent = _spec("MLAAttentionSpec", block_size=2176, page_size_bytes=PAGE, sliding_window=None, dtype="torch.uint8")
+    return _group(["mla.0", "mla.1"], latent)
+
+
+def _glm53_flash_groups():
+    """The GLM-5.3-Flash cache groups of a layout whose block axis is not outermost.
+
+    The packed path then returns None (v1/core/kv_cache_planning.py:931-932), and the path that groups layers by
+    spec gives each group one spec (:1176, :556, :206-214). The sparse attention layers give MLAAttentionSpec
+    (models/glm5next/common/attention.py:112-119), the tail rings CircularBufferSpec (:170-179) and the KDA layers
+    MambaSpec (models/glm5next/common/kda.py:168-176).
+    """
+    tail = _spec("CircularBufferSpec", block_size=4, page_size_bytes=71_808, dtype="torch.bfloat16")
+    kda = [_group([f"kda.{index}"], _mamba()) for index in range(4)]
+    return [_mla_group(), _group(["tail.0"], tail), *kda]
+
+
+_HYBRID_CACHE_CONFIGURATIONS = {
+    "full_attention": ([_full_attention_group()], False),
+    "mla": ([_mla_group()], False),
+    # A packed attention-only cache: UniformTypeKVCacheSpecs groups whose layer specs are attention specs.
+    "uniform_attention": ([_uniform_mla_group()], False),
+    "direct_mamba": ([_full_attention_group(), _group(["kda.0", "kda.1"], _mamba())], True),
+    "uniform_mamba": ([_uniform_mla_group(), _mamba_group()], True),
+    "glm53_flash": (_glm53_flash_groups(), True),
+}
+
+
+@pytest.mark.parametrize(
+    ("version", "case"),
+    [("0.33.0", case) for case in _HYBRID_CACHE_CONFIGURATIONS] + [("0.32.0", "glm53_flash")],
+)
+def test_execution_record_adds_the_hybrid_cache_fields_only_with_a_recurrent_state_group(
+    tmp_path, monkeypatch, version, case
+):
+    groups, recurrent = _HYBRID_CACHE_CONFIGURATIONS[case]
+    # The cache configuration holds every plain and every hybrid cache setting, so only the groups decide.
+    record = _observe_execution(
+        tmp_path, monkeypatch, version=version, groups=groups, cache_settings={"num_gpu_blocks_override": None}
+    )
+    cache = record["resolved_config"]["cache_config"]
+    plain = observer._CONFIG_FIELDS["cache_config"]
+    if recurrent and version == "0.33.0":
+        assert sorted(cache) == sorted([*plain, *observer._HYBRID_CACHE_FIELDS])
+        assert cache["mamba_cache_mode"] == "align"
+    else:
+        assert sorted(cache) == sorted(plain)
+
+
+def test_execution_record_of_a_patch_release_has_no_hybrid_cache_fields(tmp_path, monkeypatch):
+    # The release check accepts 0.33.1: the imported package reports the metadata version, and the cached source
+    # check of the audited release found no changed file.
+    vllm = ModuleType("vllm")
+    vllm.__version__ = "0.33.1"
+    monkeypatch.setitem(sys.modules, "vllm", vllm)
+    monkeypatch.setattr(observer, "_SOURCE_PROBLEMS", {"0.33.0": None})
+    record = _observe_execution(
+        tmp_path,
+        monkeypatch,
+        version="0.33.1",
+        groups=_glm53_flash_groups(),
+        cache_settings={"num_gpu_blocks_override": None},
+    )
+    assert record["audited_backend_version"] == "0.33.0"
+    assert sorted(record["resolved_config"]["cache_config"]) == sorted(observer._CONFIG_FIELDS["cache_config"])
+
+
+def test_execution_record_of_a_plain_model_on_vllm_0330_keeps_the_bytes_of_main(tmp_path, monkeypatch):
+    record = _observe_execution(tmp_path, monkeypatch, version="0.33.0", groups=[_full_attention_group()])
+    assert _json_bytes(record["resolved_config"]) == _json_bytes(_main_execution_config())
+
+
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.32.0", "0.33.0", "0.30.0"])
+def test_execution_observation_supports_vllm_0_33_0(tmp_path, monkeypatch, version):
+    output = tmp_path / "observations"
+    provenance_path = tmp_path / "serving-provenance.json"
+    provenance_path.write_text(json.dumps({"run_id": "serving-123", "purpose": "matched_serving_accuracy"}))
+    monkeypatch.setenv("FPM_EXECUTION_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("FPM_EXECUTION_PROVENANCE_FILE", str(provenance_path))
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
+    config = _vllm_config(tp=1, dp=1)
+    # The cache config holds the hybrid settings for every version here, and only a 0.33.0 record keeps them.
+    vars(config.cache_config).update(mamba_cache_mode="align", prefix_match_unit=None)
+    group = SimpleNamespace(
+        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+        layer_names=["layer.0"],
+        kv_cache_group_id=0,
+    )
+    # A hybrid cache configuration of vLLM 0.33.0, which the other versions never build: only its groups decide.
+    cache = SimpleNamespace(kv_cache_groups=[_uniform_mla_group(), _mamba_group()])
+    worker = SimpleNamespace(
+        vllm_config=config, model_runner=SimpleNamespace(attn_groups=[[group]], kv_cache_config=cache)
+    )
+    observer.observe_execution(worker, dp_rank=0, tp_rank=0, pp_rank=0)
+    record = json.loads((output / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())
+    if version == "0.30.0":
+        # An unaudited version stays unresolved, and the error names the audited versions.
+        assert record["status"] == "unresolved"
+        assert "0.33.0" in record["error"]
+    else:
+        assert record["status"] == "observed"
+        assert record["backend_version"] == version
+        assert record["attention_groups"][0]["kv_cache_group_id"] == 0
+        cache = record["resolved_config"]["cache_config"]
+        if version == "0.33.0":
+            assert cache["mamba_cache_mode"] == "align"
+            assert "prefix_match_unit" in cache
+        else:
+            assert {"mamba_cache_mode", "prefix_match_unit"}.isdisjoint(cache)
+
+
+@pytest.mark.parametrize("version", ["0.33.0", "0.30.0"])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_execution_inspection_audits_vllm_0_33_0(tmp_path, version):
+    from collector.fpm_forward.execution_evidence import inspect_execution_evidence
+    from collector.fpm_forward.native_artifact import NativeCollection
+
+    plan = _pending_plan(version)
+    cell = plan.cells[0]
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    collection = NativeCollection(
+        points=(),
+        rank_timings=(),
+        backend_version=version,
+        collector_attempt_id="attempt",
+        runtime_run_id=cell.cell_id,
+        runtime_grid_digest="grid",
+    )
+    # Evidence version 1 skips the measurement evidence, which this audit does not read.
+    missing = inspect_execution_evidence(cell, raw, collection, plan=plan, evidence_version=1)["missing_evidence"]
+    unaudited = [item for item in missing if item.startswith("execution configuration inspection is unaudited")]
+    assert unaudited == ([] if version == "0.33.0" else ["execution configuration inspection is unaudited for 0.30.0"])
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_runner_stages_only_the_execution_observer_for_an_execution_only_version_without_a_profile():
+    # vLLM 0.28.0 is audited for execution observation, not for memory observation.
+    plan = replace(_pending_plan("0.28.0"), _fpm_profile_json=None)
+    assert plan.runtime_instrumentation is None
+    for cell in plan.cells:
+        assert not cell.execution_identity[0]
+        assert runner._observe_runtime_execution(plan, cell) is True
+        assert runner._observe_runtime_memory(plan, cell) is False
+        args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
+        assert args[args.index("--worker-cls") + 1] == "fpm_memory_worker.FpmExecutionWorker"
+        assert args[args.index("--scheduler-cls") + 1] == "fpm_memory_scheduler.FpmExecutionInstrumentedScheduler"
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
@@ -1810,15 +2045,863 @@ def test_pending_memory_refuses_a_policy_mamba_cache_mode():
 
 @pytest.mark.parametrize("architecture", ["Glm5NextForConditionalGeneration", None])
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_glm5next_launch_loads_the_language_model_only(architecture):
-    plan = _pending_plan()
-    if architecture is not None:
-        plan = replace(plan, capability=replace(plan.capability, architecture=architecture))
+def test_glm5next_launch_loads_the_language_model_only(tmp_path, architecture):
+    # A GLM-5.3-Flash collection plan carries the point list that the planner generates.
+    plan = _glm_plan(tmp_path) if architecture is not None else _pending_plan()
     assert (plan.capability.architecture == "Glm5NextForConditionalGeneration") == (architecture is not None)
     for cell in plan.cells:
         args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
-        # GLM probes and collection load the text decoder only (docs/glm53flash-fpm.md:70-73).
+        # GLM probes and collection load the text decoder only (see the engine arguments of the vLLM producer section
+        # in docs/glm53flash-fpm.md).
         assert ("--language-model-only" in args) == (architecture is not None)
+
+
+# A stand-in commit of the GLM-5.3-Flash checkpoint. vLLM loads the revision of a GLM-5.3-Flash plan, and the producer
+# and the planner accept 40 lowercase hex characters only.
+_GLM_REVISION = "c" * 40
+
+
+def _glm_plan(
+    tmp_path,
+    *,
+    hash_block_size_tokens=2176,
+    max_batch_size=256,
+    max_num_tokens=8192,
+    model_revision=_GLM_REVISION,
+    kda_checkpoint_alignment=None,
+    **changes,
+):
+    """A GLM-5.3-Flash TP 4 collection plan with the cache resources that the runtime probe measured.
+
+    The config is a small stand-in with the hybrid layer types. The options are the limits that onboarding passes:
+    ``max_num_tokens`` tokens, ``max_batch_size`` sequences and a 1,048,576-token context. The profile records the
+    same token and sequence limits, because accepted runtime memory is exact for its scheduler settings. The producer
+    runs no global warm-up iterations. ``changes`` replace option fields before planning. With a
+    ``kda_checkpoint_alignment``, each of the four KDA groups holds one prefill checkpoint block of that alignment, as
+    the import writes it for a launch that prefills KDA with FlashKDA. Without it, they hold none, as with the Triton
+    KDA prefill backend.
+    """
+    from .test_runtime_observations import glm_tp4_cache_groups
+
+    cache_groups = glm_tp4_cache_groups()
+    # A FlashKDA prefill gives each KDA spec one checkpoint block aligned to 16 tokens (vLLM 0.33.0
+    # models/glm5next/common/kda.py:168-176, model_executor/layers/mamba/kda_checkpoint.py:9-10), and the import
+    # keeps the count and the alignment of a MambaSpec group (collector/fpm_forward/runtime_memory.py:662-676). The
+    # Triton backend gives no checkpoint block, and the import then keeps a count of 0 without an alignment.
+    for group in cache_groups:
+        if "prefill_checkpoint_blocks" in group:
+            group.pop("prefill_checkpoint_alignment", None)
+            if kda_checkpoint_alignment is None:
+                group.update(prefill_checkpoint_blocks=0)
+            else:
+                group.update(prefill_checkpoint_blocks=1, prefill_checkpoint_alignment=kda_checkpoint_alignment)
+    architecture = "Glm5NextForConditionalGeneration"
+    path = _mixed_attention_config(tmp_path, architecture, True)
+    memory = {
+        "kv_cache_bytes": 185_126_092_800,
+        "gpu_memory_utilization": 0.9,
+        "max_model_len": 1_048_576,
+        "provenance": "Runtime probe capacity of GLM-5.3-Flash at TP 4, declared for this test.",
+        "enable_prefix_caching": True,
+        "mamba_cache_mode": "align",
+    }
+    if hash_block_size_tokens is not None:
+        memory["hash_block_size_tokens"] = hash_block_size_tokens
+    profile = {
+        "schema_version": 1,
+        "model": str(path),
+        "model_revision": model_revision,
+        "architecture": architecture,
+        "context_length": 1_048_576,
+        "num_experts": 8,
+        "provenance": "Collector test declaration; not a measured memory qualification.",
+        "deployments": [
+            {
+                "system": "b200_sxm",
+                "backend": "vllm",
+                "backend_version": "0.33.0",
+                "tp": 4,
+                "dp": 1,
+                "moe_tp": 4,
+                "moe_ep": 1,
+                "gemm_quant_mode": "bfloat16",
+                "moe_quant_mode": "bfloat16",
+                "fmha_quant_mode": "bfloat16",
+                "comm_quant_mode": "half",
+                "kv_cache_dtype": "bfloat16",
+                "resources": {
+                    "runtime_memory": memory,
+                    "cache_layout": "grouped",
+                    "cache_groups": cache_groups,
+                    "max_num_tokens": max_num_tokens,
+                    "max_batch_size": max_batch_size,
+                    "provenance": "Runtime probe resources of GLM-5.3-Flash at TP 4, declared for this test.",
+                },
+            }
+        ],
+    }
+    argv = [
+        "--model-path",
+        str(path),
+        "--gpu",
+        "b200_sxm",
+        "--fpm-max-gpus",
+        "4",
+        "--fpm-gpu-counts",
+        "4",
+        "--fpm-parallel-presets",
+        "pure_tp",
+        "--fpm-max-model-len",
+        "1048576",
+        "--fpm-max-num-batched-tokens",
+        str(max_num_tokens),
+        "--fpm-max-num-seqs",
+        str(max_batch_size),
+        "--fpm-max-prefill-isl",
+        str(max_num_tokens),
+        "--fpm-max-prefill-batch-size",
+        str(max_batch_size),
+        "--fpm-prefill-cudagraph-policy",
+        "runtime",
+        "--fpm-warmup-iterations",
+        "0",
+    ]
+    return _plan(
+        profile,
+        model_path=str(path),
+        model_architecture=architecture,
+        model_config_path=str(path),
+        has_model_cases=False,
+        selected_ops={"attention_context", "attention_generation"},
+        options=replace(FPMCollectionOptions.from_args(cli._parser().parse_args(argv)), **changes),
+    )
+
+
+def test_glm_collection_plan_freezes_the_generated_point_list(tmp_path):
+    from collector.fpm_forward.glm53flash_points import glm_point_manifest
+
+    plan = _glm_plan(tmp_path)
+    _, canonical, digest = glm_point_manifest(
+        hash_block_size=2176,
+        token_budget=8192,
+        prefill_batch_limit=256,
+        decode_batch_limit=256,
+        measured_context=131072,
+        kv_cache_bytes=185_126_092_800,
+        page_size_bytes=13_516_800,
+        state_groups=5,
+        # The KDA groups of the fixture profile hold no prefill checkpoint block.
+        checkpoint_alignment=None,
+        checkpoint_groups=0,
+    )
+    saved = plan.to_dict()
+
+    assert plan.options.vllm_max_model_len == 1_048_576
+    assert plan.options.benchmark_points_origin == "glm53flash_grid_v1"
+    assert (plan.options.benchmark_points_json, plan.options.benchmark_points_sha256) == (canonical, digest)
+    assert saved["point_generation"]["source"] == "generated_glm53flash_grid"
+    assert saved["point_generation"]["planned_point_count"] == 537
+    assert saved["point_generation"]["manifest_sha256"] == digest
+    assert saved["options"]["benchmark_points"]["origin"] == "glm53flash_grid_v1"
+    # The plan hash covers the list and its origin, so a saved plan validates and a second build reproduces it.
+    runtime_memory.validate_saved_plan(saved)
+    assert _glm_plan(tmp_path).sha256 == plan.sha256
+    with pytest.raises(ValueError) as error:
+        _glm_plan(tmp_path, hash_block_size_tokens=None)
+    assert str(error.value) == "GLM-5.3-Flash collection requires the accepted profile's hash_block_size_tokens"
+    deepseek = planner.build_collection_plan(
+        backend="vllm",
+        model_path="deepseek-ai/DeepSeek-V4.1-Flash",
+        system="b200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=True)),
+        model_architecture="DeepseekV41ForCausalLM",
+        has_model_cases=False,
+        collector_config={"aic_database_version": "0.27.0"},
+    )
+    for other in (_pending_plan(), deepseek):
+        assert "benchmark_points" not in other.to_dict()["options"]
+
+
+def test_glm_collection_plan_with_prefill_checkpoint_blocks_keeps_every_prefill(tmp_path):
+    from collector.fpm_forward.glm53flash_points import glm_point_manifest
+
+    # The KDA groups of a FlashKDA launch hold one prefill checkpoint block aligned to 16 tokens. vLLM 0.33.0 then saves
+    # the checkpoint inside every planned prefill chunk, so the align rule drops no point.
+    plan = _glm_plan(tmp_path, kda_checkpoint_alignment=16)
+    _, canonical, digest = glm_point_manifest(
+        hash_block_size=2176,
+        token_budget=8192,
+        prefill_batch_limit=256,
+        decode_batch_limit=256,
+        measured_context=131072,
+        kv_cache_bytes=185_126_092_800,
+        page_size_bytes=13_516_800,
+        state_groups=5,
+        checkpoint_alignment=16,
+        checkpoint_groups=4,
+    )
+    saved = plan.to_dict()
+
+    assert (plan.options.benchmark_points_json, plan.options.benchmark_points_sha256) == (canonical, digest)
+    assert digest == "2c81f2f524251c18a5a0c33607544695042c48f8151f2b9c3f067d983fa4cbc6"
+    assert saved["point_generation"]["planned_point_count"] == 577
+    # The capacity term counts the four checkpoint blocks of each request, and the cache still holds every point.
+    assert saved["point_generation"]["dropped_points"] == {
+        "prefill": {"candidates": 496, "mamba_align_split": 0, "cache_capacity": 0},
+        "decode": {"candidates": 97, "token_budget": 16, "cache_capacity": 0},
+    }
+    runtime_memory.validate_saved_plan(saved)
+
+
+def test_glm_collection_plan_records_the_points_that_each_rule_drops(tmp_path):
+    plan = _glm_plan(tmp_path)
+    saved = plan.to_dict()
+    # The counts of the generator's log line. Onboarding sets no log handler, so the plan keeps them.
+    dropped = {
+        "prefill": {"candidates": 496, "mamba_align_split": 40, "cache_capacity": 0},
+        "decode": {"candidates": 97, "token_budget": 16, "cache_capacity": 0},
+    }
+
+    assert saved["point_generation"]["dropped_points"] == dropped
+    assert saved["options"]["benchmark_points"]["dropped"] == dropped
+    # Each phase keeps its candidates minus the points that its rules drop.
+    assert saved["point_generation"]["planned_point_count"] == sum(
+        counts["candidates"] - sum(value for name, value in counts.items() if name != "candidates")
+        for counts in dropped.values()
+    )
+    # The plan hash covers the counts, so a saved plan validates. A plan without a generated list records none.
+    runtime_memory.validate_saved_plan(saved)
+    assert "dropped_points" not in _pending_plan().to_dict()["point_generation"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"max_num_seqs": None}, {"max_num_seqs": None, "max_prefill_batch_size": None, "max_decode_batch_size": 256}],
+    ids=["decode", "prefill"],
+)
+def test_glm_collection_plan_requires_batch_limits(tmp_path, changes):
+    # The runtime falls back to the profile's batch size, but the list needs the limit of each phase.
+    with pytest.raises(ValueError) as error:
+        _glm_plan(tmp_path, **changes)
+    assert str(error.value) == "GLM-5.3-Flash collection requires --fpm-max-num-seqs or the per-phase batch limits"
+
+
+@pytest.mark.parametrize(
+    ("revision", "accepted"),
+    [
+        ("v1.0", False),
+        ("04c4e9e", False),
+        ("04C4E9E95C5DA8862DCED7E5056455116F83A7E0", False),
+        ("04c4e9e95c5da8862dced7e5056455116f83a7e0", True),
+    ],
+    ids=["tag", "short_hash", "uppercase", "commit"],
+)
+def test_glm_collection_plan_requires_a_commit_revision(tmp_path, revision, accepted):
+    # vLLM loads this revision, and the producer reads the tokenizer and the configuration of the same revision. The
+    # producer refuses anything but 40 lowercase hex characters only after the engine starts, so planning refuses it.
+    if accepted:
+        assert _glm_plan(tmp_path, model_revision=revision).fpm_profile.model_revision == revision
+        return
+    with pytest.raises(ValueError) as error:
+        _glm_plan(tmp_path, model_revision=revision)
+    assert str(error.value) == (
+        f"GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got {revision!r}"
+    )
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_collection_plan_takes_the_revision_of_the_probe_launch(tmp_path):
+    # Like the runner, the planner takes the revision of the accepted probe launch before the one of the profile.
+    with pytest.raises(ValueError) as error:
+        _probe_backed_glm_plan(tmp_path, launch_revision="v1.0")
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got 'v1.0'"
+    )
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_saved_glm_plan_reloads_with_its_generated_point_list(tmp_path):
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    # Readiness and the runtime bindings reload every saved campaign and compare its hash with the checkpoint.
+    for plan, origin in ((_glm_plan(tmp_path), "glm53flash_grid_v1"), (_pending_plan(), None)):
+        campaign = tmp_path / "fpm-artifacts" / plan.sha256[:16]
+        runner._atomic_json(campaign / "collection-plan.json", plan.to_dict())
+        loaded = load_repeatability_source(campaign)
+        assert loaded.sha256 == plan.sha256
+        assert loaded.options.benchmark_points_origin == origin
+        assert loaded.to_dict() == plan.to_dict()
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_bounded_sample_of_a_saved_glm_plan_is_an_explicit_list(tmp_path):
+    from collector.fpm_forward.repeatability import _subset_plan, load_repeatability_source
+
+    points = {
+        "schema_version": 3,
+        "prefill": [{"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0}],
+        "decode": [],
+    }
+
+    def samples(plan):
+        campaign = tmp_path / "fpm-artifacts" / plan.sha256[:16]
+        runner._atomic_json(campaign / "collection-plan.json", plan.to_dict())
+        source = load_repeatability_source(campaign)
+        prefill = next(cell for cell in source.cells if cell.workload_kind == "prefill")
+        selected = {"cell_id": prefill.cell_id, "benchmark_points": points}
+        bounded = _subset_plan(source, selected)
+        assert json.loads(bounded.options.benchmark_points_json) == points
+        # The source options with only the list replaced.
+        listed = replace(
+            source.options,
+            benchmark_points_json=bounded.options.benchmark_points_json,
+            benchmark_points_sha256=bounded.options.benchmark_points_sha256,
+        )
+        return source, listed, bounded, _subset_plan(source, selected, comparison_mode="full_grid")
+
+    # A bounded sample measures points that the generator did not choose, so its list is explicit. A full-grid
+    # sample measures the generated list itself.
+    source, listed, bounded, full = samples(_glm_plan(tmp_path))
+    assert source.options.benchmark_points_origin == "glm53flash_grid_v1"
+    # Nor does it keep the drop counts of the generated list.
+    assert bounded.options == replace(listed, benchmark_points_origin=None, benchmark_points_dropped_json=None)
+    assert bounded.to_dict()["point_generation"]["source"] == "frozen_explicit_manifest"
+    assert "dropped_points" not in bounded.to_dict()["point_generation"]
+    assert full.options == source.options
+    # A sample of a plan without an origin changes only its list, as before.
+    _source, listed, bounded, _full = samples(_pending_plan())
+    assert bounded.options == listed
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_collection_cells_render_the_producer_launch(tmp_path):
+    from collector.fpm_forward.runtime_probe import RuntimeProbePlan
+
+    plan = _glm_plan(tmp_path)
+    assert (plan.options.warmup_iterations, plan.options.vllm_max_model_len) == (0, 1_048_576)
+    assert getattr(plan, "probe_sampling", None) is None
+    producer_env = {
+        "DYN_FPM_GLM53FLASH_REAL_KV": "1",
+        "DYN_FPM_GLM53FLASH_PREFIX_SEED": "1",
+        "DYN_FPM_BENCH_COLLECT_IMBALANCED": "1",
+        # The plan has no probe launch, so the revision is the one of the accepted profile.
+        "DYN_FPM_TOKENIZER_REVISION": _GLM_REVISION,
+        # The deepest measured context, which a 1,048,576-token runtime context holds with its seven extra positions.
+        "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT": "131072",
+        "PYTHONPATH": "/tmp/fpm-bench:/opt/glm53flash-dynamo",
+    }
+
+    def launch(plan, cell, smoke=False):
+        overrides = runner._cell_generator_overrides(plan, cell, {}, smoke=smoke)
+        env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+        return overrides["params"]["agg"]["extra_cli_args"], env
+
+    for cell in plan.cells:
+        for smoke in (False, True):
+            args, env = launch(plan, cell, smoke)
+            assert {"--language-model-only", "--cudagraph-metrics"} <= set(args)
+            # The producer requires synchronous scheduling. Prefill has the flag already, so each phase has it once.
+            assert args.count("--no-async-scheduling") == 1
+            assert args[args.index("--benchmark-warmup-iterations") + 1] == "0"
+            assert args[args.index("--benchmark-points-file") + 1] == "/tmp/fpm-bench/benchmark-points.json"
+            # The native hash block stays the prefix-match unit of the producer.
+            assert not any(argument.startswith("--prefix-match-unit") for argument in args)
+            assert "DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT" not in env
+            assert {name: env.get(name) for name in producer_env} == producer_env
+            # vLLM loads the revision whose configuration and tokenizer the producer reads. Without the flag it loads
+            # the default branch of a Hub ID.
+            assert args.count("--revision") == 1
+            assert args[args.index("--revision") + 1] == producer_env["DYN_FPM_TOKENIZER_REVISION"]
+
+    with pytest.raises(ValueError) as error:
+        launch(replace(plan, options=replace(plan.options, warmup_iterations=5)), plan.cells[0])
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires warmup_iterations 0. The producer runs its own warm-ups"
+    )
+    listless = replace(
+        plan.options, benchmark_points_json=None, benchmark_points_sha256=None, benchmark_points_origin=None
+    )
+    with pytest.raises(ValueError) as error:
+        launch(replace(plan, options=listless), plan.cells[0])
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires a frozen point list; plan with the accepted runtime probe"
+    )
+
+    # A runtime probe of the same deployment measures the generic grid, with any global warm-up.
+    probe = RuntimeProbePlan(
+        "gb300-tp4",
+        json.dumps({"identity": {"model": plan.model_path, "model_revision": "a" * 40}}),
+        replace(listless, warmup_iterations=5),
+        plan.capability,
+        plan.cells,
+        SimpleNamespace(manifest={"runtime": {"version": "0.33.0"}}),
+        plan.sha256,
+    )
+    for cell in probe.cells:
+        args, env = launch(probe, cell)
+        assert "--language-model-only" in args
+        assert {"--benchmark-points-file", "--cudagraph-metrics"}.isdisjoint(args)
+        assert set(producer_env).isdisjoint(env)
+
+
+def _probe_backed_glm_plan(tmp_path, *, tp=4, precision=None, launch_revision=None):
+    """The GLM-5.3-Flash collection plan of guided collection, bound to the accepted runtime probe.
+
+    The planner gets the inputs of the onboarding collector command: the case plan of the Hub ID, whose packaged
+    configuration is FP8 with 128 x 128 weight blocks, the limits of the request, a stand-in vLLM 0.33.0
+    instrumentation bundle, the pure-TP probe launch on GB300 (TP 4 unless ``tp`` says otherwise) with a stand-in
+    Kubernetes deployment, and the profile that the probe import accepts, with the cache resources that the probe
+    measured at TP 4. Another ``tp`` keeps those resources. ``precision`` replaces GEMM, MoE, FMHA and KV-cache labels
+    of the launch and the profile, which are the labels of that checkpoint by default. ``launch_revision`` replaces
+    the model revision of the launch only. Return the plan and the deployment inputs that it was planned with.
+    """
+    from collector.model_cases import build_collection_case_plan
+
+    from .test_fpm_glm53flash_prefix_seed import LOADED_REVISION
+    from .test_runtime_instrumentation import _manifest
+    from .test_runtime_observations import glm_tp4_cache_groups
+
+    model, system = "zai-org/GLM-5.3-Flash", "gb300"
+    manifest, declaration = _manifest(tmp_path)
+    declaration["runtime"]["version"] = "0.33.0"
+    manifest.write_text(json.dumps(declaration))
+    config = tmp_path / "config.json"
+    config.write_bytes((_MODEL_CONFIGS / "zai-org--GLM-5.3-Flash_config.json").read_bytes())
+    topology = {"tp": tp, "pp": 1, "dp": 1, "moe_tp": tp, "moe_ep": 1, "cp": 1}
+    labels = {
+        "gemm_quant_mode": "fp8_block",
+        "moe_quant_mode": "fp8_block",
+        "fmha_quant_mode": "fp8",
+        "kvcache_quant_mode": "fp8",
+        **(precision or {}),
+    }
+    precision = {
+        **{name: labels[name] for name in ("gemm_quant_mode", "moe_quant_mode", "fmha_quant_mode")},
+        "comm_quant_mode": "half",
+    }
+    profile = {
+        "schema_version": 1,
+        "model": model,
+        "model_revision": LOADED_REVISION,
+        "architecture": "Glm5NextForConditionalGeneration",
+        "context_length": 1_048_576,
+        "num_experts": 288,
+        "provenance": "Collector test declaration; not a measured memory qualification.",
+        "deployments": [
+            {
+                "system": system,
+                "backend": "vllm",
+                "backend_version": "0.33.0",
+                **{name: topology[name] for name in ("tp", "dp", "moe_tp", "moe_ep")},
+                **precision,
+                "kv_cache_dtype": labels["kvcache_quant_mode"],
+                "resources": {
+                    "runtime_memory": {
+                        "kv_cache_bytes": 185_126_092_800,
+                        "gpu_memory_utilization": 0.9,
+                        "max_model_len": 1_048_576,
+                        "provenance": "Runtime probe capacity of GLM-5.3-Flash at TP 4, declared for this test.",
+                        "enable_prefix_caching": True,
+                        "mamba_cache_mode": "align",
+                        "hash_block_size_tokens": 2176,
+                    },
+                    "cache_layout": "grouped",
+                    "cache_groups": glm_tp4_cache_groups(),
+                    "max_num_tokens": 8192,
+                    "max_batch_size": 256,
+                    "provenance": "Runtime probe resources of GLM-5.3-Flash at TP 4, declared for this test.",
+                },
+            }
+        ],
+    }
+    image = "example/vllm-runtime@sha256:" + "a" * 64
+    launch = {
+        "identity": {
+            "model": model,
+            "model_revision": launch_revision or LOADED_REVISION,
+            "model_kind": "moe",
+            "framework": "vllm",
+            "framework_version": "0.33.0",
+            "runtime_framework_version": "0.33.0",
+            "gpu": system,
+            "interconnect": "nvlink",
+        },
+        "topology": topology,
+        "precision": {**precision, "kvcache_quant_mode": labels["kvcache_quant_mode"]},
+        "collection": {
+            "max_model_len": 1_048_576,
+            "max_num_batched_tokens": 8192,
+            "max_num_seqs": 256,
+            "gpu_memory_utilization": 0.9,
+            "prefill_cudagraph_policy": "runtime",
+            "warmup_iterations": 0,
+        },
+        "model_config": {"path": str(config), "sha256": hashlib.sha256(config.read_bytes()).hexdigest()},
+        "deployment": {"executor": "kubernetes", "image": image},
+    }
+    argv = [
+        "--model-path",
+        model,
+        "--gpu",
+        system,
+        "--fpm-max-gpus",
+        str(tp),
+        "--fpm-gpu-counts",
+        str(tp),
+        "--fpm-parallel-presets",
+        "pure_tp",
+        "--fpm-max-model-len",
+        "1048576",
+        "--fpm-max-num-batched-tokens",
+        "8192",
+        "--fpm-max-num-seqs",
+        "256",
+        "--fpm-max-prefill-isl",
+        "8192",
+        "--fpm-max-prefill-batch-size",
+        "256",
+        "--fpm-prefill-cudagraph-policy",
+        "runtime",
+        "--fpm-gpu-memory-utilization",
+        "0.9",
+        "--fpm-warmup-iterations",
+        "0",
+        "--fpm-weight-quantizations",
+        labels["gemm_quant_mode"],
+        "--fpm-kv-cache-dtypes",
+        labels["kvcache_quant_mode"],
+    ]
+    overrides = {"K8sConfig": {"k8s_image": image}}
+    case_plan = build_collection_case_plan(backend="vllm", model_path=model, gpu_type=system)
+    plan = planner.build_collection_plan(
+        backend="vllm",
+        model_path=model,
+        system=system,
+        selected_ops=set(case_plan.selected_ops),
+        options=FPMCollectionOptions.from_args(cli._parser().parse_args(argv)),
+        model_architecture=case_plan.model_architecture,
+        has_model_cases=bool(case_plan.model_cases_paths),
+        fpm_profile=profile,
+        collector_config={"runtime_backend_version": "0.33.0", "aic_database_version": "0.33.0"},
+        generator_overrides=overrides,
+        runtime_instrumentation=str(manifest),
+        runtime_launch=launch,
+        runtime_configuration=f"gb300-tp{tp}",
+    )
+    return plan, overrides
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_probe_backed_glm_collection_renders_the_producer_launch(tmp_path):
+    plan, _overrides = _probe_backed_glm_plan(tmp_path)
+    revision = plan.runtime_launch["identity"]["model_revision"]
+    assert re.fullmatch(r"[0-9a-f]{40}", revision)
+    assert (plan.runtime_backend_version, plan.options.benchmark_points_origin) == ("0.33.0", "glm53flash_grid_v1")
+    adapter = Path(runner.__file__).parent / "runtime/glm53flash/runtime-paths.json"
+    producer_env = {
+        "DYN_FPM_GLM53FLASH_REAL_KV": "1",
+        "DYN_FPM_GLM53FLASH_PREFIX_SEED": "1",
+        "DYN_FPM_BENCH_COLLECT_IMBALANCED": "1",
+        "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT": "131072",
+        # The producer reads the tokenizer and configuration of the revision that the engine loads.
+        "DYN_FPM_TOKENIZER_REVISION": revision,
+        "PYTHONPATH": "/tmp/fpm-bench:" + json.loads(adapter.read_text())["python_path"],
+        "AISIMULATE_RUNTIME_CONTEXT": "/tmp/fpm-bench/runtime-probe-context.json",
+        "AISIMULATE_RUNTIME_INSTRUMENTATION": "/tmp/fpm-bench/runtime-instrumentation/manifest.json",
+        "AISIMULATE_RUNTIME_OBSERVATION_DIR": "/results",
+    }
+    for cell in plan.cells:
+        for smoke in (False, True):
+            overrides = runner._cell_generator_overrides(plan, cell, {}, smoke=smoke)
+            args = overrides["params"]["agg"]["extra_cli_args"]
+            env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+            assert args.count("--revision") == 1
+            assert args[args.index("--revision") + 1] == revision
+            # Formal collection runs the classes of the probe's instrumentation, not the vLLM 0.27.0 memory observer.
+            assert args.count("--worker-cls") == args.count("--scheduler-cls") == 1
+            assert args[args.index("--worker-cls") + 1] == "fpm_runtime_instrumentation.ObservedWorker"
+            assert args[args.index("--scheduler-cls") + 1] == (
+                "fpm_runtime_instrumentation.ObservedInstrumentedScheduler"
+            )
+            assert not any(argument.startswith(("fpm_memory_worker.", "fpm_memory_scheduler.")) for argument in args)
+            # Memory observation and the producer both require synchronous scheduling, and each phase has it once.
+            assert args.count("--no-async-scheduling") == 1
+            assert "--cudagraph-metrics" in args
+            assert args[args.index("--benchmark-warmup-iterations") + 1] == "0"
+            assert args[args.index("--benchmark-points-file") + 1] == "/tmp/fpm-bench/benchmark-points.json"
+            assert {name: env.get(name) for name in producer_env} == producer_env
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_stages_the_four_point_subset(tmp_path):
+    plan = _glm_plan(tmp_path)
+    frozen = json.loads(plan.options.benchmark_points_json)
+
+    def staged(name, cell, smoke):
+        directory = tmp_path / name
+        directory.mkdir()
+        [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=smoke)
+        assert path == directory / runner.POINTS_FILENAME
+        return path.read_bytes()
+
+    for cell in plan.cells:
+        subset = staged(f"smoke-{cell.workload_kind}", cell, True)
+        # One 64-token request without a prefix and after one hash block of prefix, and the decode of one and of two
+        # requests at the smallest context of the list above one hash block. The KDA groups of the fixture profile hold
+        # no prefill checkpoint block, so vLLM 0.33.0 cuts the prefill of two hash blocks after one block of prefix, and
+        # the list does not hold it.
+        assert json.loads(subset) == {
+            "schema_version": 3,
+            "prefill": [
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+            ],
+            "decode": [
+                {"batch_size": 1, "total_kv_read_tokens": 4096},
+                {"batch_size": 2, "total_kv_read_tokens": 8192},
+            ],
+        }
+        # Both cells of an aggregated plan stage the same four points, byte for byte.
+        assert hashlib.sha256(subset).hexdigest() == "60e85d447ea36458a4d6a7f584d6709e7c02f7b1c1f306c4af18f353c93d14ce"
+        # The smoke measures points of the frozen list, so smoke and formal collection share one plan hash.
+        for phase in ("prefill", "decode"):
+            assert all(point in frozen[phase] for point in json.loads(subset)[phase])
+        # A decode cell also records the prefix caching that the producer requires.
+        policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
+        assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+            "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+            "requested_point_count": {"prefill": 2, "decode": 2}[cell.workload_kind],
+            "smoke_manifest": "glm53flash_grid_v1_smoke",
+            **policy,
+        }
+        full = staged(f"formal-{cell.workload_kind}", cell, False)
+        assert full.decode() == plan.options.benchmark_points_json
+        assert len(json.loads(full)["prefill"]) == 456
+        assert runner._configured_sampling_metadata(plan, cell, smoke=False) == {
+            "benchmark_points_sha256": plan.options.benchmark_points_sha256,
+            "requested_point_count": {"prefill": 456, "decode": 81}[cell.workload_kind],
+            "benchmark_points_origin": "glm53flash_grid_v1",
+            **policy,
+        }
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_with_prefill_checkpoint_blocks_stages_the_five_point_subset(tmp_path):
+    plan = _glm_plan(tmp_path, kda_checkpoint_alignment=16)
+    frozen = json.loads(plan.options.benchmark_points_json)
+
+    for cell in plan.cells:
+        directory = tmp_path / f"smoke-{cell.workload_kind}"
+        directory.mkdir()
+        [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+        subset = path.read_bytes()
+        # With an internal checkpoint, the list holds the prefill of two hash blocks after one block of prefix, so the
+        # smoke takes it as its third prefill point.
+        assert json.loads(subset) == {
+            "schema_version": 3,
+            "prefill": [
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+                {"batch_size": 1, "total_prefill_tokens": 4352, "total_kv_read_tokens": 2176},
+            ],
+            "decode": [
+                {"batch_size": 1, "total_kv_read_tokens": 4096},
+                {"batch_size": 2, "total_kv_read_tokens": 8192},
+            ],
+        }
+        assert hashlib.sha256(subset).hexdigest() == "35060cd4787dc7cb14fb00480359fa5c63a907bd514692e0397f839315c018fd"
+        for phase in ("prefill", "decode"):
+            assert all(point in frozen[phase] for point in json.loads(subset)[phase])
+        policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
+        assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+            "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+            "requested_point_count": {"prefill": 3, "decode": 2}[cell.workload_kind],
+            "smoke_manifest": "glm53flash_grid_v1_smoke",
+            **policy,
+        }
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_of_a_one_sequence_request_stages_points_of_one_request(tmp_path):
+    # A request with max_batch_size 1 reaches the collector as --fpm-max-num-seqs 1 and --fpm-max-prefill-batch-size 1.
+    plan = _glm_plan(tmp_path, max_batch_size=1)
+    assert (plan.options.max_num_seqs, plan.options.max_prefill_batch_size) == (1, 1)
+    frozen = json.loads(plan.options.benchmark_points_json)
+    assert {point["batch_size"] for phase in ("prefill", "decode") for point in frozen[phase]} == {1}
+
+    for cell in plan.cells:
+        directory = tmp_path / f"smoke-{cell.workload_kind}"
+        directory.mkdir()
+        [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+        subset = path.read_bytes()
+        # No decode point of two requests exists, so the decode points are one request at two contexts.
+        assert json.loads(subset) == {
+            "schema_version": 3,
+            "prefill": [
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+            ],
+            "decode": [
+                {"batch_size": 1, "total_kv_read_tokens": 4096},
+                {"batch_size": 1, "total_kv_read_tokens": 8192},
+            ],
+        }
+        for phase in ("prefill", "decode"):
+            assert all(point in frozen[phase] for point in json.loads(subset)[phase])
+        policy = {"decode_prefix_caching": "enabled"} if cell.workload_kind == "decode" else {}
+        assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+            "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+            "requested_point_count": {"prefill": 2, "decode": 2}[cell.workload_kind],
+            "smoke_manifest": "glm53flash_grid_v1_smoke",
+            **policy,
+        }
+        # Formal collection still stages the whole list under the same plan hash.
+        formal_directory = tmp_path / f"formal-{cell.workload_kind}"
+        formal_directory.mkdir()
+        [formal] = runner._stage_points_file(plan, formal_directory, cell=cell, smoke=False)
+        assert formal.read_bytes().decode() == plan.options.benchmark_points_json
+
+
+_FOUR_POINTS_TEXT = "GLM-5.3-Flash smoke subset requires the generated list to hold its four points"
+
+
+def _glm_short_request_plan(tmp_path, worker_type):
+    """The plan of a GLM-5.3-Flash request limited to one sequence, 4,096 tokens and a 4,096-token context."""
+    return _glm_plan(tmp_path, max_batch_size=1, max_num_tokens=4096, worker_type=worker_type, vllm_max_model_len=4096)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_of_a_prefill_role_stages_its_two_prefill_points(tmp_path):
+    plan = _glm_short_request_plan(tmp_path, "prefill")
+    frozen = json.loads(plan.options.benchmark_points_json)
+    # The measured context is 4,089 tokens. The list holds both smoke prefill points, but only one decode context above
+    # the hash block of 2,176 tokens, so it has no second decode point for the smoke to take.
+    assert {
+        point["total_kv_read_tokens"] // point["batch_size"]
+        for point in frozen["decode"]
+        if point["total_kv_read_tokens"] // point["batch_size"] > 2176
+    } == {4089}
+    [cell] = plan.cells
+    assert cell.workload_kind == "prefill"
+
+    # The role never measures a decode point, so the smoke stages the two prefill points and no decode point.
+    directory = tmp_path / "smoke"
+    directory.mkdir()
+    [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+    subset = path.read_bytes()
+    assert json.loads(subset) == {
+        "schema_version": 3,
+        "prefill": [
+            {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+            {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+        ],
+        "decode": [],
+    }
+    assert all(point in frozen["prefill"] for point in json.loads(subset)["prefill"])
+    assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+        "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+        "requested_point_count": 2,
+        "smoke_manifest": "glm53flash_grid_v1_smoke",
+    }
+    overrides = runner._cell_generator_overrides(plan, cell, {}, smoke=True)
+    assert "--benchmark-points-file" in overrides["params"]["agg"]["extra_cli_args"]
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+@pytest.mark.parametrize("worker_type", ["aggregated", None])
+def test_glm_smoke_of_an_aggregated_request_still_needs_both_phases(tmp_path, worker_type):
+    # The same limits as the prefill role above, collected for both phases, leave the decode phase one point short.
+    plan = _glm_short_request_plan(tmp_path, worker_type)
+    assert {cell.workload_kind for cell in plan.cells} == {"prefill", "decode"}
+    for cell in plan.cells:
+        directory = tmp_path / f"smoke-{cell.workload_kind}"
+        directory.mkdir()
+        with pytest.raises(ValueError) as error:
+            runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+        assert str(error.value) == _FOUR_POINTS_TEXT
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_of_a_decode_role_stages_its_two_decode_points(tmp_path):
+    # A token budget of 32 holds no prefill point of 64 new tokens, so the list lacks the prefill smoke points.
+    limits = {"max_batch_size": 8, "max_num_tokens": 32}
+    plan = _glm_plan(tmp_path, worker_type="decode", **limits)
+    frozen = json.loads(plan.options.benchmark_points_json)
+    assert not any(point["total_prefill_tokens"] == 64 for point in frozen["prefill"])
+    [cell] = plan.cells
+    assert cell.workload_kind == "decode"
+
+    directory = tmp_path / "smoke"
+    directory.mkdir()
+    [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=True)
+    subset = path.read_bytes()
+    # The budget of 32 tokens cannot prefill the suffixes of two requests above one hash block in one step, so the list
+    # has one request there, and the smoke takes one request at each of the two smallest contexts above the block.
+    assert json.loads(subset) == {
+        "schema_version": 3,
+        "prefill": [],
+        "decode": [
+            {"batch_size": 1, "total_kv_read_tokens": 4096},
+            {"batch_size": 1, "total_kv_read_tokens": 8192},
+        ],
+    }
+    assert all(point in frozen["decode"] for point in json.loads(subset)["decode"])
+    assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+        "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+        "requested_point_count": 2,
+        "smoke_manifest": "glm53flash_grid_v1_smoke",
+        "decode_prefix_caching": "enabled",
+    }
+
+    # An aggregated plan of the same limits measures the prefill phase too, and the list cannot serve it.
+    aggregated = _glm_plan(tmp_path, worker_type="aggregated", **limits)
+    for cell in aggregated.cells:
+        with pytest.raises(ValueError) as error:
+            runner._stage_points_file(aggregated, directory, cell=cell, smoke=True)
+        assert str(error.value) == _FOUR_POINTS_TEXT
+
+
+def test_glm_collection_without_a_model_revision_is_refused(tmp_path):
+    architecture = "Glm5NextForConditionalGeneration"
+    path = _mixed_attention_config(tmp_path, architecture, True)
+    points = tmp_path / "points.json"
+    points.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "prefill": [{"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0}],
+                "decode": [{"batch_size": 1, "total_kv_read_tokens": 4096}],
+            }
+        )
+    )
+    # Direct collector use with a user point list, and with neither an accepted probe launch nor an FPM profile.
+    with pytest.raises(ValueError) as error:
+        planner.build_collection_plan(
+            backend="vllm",
+            model_path=str(path),
+            system="b200_sxm",
+            selected_ops={"attention_context", "attention_generation"},
+            options=FPMCollectionOptions.from_args(
+                _args(fpm_benchmark_points_file=str(points), fpm_warmup_iterations=0)
+            ),
+            model_architecture=architecture,
+            has_model_cases=False,
+            model_config_path=str(path),
+            collector_config={"aic_database_version": "0.27.0"},
+        )
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires a model revision of 40 lowercase hex characters, got None"
+    )
+    # The runner keeps its own refusal for a plan without either, such as a plan saved before planning refused it.
+    plan = replace(_glm_plan(tmp_path), _fpm_profile_json=None)
+    assert (plan.runtime_launch, plan.fpm_profile) == (None, None)
+    for cell in plan.cells:
+        with pytest.raises(ValueError) as error:
+            runner._cell_generator_overrides(plan, cell, {})
+        assert str(error.value) == (
+            "GLM-5.3-Flash collection requires a probe launch or an FPM profile that names the model revision"
+        )
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
@@ -1885,6 +2968,34 @@ def test_historical_v10_plan_keeps_hash_and_reaches_native_aggregation(tmp_path)
         assert row["source_plan_sha256"] == frozen.sha256
         assert tuple(row[name] for name in EXECUTION_COLUMNS) == LEGACY_EXECUTION_IDENTITY
     assert fixture.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "template_id", [None, GENERIC_RUNTIME_TEMPLATE_ID], ids=["template-of-the-plan", "generic-runtime-template"]
+)
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_non_glm_plans_keep_the_approved_moe_tp_skip(tmp_path, template_id):
+    from collector.fpm_forward import database
+
+    plan = _pending_plan()
+    if template_id is not None:
+        plan = replace(plan, capability=replace(plan.capability, template_id=template_id))
+    # A warm-up skip is refused for the strategies that require the warm-up, so the cell takes the tp strategy.
+    decode = next(cell for cell in plan.cells if cell.workload_kind == "decode" and cell.topology.dp == 1)
+    cell = replace(decode, parallel_strategy="tp")
+    assert not cell.execution_identity[0]
+    unit = tmp_path / "raw/node0000"
+    unit.mkdir(parents=True)
+    provenance_path = unit / "collector-provenance.json"
+    _write_provenance(provenance_path, cell_id=cell.cell_id, plan_sha256=plan.sha256, attempt_id="attempt")
+    provenance = json.loads(provenance_path.read_text())
+    provenance["runtime"]["backend_version"] = plan.runtime_backend_version
+    provenance_path.write_text(json.dumps(provenance))
+    payload = _native_payload(phase="decode", rank=0, dp=1)
+    payload["kvwarm"] = {"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_balanced_by_construction"}
+    (unit / "benchmark.json").write_text(json.dumps(payload))
+    rows = database.aggregate_cell(plan, cell, tmp_path, expected_attempt_id="attempt")
+    assert [row["kv_seed_regime"] for row in rows] == ["skip:moe_tp_balanced_by_construction"]
 
 
 @pytest.mark.parametrize("schema_version", [10, 11])

@@ -195,7 +195,7 @@ def test_source_check_runs_once_per_process(fake_vllm):
 
 def _observe_both(tmp_path, monkeypatch, version):
     tmp_path.mkdir(exist_ok=True)
-    worker, _scheduler, _config = _initialized_layer_strided()
+    worker, _scheduler, cache_config = _initialized_layer_strided()
     monkeypatch.setattr(observer, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: version)
     _write_provenance(tmp_path / "collector-provenance.json", cell_id="test")
@@ -207,7 +207,10 @@ def _observe_both(tmp_path, monkeypatch, version):
         kv_cache_group_id=0,
     )
     execution_worker = SimpleNamespace(
-        vllm_config=_vllm_config(tp=1, dp=1), model_runner=SimpleNamespace(attn_groups=[[group]])
+        # vLLM 0.33.0 sets model_runner.kv_cache_config before it fills attn_groups
+        # (v1/worker/gpu_model_runner.py:7007, :7012); the observer reads it on vLLM 0.33.0.
+        vllm_config=_vllm_config(tp=1, dp=1),
+        model_runner=SimpleNamespace(attn_groups=[[group]], kv_cache_config=cache_config),
     )
     observer.observe_execution(execution_worker, dp_rank=0, tp_rank=0, pp_rank=0)
     execution = json.loads((tmp_path / "fpm-execution-worker-dp0-tp0-pp0.json").read_text())

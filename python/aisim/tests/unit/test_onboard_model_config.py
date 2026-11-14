@@ -1953,6 +1953,80 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
     assert json.loads((plan / "fpm-model-profile.json").read_text()) == request.fpm_profile.model_dump(mode="json")
 
 
+_GLM_LAUNCH_TEXT = (
+    "AISim launches and manages benchmark workers when collection is executed; no separately "
+    "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; the "
+    "GLM-5.3-Flash producer measures the point list that the collection plan freezes. Initialization and "
+    "planning do not launch GPUs."
+)
+
+
+def _requests_of_both_architectures(tmp_path, *extra, **changes):
+    """One written request, and the same request with GLM-5.3-Flash as the architecture of its profile."""
+    from collector.fpm_forward.glm53flash_points import GLM_ARCHITECTURE
+
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert cli.main([*_args(output, source, resources, **changes), *extra]) == 0
+    request = SupportRequest.from_yaml(output)
+    profile = request.fpm_profile.model_copy(update={"architecture": GLM_ARCHITECTURE})
+    return request, request.model_copy(update={"fpm_profile": profile})
+
+
+def test_plan_says_who_generates_the_points_of_a_glm_5_3_flash_collection(tmp_path):
+    from aisim.support.plan import create_plan
+    from aisim.support.schema import CollectionSpec
+
+    request, glm = _requests_of_both_architectures(tmp_path)
+    ordinary = create_plan(request, tmp_path / "ordinary")["fpm"]
+    generated = create_plan(glm, tmp_path / "glm")["fpm"]
+    # Every other model keeps the texts that leave the exact points to the runtime.
+    assert ordinary["sampling"] == (
+        "Dynamo self-benchmark generates the prefill/decode grid from CUDA graph sizes and the reviewed "
+        "runtime limits. The new-token budget, per-request context, scheduler sequence bound and total KV "
+        "capacity are separate quantities. Exact points resolve at runtime; validation traffic and SLAs "
+        "do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
+    )
+    assert ordinary["launch"] == (
+        "AISim launches and manages benchmark workers when collection is executed; no separately "
+        "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; Dynamo "
+        "self-benchmark generates and measures the feasible grid. Initialization and planning do not launch GPUs."
+    )
+    # The GLM-5.3-Flash collection plan freezes a list that the planner generates, so its count is known at plan time.
+    assert generated["sampling"] == (
+        "The GLM-5.3-Flash producer measures a point list that the collection plan generates from the "
+        "reviewed runtime limits and the accepted profile's hash block size and cache capacity. The new-token "
+        "budget, per-request context, scheduler sequence bound and total KV capacity are separate quantities. "
+        "The list is frozen into the plan, so the point count is fixed at plan time; validation traffic and "
+        "SLAs do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
+    )
+    assert generated["launch"] == _GLM_LAUNCH_TEXT
+    # A request that leaves the capture policy implicit has no launch text, and the GLM text adds none.
+    legacy = glm.model_copy(update={"collection": CollectionSpec()})
+    assert "launch" not in create_plan(legacy, tmp_path / "legacy")["fpm"]
+
+
+@pytest.mark.parametrize("role,graph", [("prefill", "PIECEWISE"), ("decode", "FULL_DECODE_ONLY")])
+def test_role_plan_says_who_generates_the_points_of_a_glm_5_3_flash_role(tmp_path, role, graph):
+    from aisim.support.plan import create_plan
+
+    captures = ["--cudagraph-capture-sizes", "1", "2", "4", "8", "--max-cudagraph-capture-size", "8"]
+    request, glm = _requests_of_both_architectures(tmp_path, *captures, worker_type=role, cudagraph_mode=graph)
+    assert create_plan(request, tmp_path / "ordinary")["fpm"]["sampling"] == (
+        f"Dynamo self-benchmark generates only the {role} grid for this accepted role. "
+        "The other role is collected independently. Decode initializes representative state locally; actual "
+        "P/D transfer is not required. Timing collection and qualification do not establish replay readiness."
+    )
+    generated = create_plan(glm, tmp_path / "glm")["fpm"]
+    assert generated["sampling"] == (
+        f"The GLM-5.3-Flash producer measures only the {role} points of the list that the "
+        "collection plan generates and freezes for this accepted role. The other role is collected "
+        "independently. Decode initializes representative state locally; actual P/D transfer is not required. "
+        "Timing collection and qualification do not establish replay readiness."
+    )
+    assert generated["launch"] == _GLM_LAUNCH_TEXT
+
+
 # Issue #475: the packaged GLM-5.3-Flash config mixes linear-attention and sparse-attention layers, so config.json
 # cannot establish its cache geometry. Intake reports it as pending the runtime probe instead of asking for bytes.
 _GLM = Path(__file__).parents[2] / "src/aisim_core/model_configs/zai-org--GLM-5.3-Flash_config.json"

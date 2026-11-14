@@ -18,7 +18,9 @@ from collector.fpm_forward.runtime_observations import validate_observations
 
 from aisim_core.fpm_profile import FpmResourceProfile
 
-from .test_fpm_runtime_memory import _vllm_config
+from .test_fpm_forward import _MODEL_CONFIGS
+from .test_fpm_profile_collection import no_models_or_timing_data  # noqa: F401
+from .test_fpm_runtime_memory import _probe_backed_glm_plan, _vllm_config
 from .test_runtime_instrumentation import _manifest
 
 pytestmark = pytest.mark.unit
@@ -519,7 +521,14 @@ def observation_fixture(
     path.write_text(json.dumps(manifest))
     bundle = load_instrumentation(path)
     model = root / "model.json"
-    model.write_text('{"model_type":"example"}')
+    # The GLM layout runs an fp8 KV cache, so collection labels FMHA with the checkpoint-native mode, fp8 for this
+    # NVFP4 checkpoint, and the import reads that label from the configuration that the probe stages.
+    quantization = {"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "FP8"}
+    model.write_text(
+        json.dumps({"model_type": "example", "quantization_config": quantization})
+        if layout == "glm_tp4"
+        else '{"model_type":"example"}'
+    )
     launch = {
         "identity": {
             "model": "example/model",
@@ -542,7 +551,7 @@ def observation_fixture(
         "precision": {
             "gemm_quant_mode": "nvfp4",
             "moe_quant_mode": "nvfp4",
-            "fmha_quant_mode": "bfloat16",
+            "fmha_quant_mode": "fp8" if layout == "glm_tp4" else "bfloat16",
             # GLM-5.3-Flash runs an fp8_e4m3 cache (audit Q1).
             "kvcache_quant_mode": "fp8" if layout == "glm_tp4" else "bfloat16",
             "comm_quant_mode": "half",
@@ -735,7 +744,32 @@ def observation_fixture(
             ref["path"] = str(Path(ref["path"]).relative_to(root))
             result["artifacts"].append({**ref, "kind": "observation"})
     _write(root / "observations.json", index)
+    # The import reads the staged configuration only for an AIC KV-cache mode other than bfloat16. The other layouts
+    # keep the evidence that they had before the probe staged copies were read.
+    if launch["precision"]["kvcache_quant_mode"] != "bfloat16":
+        stage_model_config(root / "observations.json")
     return root / "observations.json", {"tp2": launch}
+
+
+def stage_model_config(index_path):
+    """Copy the launch's model configuration and its declared sidecars into every phase, as the probe stages them.
+
+    runtime_probe.stage_runtime_instrumentation writes model-config.json and each declared sidecar into the phase
+    directory, whose artifact list then holds them. Earlier copies are replaced.
+    """
+    index = json.loads(index_path.read_text())
+    entry = index["configurations"]["tp2"]
+    config = entry["launch"]["model_config"]
+    source = Path(config["path"])
+    files = {"model-config.json": source, **{name: source.parent / name for name in config.get("source_files", {})}}
+    for phase, result in entry["attempts"][0]["phases"].items():
+        result["artifacts"] = [item for item in result["artifacts"] if Path(item["path"]).name not in files]
+        for name, origin in files.items():
+            target = index_path.parent / phase / name
+            target.write_bytes(origin.read_bytes())
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            result["artifacts"].append({"path": f"{phase}/{name}", "sha256": digest, "kind": "runtime-artifact"})
+    index_path.write_text(json.dumps(index))
 
 
 def _mutate(index_path, edit):
@@ -743,6 +777,8 @@ def _mutate(index_path, edit):
     attempt = index["configurations"]["tp2"]["attempts"][0]
     for phase in attempt["phases"].values():
         for artifact in phase["artifacts"]:
+            if artifact.get("kind") != "observation":
+                continue
             path = index_path.parent / artifact["path"]
             record = json.loads(path.read_text())
             edit(record)
@@ -1282,7 +1318,11 @@ def test_invented_observer_verdict_does_not_authorize_invalid_physical_evidence(
 def _phase_records(path, phase, kind):
     index = json.loads(path.read_text())
     artifacts = index["configurations"]["tp2"]["attempts"][0]["phases"][phase]["artifacts"]
-    records = [json.loads((path.parent / artifact["path"]).read_text()) for artifact in artifacts]
+    records = [
+        json.loads((path.parent / artifact["path"]).read_text())
+        for artifact in artifacts
+        if artifact.get("kind") == "observation"
+    ]
     return [record for record in records if record["kind"] == kind]
 
 
@@ -1433,6 +1473,171 @@ def test_v033_startup_concurrency_follows_the_mamba_cache_mode(mode, specs, conc
         return
     with pytest.raises(ValueError, match=f"but its cache groups reserve {blocks}$"):
         runtime_observations._validate_startup_concurrency(record)
+
+
+@pytest.mark.parametrize("layout", ["mamba_hybrid", "glm_tp4"])
+def test_import_reads_the_staged_model_configuration_not_the_launch_path(tmp_path, layout):
+    # Finalization and the collection verifier recheck saved evidence when the launch path can be gone. The fp8 KV
+    # cache of the GLM layout takes its FMHA label from the configuration that the probe staged. The bfloat16 KV cache
+    # of the hybrid layout needs no staged configuration.
+    path, launches = observation_fixture(tmp_path, layout=layout)
+    phases = json.loads(path.read_text())["configurations"]["tp2"]["attempts"][0]["phases"]
+    staged = [Path(item["path"]).name for phase in phases.values() for item in phase["artifacts"]]
+    assert staged.count("model-config.json") == (2 if layout == "glm_tp4" else 0)
+    Path(launches["tp2"]["model_config"]["path"]).unlink()
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+
+
+def _sidecar_fixture(tmp_path):
+    """GLM evidence of a checkpoint that names its NVFP4 quantization only in its declared hf_quant_config.json."""
+    path, launches = observation_fixture(tmp_path, layout="glm_tp4")
+    config = launches["tp2"]["model_config"]
+    model = Path(config["path"])
+    model.write_text('{"model_type":"example"}')
+    sidecar = model.parent / "hf_quant_config.json"
+    sidecar.write_text(json.dumps({"quantization": {"quant_algo": "NVFP4", "kv_cache_quant_algo": "FP8"}}))
+    config.update(
+        sha256=hashlib.sha256(model.read_bytes()).hexdigest(),
+        source_files={sidecar.name: hashlib.sha256(sidecar.read_bytes()).hexdigest()},
+    )
+    _replace_launch(path, launches)
+    _mutate(
+        path,
+        lambda record: record.update(
+            model_config_sha256=config["sha256"], model_config_source_files=config["source_files"]
+        ),
+    )
+    stage_model_config(path)
+    return path, launches
+
+
+def test_fp8_kv_import_reads_the_staged_sidecar_beside_the_staged_configuration(tmp_path):
+    path, launches = _sidecar_fixture(tmp_path)
+    # Without its sidecar this checkpoint names no quantization, and its FMHA label would be bfloat16. The loader
+    # reads the staged copy and the staged sidecar beside it, so the launch files can be gone.
+    model = Path(launches["tp2"]["model_config"]["path"])
+    model.unlink()
+    (model.parent / "hf_quant_config.json").unlink()
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+
+
+@pytest.mark.parametrize(
+    "case,diagnostic",
+    [
+        ("missing", "runtime phase must stage exactly one model-config.json, found 0"),
+        ("second_copy", "runtime phase must stage exactly one model-config.json, found 2"),
+        ("other_digest", "staged model-config.json differs from the launch model configuration SHA-256"),
+        ("undeclared_sidecar", "staged hf_quant_config.json is not declared in model_config.source_files"),
+        ("unlisted_sidecar", "staged hf_quant_config.json is not declared in model_config.source_files"),
+        ("unstaged_sidecar", "declared hf_quant_config.json is not staged beside model-config.json"),
+        ("other_sidecar_digest", "staged hf_quant_config.json differs from its declared SHA-256"),
+    ],
+)
+def test_fp8_kv_import_refuses_a_missing_or_mismatched_staged_file(tmp_path, case, diagnostic):
+    declared = case in {"unstaged_sidecar", "other_sidecar_digest"}
+    path, launches = _sidecar_fixture(tmp_path) if declared else observation_fixture(tmp_path, layout="glm_tp4")
+    assert validate_observations(path, launches)["tp2"]["status"] == "complete"
+    index = json.loads(path.read_text())
+    artifacts = index["configurations"]["tp2"]["attempts"][0]["phases"]["prefill"]["artifacts"]
+    staged = {Path(item["path"]).name: item for item in artifacts if item["kind"] == "runtime-artifact"}
+
+    def write(relative, payload, *, listed=True):
+        target = path.parent / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        if listed:
+            digest = hashlib.sha256(payload).hexdigest()
+            artifacts.append({"path": relative, "sha256": digest, "kind": "runtime-artifact"})
+
+    if case == "missing":
+        artifacts.remove(staged["model-config.json"])
+    elif case == "second_copy":
+        write("prefill/copy/model-config.json", (path.parent / "prefill/model-config.json").read_bytes())
+    elif case == "other_digest":
+        artifacts.remove(staged["model-config.json"])
+        write("prefill/model-config.json", b'{"model_type":"other"}')
+    elif case in {"undeclared_sidecar", "unlisted_sidecar"}:
+        # The loader would merge a sidecar beside the staged copy, so an unlisted one is refused too.
+        write("prefill/hf_quant_config.json", b"{}", listed=case == "undeclared_sidecar")
+    elif case == "unstaged_sidecar":
+        artifacts.remove(staged["hf_quant_config.json"])
+    else:
+        artifacts.remove(staged["hf_quant_config.json"])
+        write("prefill/hf_quant_config.json", b"{}")
+    path.write_text(json.dumps(index))
+    assert validate_observations(path, launches)["tp2"]["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+# The labels of an FP8 block checkpoint such as GLM-5.3-Flash with an fp8 KV cache. Every published GLM-5.3-Flash and
+# DeepSeek V4.1 profile with an fp8 KV cache has this FMHA label.
+_FP8_BLOCK_PRECISION = {
+    "gemm_quant_mode": "fp8_block",
+    "moe_quant_mode": "fp8_block",
+    "fmha_quant_mode": "fp8",
+    "kvcache_quant_mode": "fp8",
+}
+
+
+def _fp8_block_evidence(root, precision):
+    """GLM evidence of the packaged GLM-5.3-Flash checkpoint with ``precision``, staged as the probe stages it."""
+    path, launches = observation_fixture(root, layout="glm_tp4")
+    launch = launches["tp2"]
+    model = Path(launch["model_config"]["path"])
+    model.write_bytes((_MODEL_CONFIGS / "zai-org--GLM-5.3-Flash_config.json").read_bytes())
+    launch["model_config"]["sha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
+    launch["precision"].update(precision)
+    _replace_launch(path, launches)
+
+    def fp8_block(record):
+        record["model_config_sha256"] = launch["model_config"]["sha256"]
+        # The vLLM quantization of this checkpoint: FP8 weights in 128 x 128 blocks with dynamic activation scales.
+        record["resolved_config"]["model_config"]["quantization"] = "fp8"
+        record["resolved_config"]["quantization_config"] = {
+            "type": "vllm.model_executor.layers.quantization.fp8.Fp8Config",
+            "activation_scheme": "dynamic",
+            "weight_block_size": [128, 128],
+        }
+
+    _mutate(path, fp8_block)
+    stage_model_config(path)
+    return path, launches
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_one_fp8_block_precision_passes_the_probe_preview_the_import_and_collection_planning(tmp_path):
+    from collector.fpm_forward.runtime_probe import build_runtime_probe_plan
+
+    precision = _FP8_BLOCK_PRECISION
+    for name in ("plan", "plan-bfloat16"):
+        (tmp_path / name).mkdir()
+    # Collection planning: the profile deployment has the same labels, and the planner rechecks the probe launch.
+    plan, _ = _probe_backed_glm_plan(tmp_path / "plan", precision=precision)
+    assert {(cell.fmha_quant_mode, cell.kv_cache_dtype) for cell in plan.cells} == {("fp8", "fp8")}
+    # The probe preview of that launch, which runs before any GPU work.
+    launch, bundle = plan.runtime_launch, plan.runtime_instrumentation
+    assert {name: launch["precision"][name] for name in precision} == precision
+    build_runtime_probe_plan("gb300-tp4", launch, bundle)
+    # The import of staged evidence with the same labels.
+    path, launches = _fp8_block_evidence(tmp_path / "import", precision)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+
+    # The FMHA label of the compute dtype fails every step, and each text names the checkpoint-native fp8.
+    wrong = {**precision, "fmha_quant_mode": "bfloat16"}
+    with pytest.raises(ValueError) as error:
+        build_runtime_probe_plan("gb300-tp4", {**launch, "precision": {**launch["precision"], **wrong}}, bundle)
+    assert str(error.value) == "precision.fmha_quant_mode='bfloat16' does not match checkpoint-native 'fp8'"
+    path, launches = _fp8_block_evidence(tmp_path / "import-bfloat16", wrong)
+    assert validate_observations(path, launches)["tp2"]["diagnostics"] == [
+        "tp2: FMHA precision 'bfloat16' differs from the checkpoint-native 'fp8' for KV-cache dtype 'fp8'"
+    ]
+    with pytest.raises(ValueError) as error:
+        _probe_backed_glm_plan(tmp_path / "plan-bfloat16", precision=wrong)
+    assert str(error.value).startswith(
+        "FPM collection profile identity mismatch: fmha_quant_mode: resolved='fp8', profile='bfloat16';"
+    )
 
 
 def test_mamba_hybrid_observations_import_state_groups(tmp_path):
@@ -3058,13 +3263,22 @@ FIXTURES = Path(__file__).with_name("fixtures")
 # (models/glm5next/common/kda.py:168-176, mamba/kda_checkpoint.py:9-10).
 LIVE_STATE_GROUPS = 5
 LIVE_KDA_GROUPS = {"runtime_group_0", "runtime_group_1", "runtime_group_2", "runtime_group_3"}
+# The probe staged the checkpoint's config.json, which is byte-identical to the bundled GLM-5.3-Flash config. The
+# fixture leaves it out, and the campaign copy takes the bundled file.
+LIVE_MODEL_CONFIG = _MODEL_CONFIGS / "zai-org--GLM-5.3-Flash_config.json"
 
 
 def _campaign_from_fixture(root, fixture):
-    """A copy of a live probe record: its observation index, its one configuration, launch and active attempt."""
+    """A copy of a live probe record: its observation index, its one configuration, launch and active attempt.
+
+    The copy stages the bundled model configuration where the record lists the staged model-config.json.
+    """
     shutil.copytree(fixture, root / fixture.name)
     path = root / fixture.name / "observations.json"
     ((label, saved),) = json.loads(path.read_text())["configurations"].items()
+    for reference in saved["attempts"][0]["phases"]["prefill"]["artifacts"]:
+        if Path(reference["path"]).name == "model-config.json":
+            shutil.copyfile(LIVE_MODEL_CONFIG, path.parent / reference["path"])
     return path, label, saved["launch"], saved["active_attempt_id"]
 
 
@@ -3109,3 +3323,36 @@ def test_import_accepts_the_live_glm53flash_record_of_vllm_0330(tmp_path):
     # vLLM counts 482 attention blocks, 1 tail block and 2 + 1 blocks of each of the 4 KDA groups for one request at
     # 1,048,576 tokens: 13,697 / 495 (kv_cache_utils.py:1076-1087, kv_cache_interface.py:1135-1141).
     assert scheduler["cache"]["kv_cache_max_concurrency"] == 27.67070707070707
+    # The launch labels FMHA with fp8, the checkpoint-native mode that the staged configuration of this FP8 checkpoint
+    # gives with an fp8 KV cache, and the import keeps that label.
+    path, label, launch, _ = campaign
+    assert hashlib.sha256(LIVE_MODEL_CONFIG.read_bytes()).hexdigest() == launch["model_config"]["sha256"]
+    assert result["provenance"]["launch"]["precision"]["fmha_quant_mode"] == "fp8"
+    assert result["provenance"]["launch"]["precision"]["kvcache_quant_mode"] == "fp8"
+    references = json.loads(path.read_text())["configurations"][label]["attempts"][0]["phases"]["prefill"]["artifacts"]
+    assert runtime_observations._staged_checkpoint_fmha(path.parent, references, launch, "fp8") == "fp8"
+
+
+def test_import_refuses_the_live_glm53flash_record_declared_with_bfloat16_attention(tmp_path):
+    # A copy of the live record whose launch, launch manifest and records declare bfloat16 FMHA. The staged model
+    # configuration names fp8 for this fp8 KV cache, so the import refuses the declared label.
+    path, label, launch, attempt_id = _campaign_from_fixture(tmp_path, FIXTURES / "glm53flash_vllm_0330_probe")
+    launch["precision"]["fmha_quant_mode"] = "bfloat16"
+    index = json.loads(path.read_text())
+    index["configurations"][label]["launch"] = launch
+    phase = index["configurations"][label]["attempts"][0]["phases"]["prefill"]
+    for reference in [phase["launch_manifest"], *phase["artifacts"]]:
+        artifact = path.parent / reference["path"]
+        if artifact.name == "model-config.json":
+            continue
+        value = json.loads(artifact.read_text())
+        value["launch"] = launch
+        artifact.write_text(json.dumps(value))
+        reference["sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    path.write_text(json.dumps(index))
+    with pytest.raises(ValueError) as error:
+        _import((path, label, launch, attempt_id))
+    assert (
+        str(error.value)
+        == "FMHA precision 'bfloat16' differs from the checkpoint-native 'fp8' for KV-cache dtype 'fp8'"
+    )

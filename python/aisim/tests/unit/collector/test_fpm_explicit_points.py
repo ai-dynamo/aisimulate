@@ -81,7 +81,7 @@ def test_cli_freezes_canonical_payload_rows_and_source_mutation(tmp_path):
         "sha256": options.benchmark_points_sha256,
     }
     source.write_text("{}")
-    staged = _stage_points_file(_plan(options), tmp_path)
+    staged = _stage_points_file(_plan(options), tmp_path, cell=_cell())
     assert len(staged) == 1
     assert staged[0].name == POINTS_FILENAME
     assert staged[0].read_text() == canonical
@@ -142,12 +142,20 @@ def test_generator_owns_explicit_argument_rendering(tmp_path, phase):
 def test_default_grid_and_smoke_remain_explicitly_separate(tmp_path):
     legacy = FPMCollectionOptions.from_args(argparse.Namespace(fpm_max_gpus=4))
     assert "benchmark_points" not in legacy.to_dict()
-    assert _stage_points_file(_plan(legacy), tmp_path) == []
+    assert _stage_points_file(_plan(legacy), tmp_path, cell=_cell()) == []
     args = _cell_generator_overrides(_plan(legacy), _cell(), {}, smoke=True)["params"]["agg"]["extra_cli_args"]
     assert "--benchmark-points-file" not in args
     with pytest.raises(ValueError, match="cannot be combined with --smoke"):
         _options(tmp_path, smoke=True)
     options, _ = _options(tmp_path)
+    # A user list has no smoke subset, so every cell refuses it.
+    for refused in (
+        lambda: _stage_points_file(_plan(options), tmp_path, cell=_cell(), smoke=True),
+        lambda: _cell_generator_overrides(_plan(options), _cell(), {}, smoke=True),
+        lambda: _configured_sampling_metadata(_plan(options), _cell("decode"), smoke=True),
+    ):
+        with pytest.raises(ValueError, match="cannot be combined with --smoke"):
+            refused()
     with pytest.raises(ValueError, match="cannot be combined with --smoke"):
         run_collection(
             _plan(options),
@@ -176,14 +184,14 @@ def test_staging_rejects_modified_frozen_payload(tmp_path):
 
     plan = _plan(replace(options, benchmark_points_json="{}"))
     with pytest.raises(ValueError, match="payload and SHA256 disagree"):
-        _stage_points_file(plan, tmp_path)
+        _stage_points_file(plan, tmp_path, cell=_cell())
 
 
 @pytest.mark.parametrize("transport", ["_exec", "_exec_checked"])
 def test_runtime_hash_and_attempt_receipt_are_checked_in_both_transports(tmp_path, transport):
     options, _ = _options(tmp_path)
     plan, cell = _plan(options), _cell()
-    staged = _stage_points_file(plan, tmp_path)[0]
+    staged = _stage_points_file(plan, tmp_path, cell=cell)[0]
     raw = tmp_path / "raw"
     unit = raw / "unit"
     unit.mkdir(parents=True)

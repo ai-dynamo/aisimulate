@@ -18,11 +18,14 @@ from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from aisim.sdk.utils import _attach_inferred_quant_fields
 from aisim_core.fpm_profile import FpmResourceProfile
 from aisim_core.sdk.perf_database import load_system_spec
 
 from . import runtime_memory
+from .capabilities import checkpoint_fmha_quant_mode, has_checkpoint_fmha
 from .config import PrefillSamplingProfile, collection_phases
+from .model_capability import load_model_config
 from .planner import BackendPolicy, FPMCell
 from .runtime.fpm_memory_observer import (
     _LEGACY_SPECS,
@@ -147,6 +150,50 @@ def _artifact(root: Path, reference: dict[str, Any]) -> tuple[Path, str]:
     return path, digest
 
 
+def _source_files(launch: dict[str, Any]) -> dict[str, str]:
+    source_files = launch["model_config"].get("source_files", {})
+    if not isinstance(source_files, dict) or source_files.keys() - {"hf_quant_config.json"}:
+        raise ValueError("model configuration source files must name the adjacent hf_quant_config.json")
+    for name, digest in source_files.items():
+        validate_sha256(digest, f"model configuration source {name}")
+    return source_files
+
+
+def _staged_checkpoint_fmha(root: Path, references: list[Any], launch: dict[str, Any], kv_cache_dtype: str) -> str:
+    """The checkpoint-native FMHA label of the model configuration that a phase staged.
+
+    The finalization recheck and the collection verifier validate saved evidence when the launch path can be gone, so
+    the configuration comes from hash-bound copies. runtime_probe.stage_runtime_instrumentation writes model-config.json
+    and each declared sidecar into every probe and collection phase, and the phase lists them with their digests. The
+    collector's loader reads the copy and merges the hf_quant_config.json beside it, so that sidecar must be declared.
+    """
+    sources = _source_files(launch)
+    staged: dict[str, list[tuple[Path, str]]] = {"model-config.json": [], "hf_quant_config.json": []}
+    for reference in references:
+        name = PurePosixPath(reference["path"]).name
+        if name in staged:
+            staged[name].append(_artifact(root, reference))
+    if len(staged["model-config.json"]) != 1:
+        raise ValueError(
+            f"runtime phase must stage exactly one model-config.json, found {len(staged['model-config.json'])}"
+        )
+    path, digest = staged["model-config.json"][0]
+    if digest != launch["model_config"]["sha256"]:
+        raise ValueError("staged model-config.json differs from the launch model configuration SHA-256")
+    sidecar = path.parent / "hf_quant_config.json"
+    if "hf_quant_config.json" not in sources:
+        if staged["hf_quant_config.json"] or sidecar.exists() or sidecar.is_symlink():
+            raise ValueError("staged hf_quant_config.json is not declared in model_config.source_files")
+    elif sidecar not in {item for item, _ in staged["hf_quant_config.json"]}:
+        raise ValueError("declared hf_quant_config.json is not staged beside model-config.json")
+    elif any(value != sources["hf_quant_config.json"] for _, value in staged["hf_quant_config.json"]):
+        raise ValueError("staged hf_quant_config.json differs from its declared SHA-256")
+    config = load_model_config(launch["identity"]["model"], explicit_config_path=str(path)).effective_payload
+    _attach_inferred_quant_fields(config)
+    # The architecture as the runtime probe takes it.
+    return checkpoint_fmha_quant_mode(config, (config.get("architectures") or [None])[0], kv_cache_dtype)
+
+
 def _validate_hardware(hardware: dict[str, Any], identity: dict[str, Any]) -> None:
     system = identity["gpu"]
     family = system.split("_", 1)[0]
@@ -224,7 +271,14 @@ def _validate_record(
     bundle: InstrumentationBundle,
     binding: dict[str, str],
     cell: FPMCell,
+    checkpoint_fmha: str | None,
 ) -> dict[str, Any]:
+    """Validate one rank record of a phase.
+
+    ``checkpoint_fmha`` is the checkpoint-native FMHA label of the phase's staged model configuration. It is None for
+    a bfloat16 KV cache and for a KV-cache dtype without an AIC mode, whose FMHA precision is the observed compute
+    dtype.
+    """
     if record.get("schema_version") != OBSERVATION_SCHEMA:
         raise ValueError("unsupported runtime observation schema")
     for name, value in binding.items():
@@ -233,11 +287,7 @@ def _validate_record(
     _same(record.get("launch"), launch, "effective launch settings")
     validate_sha256(record.get("model_config_sha256"), "observed model configuration")
     _same(record["model_config_sha256"], launch["model_config"]["sha256"], "loaded model configuration hash")
-    source_files = launch["model_config"].get("source_files", {})
-    if not isinstance(source_files, dict) or source_files.keys() - {"hf_quant_config.json"}:
-        raise ValueError("model configuration source files must name the adjacent hf_quant_config.json")
-    for name, digest in source_files.items():
-        validate_sha256(digest, f"model configuration source {name}")
+    source_files = _source_files(launch)
     _same(record.get("model_config_source_files", {}), source_files, "loaded model configuration source hashes")
     _same(
         record.get("runtime"),
@@ -313,11 +363,18 @@ def _validate_record(
     if revision not in (model.get("revision"), model.get("loaded_config_commit_hash")):
         raise ValueError("observed model revision differs from the selected model")
     runtime_memory._validate_revision(config, revision)
-    if (
-        cell.fmha_quant_mode not in {"half", "bfloat16"}
-        or runtime_memory._dtype(model.get("dtype")) != cell.fmha_quant_mode
-    ):
+    observed = runtime_memory._dtype(model.get("dtype"))
+    if checkpoint_fmha is None:
+        if cell.fmha_quant_mode not in {"half", "bfloat16"} or observed != cell.fmha_quant_mode:
+            raise ValueError("FMHA precision lacks a supported observed compute-dtype mapping")
+    elif observed not in {"half", "bfloat16"}:
         raise ValueError("FMHA precision lacks a supported observed compute-dtype mapping")
+    elif cell.fmha_quant_mode != checkpoint_fmha:
+        # Collection labels this KV cache's FMHA with the checkpoint-native mode and refuses a profile with another one.
+        raise ValueError(
+            f"FMHA precision {cell.fmha_quant_mode!r} differs from the checkpoint-native {checkpoint_fmha!r} "
+            f"for KV-cache dtype {cell.kv_cache_dtype!r}"
+        )
     # The raw launch config is independent corroboration of the envelope.
     if model.get("enforce_eager") is not collection.get("enforce_eager", False):
         raise ValueError("runtime graph eager setting differs from the reviewed launch")
@@ -1259,6 +1316,12 @@ def _configuration(
         references = result.get("artifacts")
         if not isinstance(references, list):
             raise ValueError("runtime phase is missing its artifact manifest")
+        # Only an AIC KV-cache mode other than bfloat16 reads the staged model configuration.
+        checkpoint_fmha = (
+            _staged_checkpoint_fmha(root, references, launch, cell.kv_cache_dtype)
+            if has_checkpoint_fmha(cell.kv_cache_dtype)
+            else None
+        )
         for reference in references:
             path, digest = _artifact(root, reference)
             if str(path.resolve()) in used_paths:
@@ -1268,7 +1331,9 @@ def _configuration(
                 runtime_artifacts.append(copy.deepcopy(reference))
                 continue
             record = read_json(path)
-            config = _validate_record(record, launch=launch, bundle=bundle, binding=binding, cell=cell)
+            config = _validate_record(
+                record, launch=launch, bundle=bundle, binding=binding, cell=cell, checkpoint_fmha=checkpoint_fmha
+            )
             if import_binding is not None:
                 _validate_import_binding(record, import_binding, bundle)
             elif "instrumentation_binding" in record:
