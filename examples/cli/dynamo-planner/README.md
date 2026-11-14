@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Verify the Dynamo Planner installation
 
-This example runs the public AISimulate CLI with Planner enabled. It uses
+This example runs the public AISim CLI with Planner enabled. It uses
 synthetic traffic, local model metadata, fixed timing, and fixed KV capacity;
 no model weights, GPU, or Kubernetes cluster are needed. Its timings are
 synthetic and do not measure model performance or qualify scaling accuracy.
@@ -13,14 +13,14 @@ synthetic and do not measure model performance or qualify scaling accuracy.
 ## Install the matching dependencies
 
 Use Linux with Python 3.12, matching the release validation environment. From
-the AISimulate repository root, place the compatible AISimulate, `ai-dynamo`,
+the AISim repository root, place the compatible AISim, `ai-dynamo`,
 and `ai-dynamo-runtime` wheel artifacts in `./wheels/` (one of each):
 
 ```bash
 python3 -m venv .venv-planner
 source .venv-planner/bin/activate
 python3 -m pip install \
-  ./wheels/aisimulate-*.whl \
+  ./wheels/aisim-*.whl \
   ./wheels/ai_dynamo-*.whl \
   ./wheels/ai_dynamo_runtime-*.whl
 ```
@@ -43,7 +43,7 @@ python3 -m pip check
 
 The `grpcio-tools` cap matches RC9's
 [common requirements](https://github.com/ai-dynamo/dynamo/blob/ffd7c1a90eb403c0d43911690c5c9b8457acd826/container/deps/requirements.common.txt).
-AISimulate's `google-vizier` dependency can install a newer `grpcio-tools`
+AISim's `google-vizier` dependency can install a newer `grpcio-tools`
 that requires a different protobuf version. Include the cap in the same pip
 invocation as the Planner requirements so the resolver can select compatible
 versions together, including when repairing an existing environment. When
@@ -57,11 +57,11 @@ image from the same Dynamo release you intend to validate.
 
 ## Run a Planner-enabled prediction
 
-From the AISimulate repository root, using the environment above:
+From the AISim repository root, using the environment above:
 
 ```bash
-cd docs/cli/examples/dynamo-planner
-python3 -m aisimulate predict \
+cd examples/cli/dynamo-planner
+python3 -m aisim predict \
   --stack dynamo \
   --config prediction.yaml \
   --output-dir ./planner-output \

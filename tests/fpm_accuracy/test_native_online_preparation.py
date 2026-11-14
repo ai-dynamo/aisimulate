@@ -94,10 +94,10 @@ class NativeOnlineTests(unittest.TestCase):
 
     def test_online_output_roundtrips_through_canonical_parser(self):
         # Keep helper coverage active in Pages, which does not install the SDK.
-        if "AISIMULATE_TEST_WHEEL" in os.environ:
-            trainer = import_module("aisimulate_core.sdk.fpm_learned")
+        if "AISIM_TEST_WHEEL" in os.environ:
+            trainer = import_module("aisim_core.sdk.fpm_learned")
         else:
-            trainer = pytest.importorskip("aisimulate_core.sdk.fpm_learned")
+            trainer = pytest.importorskip("aisim_core.sdk.fpm_learned")
         self.prepare_offline()
         lines = self.prepare_feedback(("decode", "idle", "prefill", "mixed", "decode"))
         prepare(self.run, "aggregated", "online")

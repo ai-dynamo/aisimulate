@@ -257,7 +257,7 @@ therefore place hot traffic on the same endpoint, which is the behavior this
 communication model needs to sample.
 
 The power-law **quota generation** continues to follow the semantics of
-`python/aisimulate/collector/helper.py::_generate_power_law_distribution`, including the quota
+`python/aisim/collector/helper.py::_generate_power_law_distribution`, including the quota
 cap, rank-round-robin correction, and busiest-rank relabeling. The assignment
 step intentionally differs. The A2A collector exercises real router-style
 random routes, while helper's deterministic descending fill primarily serves

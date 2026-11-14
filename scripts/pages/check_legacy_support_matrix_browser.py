@@ -53,12 +53,12 @@ def check_page(url: str, index: dict, browser_executable: str | None, screenshot
                 if valid:
                     assert value is not None
                     expect(page.locator("time")).to_have_attribute("datetime", value["data_updated_at"])
-                    commit_url = f"https://github.com/ai-dynamo/aisimulate/commit/{value['data_commit']}"
+                    commit_url = f"https://github.com/ai-dynamo/aisim/commit/{value['data_commit']}"
                     expect(page.locator(f'a[href="{commit_url}"]')).to_have_count(2)
                 else:
                     expect(page.get_by_text("Latest data change: not recorded", exact=False)).to_be_visible()
                     expect(page.locator("time")).to_have_count(0)
-                    expect(page.locator('a[href^="https://github.com/ai-dynamo/aisimulate/commit/"]')).to_have_count(0)
+                    expect(page.locator('a[href^="https://github.com/ai-dynamo/aisim/commit/"]')).to_have_count(0)
 
             # Capture the unmodified, packaged data before introducing test fixtures.
             check_snapshot(snapshot, "data_commit" in snapshot)

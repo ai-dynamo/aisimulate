@@ -14,8 +14,8 @@ unified power unavailable even when its encoder has separate analytical power.
 
 The current producers and consumers are
 [Replay reports](../../crates/core/src/replay/report.rs),
-[power validation/presentation](../../python/aisimulate/src/aisimulate/power.py),
-and [Sweeper results](../../python/aisimulate/src/aisimulate/sweeper/result.py).
+[power validation/presentation](../../python/aisim/src/aisim/power.py),
+and [Sweeper results](../../python/aisim/src/aisim/sweeper/result.py).
 The [synthetic contract fixture](../../tests/fixtures/power-contract-v1.json)
 checks semantics, not measured accuracy.
 
@@ -32,6 +32,20 @@ derived from modeled operation energy and modeled active latency. It is not:
 Operation energy uses watt-milliseconds (`energy_wms`). Operation and phase
 latency use milliseconds (`latency_ms`). Dividing summed `energy_wms` by summed
 `latency_ms` therefore yields watts without a unit conversion.
+
+AFD execution plans sum energy and active GPU time across the participating
+ranks, then divide both totals by the pool pair's GPU count for per-GPU
+evidence. Uneven token slices use each nonempty rank's actual operation time.
+The pipeline latency still uses the slowest rank; it is not the denominator
+for active-operation power. Uncovered operations retain their active time in
+the coverage calculation.
+
+AFD timing and energy use the same operator queries and
+[batch-pricing rules](../sweeper/afd-topology.md#batch-pricing): embedding joins a
+dense prefix once at full replica batch, otherwise it runs per microbatch;
+logits always run per microbatch. Decode queries timing and energy with the
+actual batch size and mean context length on every pass. Prefill uses actual batch
+and uncached tokens for both timing and evidence.
 
 These values are modeling evidence. They must retain the timing provider,
 performance-data identity, operation source, backend/version, hardware, and
@@ -64,7 +78,7 @@ of silently repairing it.
 
 ## Publication gate
 
-AISimulate uses AIC's fail-closed 90% coverage threshold. A numeric `power_w`
+AISim uses AIC's fail-closed 90% coverage threshold. A numeric `power_w`
 may be published only when every condition below is true:
 
 1. every replay role uses a timing provider that supplies operation-energy

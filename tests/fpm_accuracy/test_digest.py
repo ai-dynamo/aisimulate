@@ -26,7 +26,7 @@ def snapshot(errors, *, kind="e2e", dataset="data", rules="rules"):
         "commit": "a" * 40,
         "dataset": dataset,
         "rules": rules,
-        "url": "https://github.com/ai-dynamo/aisimulate/actions/runs/1",
+        "url": "https://github.com/ai-dynamo/aisim/actions/runs/1",
         "groups": {
             "config": {
                 "label": "model / GPU / config",

@@ -44,6 +44,8 @@ fn group(name: &str, block: u32, bytes: u64, window: Option<u32>) -> FpmCacheGro
         page_size_bytes: bytes,
         sliding_window: window,
         blocks_per_request: None,
+        prefill_checkpoint_blocks: None,
+        prefill_checkpoint_alignment: None,
     }
 }
 
@@ -56,6 +58,8 @@ fn state(name: &str, bytes: u64, blocks: u32) -> FpmCacheGroup {
         page_size_bytes: bytes,
         sliding_window: None,
         blocks_per_request: Some(blocks),
+        prefill_checkpoint_blocks: None,
+        prefill_checkpoint_alignment: None,
     }
 }
 
@@ -241,6 +245,8 @@ fn grouped_oversized_chunk_fails_without_partial_allocation_or_endless_preemptio
             .contains("exceeding the entire 8-byte cache pool")
     );
     assert!(error.to_string().contains("reduce max_num_batched_tokens"));
+    // Without a state group the message has no sentence about fixed bytes.
+    assert!(!error.to_string().contains("fixed state blocks"));
     assert_eq!(core.state.requests[&id].num_computed_tokens, 8);
     assert_eq!(core.state.requests[&id].sequence.num_allocated_tokens(), 8);
     assert_eq!(core.mocker_metrics().kv_cache_used_bytes, Some(8));
@@ -248,6 +254,47 @@ fn grouped_oversized_chunk_fails_without_partial_allocation_or_endless_preemptio
     core.apply_command(SchedulerCommand::CancelRequest { request_id: id })
         .unwrap();
     assert_eq!(core.mocker_metrics().kv_cache_used_bytes, Some(0));
+}
+
+#[test]
+fn grouped_state_blocks_exceeding_the_pool_reject_at_admission() {
+    // The 16-byte state block alone is larger than the 12-byte pool, so even
+    // the one-token forward cannot fit and the request never reaches a forward.
+    let mut core = core(vec![group("full", 4, 4, None), state("kda", 16, 1)], 12, 8);
+    let id = submit(&mut core, 115, 4, 2);
+    let mut trace = TraceCollector::default();
+    let pass = core.execute_pass(&mut trace, 0.0);
+    assert!(pass.admissions.is_empty());
+    assert!(
+        pass.output_signals
+            .iter()
+            .any(|output| output.uuid == id && output.rejected)
+    );
+    assert_eq!(pass.mocker_metrics.kv_cache_used_bytes, Some(0));
+}
+
+#[test]
+fn grouped_oversized_chunk_names_the_fixed_state_bytes() {
+    let mut core = core(
+        vec![group("window", 4, 4, Some(4)), state("kda", 2, 1)],
+        9,
+        8,
+    );
+    submit(&mut core, 116, 16, 2);
+    let mut trace = TraceCollector::default();
+    // The one-token forward needs one 4-byte window page and the 2-byte state
+    // block, 6 bytes, so admission passes. The first chunk of 8 tokens needs
+    // two window pages (8 bytes) and the state block, 10 bytes, above the pool.
+    let error = core
+        .try_execute_pass(&mut trace, 0.0)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("needs 10 bytes for 8 scheduled tokens after 0 computed tokens"));
+    assert!(error.contains("exceeding the entire 9-byte cache pool"));
+    assert!(error.contains("the fixed state blocks of one request take 2 bytes"));
+    assert!(error.contains("reduce max_num_batched_tokens"));
+    // The sentence comes before the remedy.
+    assert!(error.contains("2 bytes of this pool; reduce max_num_batched_tokens"));
 }
 
 #[test]

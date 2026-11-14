@@ -233,7 +233,7 @@ mod tests {
     fn b200_sglang_db() -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aisimulate_core/systems");
+            .join("python/aisim/src/aisim_core/systems");
         PerfDatabase::load(&root, "b200_sxm", "sglang", "0.5.14").expect("db loads")
     }
 

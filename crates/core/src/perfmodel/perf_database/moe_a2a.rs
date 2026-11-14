@@ -1430,7 +1430,7 @@ mod tests {
     #[test]
     fn deepep_ll_dtype_candidates_match_shared_coverage_fixture() {
         let cases: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../../python/aisimulate/tests/fixtures/deepep_ll_dtype_candidates.json"
+            "../../../../../python/aisim/tests/fixtures/deepep_ll_dtype_candidates.json"
         ))
         .unwrap();
         for case in cases.as_array().unwrap() {
@@ -1459,7 +1459,7 @@ mod tests {
     #[test]
     fn deepep_ll_runtime_matches_shared_coverage_viability_fixture() {
         let cases: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../../python/aisimulate/tests/fixtures/deepep_ll_calibration_viability.json"
+            "../../../../../python/aisim/tests/fixtures/deepep_ll_calibration_viability.json"
         ))
         .unwrap();
         for case in cases.as_array().unwrap() {
@@ -3043,7 +3043,7 @@ mod tests {
             serde_json::from_str(include_str!("testdata/moe_a2a_oracle.json"))
                 .expect("oracle fixture must parse");
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems");
+            .join("../../python/aisim/src/aisim_core/systems");
         let samples = oracle["samples"].as_array().expect("samples array");
         let mut tables: BTreeMap<String, MoeA2aTable> = BTreeMap::new();
         let mut max_rel = 0.0_f64;

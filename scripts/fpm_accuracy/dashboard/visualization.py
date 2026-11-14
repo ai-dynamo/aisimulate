@@ -5,8 +5,8 @@
 """Static, predictor-independent 3D points from verified measurement cases.
 
 The score equations are independently implemented from the definitions in
-AISimulate 99d6acb722bf75e2b16119c59c79e1bad73b4efd, model.rs (Apache-2.0):
-https://github.com/ai-dynamo/aisimulate/blob/99d6acb722bf75e2b16119c59c79e1bad73b4efd/crates/core/src/perfmodel/fpm/model.rs
+AISim 99d6acb722bf75e2b16119c59c79e1bad73b4efd, model.rs (Apache-2.0):
+https://github.com/ai-dynamo/aisim/blob/99d6acb722bf75e2b16119c59c79e1bad73b4efd/crates/core/src/perfmodel/fpm/model.rs
 Unit feature weights are intentional. Workload selection uses Gym's native
 ForwardPassIteration.representative_rank, never the attention-score maximum.
 """
