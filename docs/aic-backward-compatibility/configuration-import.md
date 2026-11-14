@@ -84,10 +84,14 @@ Helm, expand templates, or execute recipe shell. An unrendered
 
 ### 2. Generate and inspect the adaptation report
 
+Use an active AISim development environment with the `dev` extra installed
+(`uv pip install -e './python/aisim[dev]'` from the repository root). The helper
+requires `jsonschema`, which is not included in the base install.
+
 Run this command from the AISim repository root:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo \
   --deploy /path/to/recipe/deploy.yaml \
   --perf /path/to/recipe/perf.yaml \
@@ -115,7 +119,7 @@ recipe owner or benchmark record, then pass only those confirmed values through
 `--overrides`. For example:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo \
   --deploy /path/to/recipe/deploy.yaml \
   --perf /path/to/recipe/perf.yaml \
@@ -140,7 +144,7 @@ Once every intended point is adapted and its canonical request is correct, add
 `--run-estimate` to the same command:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo \
   --deploy /path/to/recipe/deploy.yaml \
   --perf /path/to/recipe/perf.yaml \
@@ -310,8 +314,8 @@ programmatic adapter never evaluates template expressions or executes commands.
 
 ## Agent workflow
 
-The repo-local `.agents/skills/adapt-server-config` skill wraps the SDK for known
-formats. For an unknown format it must show inferred fields and obtain user
+The repo-local `python/aisim/.agents/skills/adapt-server-config` skill wraps the SDK
+for known formats. For an unknown format it must show inferred fields and obtain user
 confirmation before constructing canonical JSON. The skill validates every
 request against the packaged schema and runs estimates only when explicitly
 requested.

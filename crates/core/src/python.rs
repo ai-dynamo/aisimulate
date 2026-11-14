@@ -42,27 +42,156 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
 
+/// The top-level keys of a payload, read without buffering the document:
+/// every value is skipped unread. The sequence form of a legacy `ReplaySpec`
+/// has no keys.
+struct PayloadKeys {
+    /// How many `spec` keys (also `null` ones) the payload has.
+    specs: usize,
+    /// Whether the payload has a configured key other than `spec`, such as
+    /// `capture_telemetry` or `traffic`.
+    configured: bool,
+}
+
+impl<'de> Deserialize<'de> for PayloadKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct KeysVisitor(&'static [&'static str]);
+        impl<'de> serde::de::Visitor<'de> for KeysVisitor {
+            type Value = PayloadKeys;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an AISim execution payload")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<PayloadKeys, A::Error> {
+                let mut keys = PayloadKeys {
+                    specs: 0,
+                    configured: false,
+                };
+                while let Some(key) = map.next_key::<String>()? {
+                    keys.specs += usize::from(key == "spec");
+                    keys.configured |= key != "spec" && self.0.contains(&key.as_str());
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+                Ok(keys)
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<PayloadKeys, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(PayloadKeys {
+                    specs: 0,
+                    configured: false,
+                })
+            }
+        }
+        deserializer.deserialize_any(KeysVisitor(
+            serde_struct_fields::<ConfiguredExecutionPayload>(),
+        ))
+    }
+}
+
+/// The field names that serde reads for struct `T`, so the configured keys
+/// cannot drift from `ConfiguredExecutionPayload`.
+fn serde_struct_fields<T: serde::de::DeserializeOwned>() -> &'static [&'static str] {
+    struct FieldNames<'a>(&'a mut &'static [&'static str]);
+    impl<'de> serde::Deserializer<'de> for FieldNames<'_> {
+        type Error = serde::de::value::Error;
+
+        fn deserialize_any<V: serde::de::Visitor<'de>>(
+            self,
+            _visitor: V,
+        ) -> Result<V::Value, Self::Error> {
+            Err(serde::de::Error::custom("field names only"))
+        }
+
+        fn deserialize_struct<V: serde::de::Visitor<'de>>(
+            self,
+            _name: &'static str,
+            fields: &'static [&'static str],
+            visitor: V,
+        ) -> Result<V::Value, Self::Error> {
+            *self.0 = fields;
+            self.deserialize_any(visitor)
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map enum identifier ignored_any
+        }
+    }
+    let mut fields: &'static [&'static str] = &[];
+    let _ = T::deserialize(FieldNames(&mut fields));
+    fields
+}
+
+/// Whether any of the repeated `spec` keys holds a replay, which makes the
+/// payload an ambiguous configured envelope rather than legacy metadata.
+/// Only the `spec` values are buffered; the rest is skipped unread.
+struct RepeatedSpecHoldsReplay(bool);
+
+impl<'de> Deserialize<'de> for RepeatedSpecHoldsReplay {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ReplayVisitor;
+        impl<'de> serde::de::Visitor<'de> for ReplayVisitor {
+            type Value = RepeatedSpecHoldsReplay;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an AISim execution payload")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<RepeatedSpecHoldsReplay, A::Error> {
+                let mut holds_replay = false;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "spec" {
+                        let value = map.next_value::<serde_json::Value>()?;
+                        holds_replay |= serde_json::from_value::<ReplaySpec>(value).is_ok();
+                    } else {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(RepeatedSpecHoldsReplay(holds_replay))
+            }
+        }
+        deserializer.deserialize_map(ReplayVisitor)
+    }
+}
+
+/// Parses only the `spec` key of a payload, to tell whether it holds a replay.
+#[derive(Deserialize)]
+struct ConfiguredSpecOnly {
+    #[allow(dead_code)]
+    spec: ReplaySpec,
+}
+
+/// The configured execution payload. It is parsed directly, not through an
+/// untagged enum, so a malformed field reports its own error.
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum ExecutionPayload {
-    Configured {
-        spec: ReplaySpec,
-        #[serde(default)]
-        traffic: Option<Box<RuntimeTraffic>>,
-        #[serde(default)]
-        capture_performance_diagnostics: bool,
-        #[serde(default)]
-        capture_telemetry: bool,
-        #[serde(default = "default_telemetry_sample_interval_ms")]
-        telemetry_sample_interval_ms: f64,
-        #[serde(default)]
-        determinism: ReplayDeterminism,
-        #[serde(default)]
-        tokenization: Option<TokenizationPayload>,
-        #[serde(default)]
-        detokenization: Option<DetokenizationPayload>,
-    },
-    Legacy(ReplaySpec),
+struct ConfiguredExecutionPayload {
+    spec: ReplaySpec,
+    #[serde(default)]
+    traffic: Option<Box<RuntimeTraffic>>,
+    #[serde(default)]
+    capture_performance_diagnostics: bool,
+    #[serde(default)]
+    capture_telemetry: bool,
+    #[serde(default = "default_telemetry_sample_interval_ms")]
+    telemetry_sample_interval_ms: f64,
+    #[serde(default)]
+    determinism: ReplayDeterminism,
+    #[serde(default)]
+    tokenization: Option<TokenizationPayload>,
+    #[serde(default)]
+    detokenization: Option<DetokenizationPayload>,
 }
 
 fn default_telemetry_sample_interval_ms() -> f64 {
@@ -4701,35 +4830,82 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         determinism,
         serving_path,
         telemetry_sample_interval_ms,
-    ) = match serde_json::from_str(payload).context("invalid AISim execution ReplaySpec")? {
-        ExecutionPayload::Configured {
-            spec,
-            traffic,
-            capture_performance_diagnostics,
-            capture_telemetry,
-            telemetry_sample_interval_ms,
-            determinism,
-            tokenization,
-            detokenization,
-        } => (
-            spec,
-            traffic.map(|t| *t),
-            capture_performance_diagnostics,
-            determinism,
-            ServingPath {
-                tokenization,
-                detokenization,
-            },
-            capture_telemetry.then_some(telemetry_sample_interval_ms),
-        ),
-        ExecutionPayload::Legacy(spec) => (
-            spec,
-            None,
-            false,
-            ReplayDeterminism::default(),
-            ServingPath::default(),
-            None,
-        ),
+    ) = {
+        let legacy = |spec: ReplaySpec| {
+            (
+                spec,
+                None,
+                false,
+                ReplayDeterminism::default(),
+                ServingPath::default(),
+                None,
+            )
+        };
+        let keys = serde_json::from_str::<PayloadKeys>(payload)
+            .context("invalid AISim execution payload")?;
+        // Repeated `spec` keys are legacy metadata only when none holds a
+        // replay; otherwise the configured envelope is ambiguous. A probe
+        // error (for example, too deep to buffer) counts as ambiguous.
+        ensure!(
+            keys.specs < 2
+                || matches!(
+                    serde_json::from_str::<RepeatedSpecHoldsReplay>(payload),
+                    Ok(RepeatedSpecHoldsReplay(false))
+                ),
+            "invalid AISim execution payload: duplicate field `spec`"
+        );
+        // A configured key makes the payload a configured one: a bare
+        // ReplaySpec would drop that setting without a word.
+        if keys.specs != 1 && !keys.configured {
+            let parsed = serde_json::from_str::<ReplaySpec>(payload);
+            // Repeated `spec` keys mark a configured payload, so report its
+            // field error rather than the legacy ReplaySpec one.
+            if keys.specs >= 2
+                && parsed.is_err()
+                && let Err(error) = serde_json::from_str::<ConfiguredExecutionPayload>(payload)
+            {
+                return Err(error).context("invalid AISim execution payload");
+            }
+            legacy(parsed.context("invalid AISim execution ReplaySpec")?)
+        } else {
+            match serde_json::from_str::<ConfiguredExecutionPayload>(payload) {
+                Ok(ConfiguredExecutionPayload {
+                    spec,
+                    traffic,
+                    capture_performance_diagnostics,
+                    capture_telemetry,
+                    telemetry_sample_interval_ms,
+                    determinism,
+                    tokenization,
+                    detokenization,
+                }) => (
+                    spec,
+                    traffic.map(|t| *t),
+                    capture_performance_diagnostics,
+                    determinism,
+                    ServingPath {
+                        tokenization,
+                        detokenization,
+                    },
+                    capture_telemetry.then_some(telemetry_sample_interval_ms),
+                ),
+                // A bare ReplaySpec ignores unknown keys, so it may carry its
+                // own `spec` key. Fall back to it only when `spec` holds no
+                // replay and no configured key is present: otherwise the
+                // payload is a configured one, and its field error must not
+                // run the top-level replay instead.
+                Err(error) => {
+                    if !keys.configured
+                        && serde_json::from_str::<ConfiguredSpecOnly>(payload).is_err()
+                        && let Ok(spec) = serde_json::from_str::<ReplaySpec>(payload)
+                    {
+                        legacy(spec)
+                    } else {
+                        return Err(error).context("invalid AISim execution payload");
+                    }
+                }
+            }
+        }
     };
     if let Some(interval_ms) = telemetry_sample_interval_ms {
         ensure!(
@@ -11159,6 +11335,173 @@ mod tests {
                     .contains("telemetry_sample_interval_ms must be finite and positive")
             );
         }
+        for (field, value, expected) in [
+            (
+                "tokenization",
+                serde_json::json!({"workers": 1, "unknown": true}),
+                "unknown field `unknown`",
+            ),
+            (
+                "capture_telemetry",
+                serde_json::json!("yes"),
+                "invalid type",
+            ),
+        ] {
+            let payload = serde_json::json!({"spec": spec, field: value});
+            let error = format!(
+                "{:#}",
+                execute_json(&payload.to_string(), false).unwrap_err()
+            );
+            assert!(error.contains(expected), "{field}: {error}");
+        }
+        // A bare ReplaySpec ignores unknown keys, also one named `spec`.
+        for extra in [serde_json::json!("metadata"), serde_json::Value::Null] {
+            let mut bare = serde_json::to_value(&spec).unwrap();
+            bare["spec"] = extra.clone();
+            let output: serde_json::Value =
+                serde_json::from_str(&execute_json(&bare.to_string(), false).unwrap()).unwrap();
+            assert_eq!(
+                output["completed_requests"], report["completed_requests"],
+                "{extra}"
+            );
+        }
+        let payload = serde_json::json!({"spec": null, "capture_telemetry": true});
+        let error = format!(
+            "{:#}",
+            execute_json(&payload.to_string(), false).unwrap_err()
+        );
+        assert!(
+            error.contains("invalid AISim execution payload: invalid type: null"),
+            "{error}"
+        );
+        // The sequence form of a legacy ReplaySpec (fields in declaration order) still runs.
+        let sequence = serde_json::json!([
+            spec.version,
+            &spec.topology,
+            &spec.engine,
+            &spec.adapters,
+            spec.max_sim_time_ms,
+            spec.max_in_flight,
+            spec.record_per_request,
+            &spec.sla,
+            &spec.encoder,
+            &spec.requests,
+        ]);
+        let output: serde_json::Value =
+            serde_json::from_str(&execute_json(&sequence.to_string(), false).unwrap()).unwrap();
+        assert_eq!(output["completed_requests"], report["completed_requests"]);
+        assert_eq!(output["per_request"][0]["request_id"], "authored-id");
+        // Malformed JSON names the payload and the parse position.
+        let error = format!("{:#}", execute_json("{\"spec\": ", false).unwrap_err());
+        assert!(
+            error.starts_with("invalid AISim execution payload: EOF while parsing"),
+            "{error}"
+        );
+        // Repeated `spec` metadata on a bare ReplaySpec: the legacy form still runs.
+        let bare = serde_json::to_string(&spec).unwrap();
+        let repeated = format!(r#"{{"spec": 1, "spec": 2, {}"#, &bare[1..]);
+        let output: serde_json::Value =
+            serde_json::from_str(&execute_json(&repeated, false).unwrap()).unwrap();
+        assert_eq!(output["completed_requests"], report["completed_requests"]);
+        // A nested replay with two requests next to a one-request top-level
+        // replay: one `spec` key runs the nested replay; a repeated
+        // replay-valued `spec` key is ambiguous and must not run either.
+        let mut nested = spec.clone();
+        let mut second = nested.requests[0].clone();
+        second.id = "second-id".into();
+        second.session_id = None;
+        second.turn_index = None;
+        nested.requests.push(second);
+        let nested = serde_json::to_string(&nested).unwrap();
+        let once = format!(
+            r#"{{"spec": {nested}, "capture_telemetry": true, {}"#,
+            &bare[1..]
+        );
+        let twice = format!(
+            r#"{{"spec": {nested}, "spec": {nested}, "capture_telemetry": true, {}"#,
+            &bare[1..]
+        );
+        for capture_artifacts in [false, true] {
+            let output: serde_json::Value =
+                serde_json::from_str(&execute_json(&once, capture_artifacts).unwrap()).unwrap();
+            let report = if capture_artifacts {
+                &output["report"]
+            } else {
+                &output
+            };
+            assert_eq!(report["completed_requests"], 2);
+            assert!(report["telemetry"].is_object());
+            let error = format!("{:#}", execute_json(&twice, capture_artifacts).unwrap_err());
+            assert!(error.contains("duplicate field `spec`"), "{error}");
+        }
+        // A repeated `spec` too deep for the probe to buffer is refused, not
+        // treated as metadata, when another `spec` holds a replay.
+        let (open, close) = ("[".repeat(200), "]".repeat(200));
+        let deep = format!(
+            r#"{{"spec": {nested}, "spec": {open}{close}, {}"#,
+            &bare[1..]
+        );
+        let error = format!("{:#}", execute_json(&deep, false).unwrap_err());
+        assert!(error.contains("duplicate field `spec`"), "{error}");
+        // A configured key makes the payload a configured one, even when the
+        // top-level keys form a replay: its settings must not be dropped.
+        for (prefix, expected) in [
+            (
+                r#""spec": null, "#,
+                "invalid type: null, expected struct ReplaySpec",
+            ),
+            (
+                r#""spec": 1, "spec": 2, "#,
+                "invalid type: integer `1`, expected struct ReplaySpec",
+            ),
+            ("", "missing field `spec`"),
+        ] {
+            let payload = format!(r#"{{{prefix}"capture_telemetry": true, {}"#, &bare[1..]);
+            let error = format!("{:#}", execute_json(&payload, false).unwrap_err());
+            assert!(
+                error.starts_with("invalid AISim execution payload") && error.contains(expected),
+                "{prefix}: {error}"
+            );
+        }
+        // Repeated non-replay `spec` keys on an invalid payload report the
+        // configured-payload error; without any key, the legacy one.
+        let error = format!(
+            "{:#}",
+            execute_json(
+                r#"{"spec": 1, "spec": 2, "capture_telemetry": true}"#,
+                false
+            )
+            .unwrap_err()
+        );
+        assert!(
+            error.starts_with("invalid AISim execution payload"),
+            "{error}"
+        );
+        assert!(
+            error.contains("invalid type: integer `1`, expected struct ReplaySpec"),
+            "{error}"
+        );
+        let error = format!(
+            "{:#}",
+            execute_json(r#"{"version": 1}"#, false).unwrap_err()
+        );
+        assert!(
+            error.starts_with("invalid AISim execution ReplaySpec"),
+            "{error}"
+        );
+        // The configured keys follow `ConfiguredExecutionPayload`.
+        let fields = serde_struct_fields::<ConfiguredExecutionPayload>();
+        assert!(fields.contains(&"spec") && fields.contains(&"capture_telemetry"));
+        // When `spec` holds a replay, a bad field is reported even if the
+        // top-level keys also form a replay.
+        let mut ambiguous = serde_json::to_value(&spec).unwrap();
+        ambiguous["spec"] = serde_json::to_value(&spec).unwrap();
+        ambiguous["tokenization"] = serde_json::json!({"unknown": true});
+        let error = format!(
+            "{:#}",
+            execute_json(&ambiguous.to_string(), false).unwrap_err()
+        );
+        assert!(error.contains("unknown field `unknown`"), "{error}");
 
         spec.requests.clear();
         for record_per_request in [false, true] {
