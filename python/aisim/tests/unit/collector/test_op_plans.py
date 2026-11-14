@@ -278,7 +278,10 @@ def test_dsa_context_points_follow_chunked_prefill():
     from collector.case_generator import get_mla_module_sweep_spec
 
     sweep = get_mla_module_sweep_spec("plan")
-    anchors = [0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
+    anchors = [
+        0, 1, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 12288,
+        16384, 32768, 65536, 131072, 262144, 524288, 1048575,
+    ]  # fmt: skip
     assert sweep.context_prefix_lengths == anchors
     max_position = {"deepseek-ai/DeepSeek-V3.2": 163840, "zai-org/GLM-5.2": 1048576}
     points = defaultdict(set)
@@ -292,11 +295,7 @@ def test_dsa_context_points_follow_chunked_prefill():
             for s in (1, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 16384)
             for p in anchors
             # new tokens per forward, KV tokens per forward, the model's context
-            if b * s <= 16384
-            and b * (s + p) <= 1048576
-            and p + s <= ceiling
-            # at long prefixes, the chunk sizes serving's chunked prefill issues there
-            and (p < 16384 or s in (1, 512, 2048, 8192, 16384))
+            if b * s <= 16384 and b * (s + p) <= 1048576 and p + s <= ceiling
         }
         assert points[model] == expected, model
     assert (1, 1, 1048575) in points["zai-org/GLM-5.2"]
@@ -388,12 +387,12 @@ def test_msa_plan_times_the_model_shards_on_the_long_context_grid():
     assert {(b, s) for b in (1, 2, 4) for s in (262144, 524288, 1048575)} <= decode
 
 
-def test_trtllm_msa_stops_at_a_32k_prefix_where_it_runs_the_triton_reference():
+def test_trtllm_msa_times_a_thinned_prefix_grid_up_to_16k_where_it_runs_the_triton_reference():
     def prefixes(sm):
         return {case.prefix_len for case in plan("msa_context_module", "trtllm", sm).cases}
 
     for sm in (89, 90, 120):
-        assert max(prefixes(sm)) == 32768
+        assert prefixes(sm) == {0, 1, 512, 2048, 4096, 8192, 16384}
     for sm in (100, 103):
         assert max(prefixes(sm)) == 1048575
     assert max(case.prefix_len for case in plan("msa_context_module", "vllm", 90).cases) == 1048575
@@ -470,26 +469,25 @@ def test_gemm_floors_remove_whole_dtypes(sm, dtypes):
     assert sorted({case.gemm_type for case in plan("gemm", "vllm", sm).cases}) == dtypes
 
 
-def test_gemm_sglang_fp8_block_skip_covers_only_sm89_and_sm120():
-    for sm in (89, 120):
-        removed = plan("gemm", "sglang", sm).removed
-        assert [(region.region, region.reason) for region in removed if region.region == "dtype=fp8_block"] == [
-            ("dtype=fp8_block", repr(_entry(backend="sglang", op="gemm")))
-        ]
-    for sm in (90, 100, 103):
-        assert "fp8_block" in {case.gemm_type for case in plan("gemm", "sglang", sm).cases}
+def test_gemm_sglang_plans_fp8_block_on_every_fp8_sm():
+    # SGLang times fp8_block through serving's dispatch (Triton on SM89, CUTLASS
+    # on SM120, DeepGEMM on SM90/SM10x), so no SM leaves the dtype out.
+    for sm in (89, 90, 100, 103, 120):
+        op_plan = plan("gemm", "sglang", sm)
+        assert "fp8_block" in {case.gemm_type for case in op_plan.cases}
+        assert not [region for region in op_plan.removed if region.region == "dtype=fp8_block"]
 
 
 def test_summary_counts_per_dtype_and_hashes_the_planned_ids():
-    op_plan = plan("gemm", "sglang", 120)
+    op_plan = plan("gemm", "sglang", 89)
     summary = summarize("gemm", op_plan, case_id=lambda row: f"sglang.gemm:run_gemm:{row}")
     shapes = summary["by_dtype"]["bfloat16"]
 
     assert summary["cases"] == 3 * shapes
-    assert summary["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "nvfp4": shapes}
+    assert summary["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "fp8_block": shapes}
     assert summary["groups"] == len({(case.gemm_type, case.n, case.k) for case in op_plan.cases})
     assert summary["removed"] == [
-        {"region": "dtype=fp8_block", "cases": shapes, "reason": repr(_entry(backend="sglang", op="gemm"))}
+        {"region": "dtype=nvfp4", "cases": shapes, "reason": repr(_entry(dtype=["nvfp4", "w4a8_mxfp4_mxfp8"]))}
     ]
     assert summary["plan_hash"] == case_plan_hash([f"sglang.gemm:run_gemm:{case}" for case in op_plan.cases])
     assert "rows" not in summary
@@ -560,6 +558,40 @@ def test_moe_plan_reports_the_runner_sglang_picks_on_each_sm():
     assert {"triton", "flashinfer_trtllm", "flashinfer_mxfp4"} <= set(sm100.by_dispatch)
     assert "marlin" in plan("moe", "sglang", 90).by_dispatch
     assert plan("moe", "vllm", 100).by_dispatch == {}
+
+
+def test_moe_plan_runs_gpt_oss_w4a16_on_the_runner_sglang_picks_by_ep():
+    # SGLang's GPT-OSS override serves triton_kernel at EP1 and keeps auto
+    # (Triton) at EP>1 on SM89/90 (model_overrides/gpt_oss.py:102-120). From SM100
+    # it serves flashinfer_mxfp4 with MXFP8 activations at every EP (:64-75), so
+    # SM100/103/120 plan no GPT-OSS W4A16 case (collector/skips.py) and the W4A8
+    # cases run flashinfer_mxfp4.
+    def gpt_oss_runners(sm):
+        sglang = plan("moe", "sglang", sm)
+        return {
+            (case.ep == 1, runners)
+            for case, runners in zip(sglang.cases, sglang.dispatches, strict=True)
+            if case.model_name.startswith("openai/gpt-oss") and case.moe_type == "w4a16_mxfp4"
+        }
+
+    for sm in (89, 90):
+        assert gpt_oss_runners(sm) == {(True, ("triton_kernel",)), (False, ("triton",))}
+        sglang = plan("moe", "sglang", sm)
+        kernel_cases = [
+            case for case, runners in zip(sglang.cases, sglang.dispatches, strict=True) if "triton_kernel" in runners
+        ]
+        assert kernel_cases and all(case.ep == 1 and "gpt-oss" in case.model_name for case in kernel_cases)
+    for sm in (100, 103, 120):
+        assert gpt_oss_runners(sm) == set()
+        assert "triton_kernel" not in plan("moe", "sglang", sm).by_dispatch
+    for sm in (100, 103):
+        sglang = plan("moe", "sglang", sm)
+        w4a8 = {
+            runners
+            for case, runners in zip(sglang.cases, sglang.dispatches, strict=True)
+            if case.model_name.startswith("openai/gpt-oss") and case.moe_type == "w4a8_mxfp4_mxfp8"
+        }
+        assert w4a8 == {("flashinfer_mxfp4",)}
 
 
 @pytest.mark.parametrize("sm", SMS)

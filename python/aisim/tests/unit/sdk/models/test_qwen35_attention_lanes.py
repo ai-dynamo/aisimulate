@@ -75,6 +75,7 @@ def _attention_ops(model):
     return ctx, gen
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_attention_backend_reaches_both_attention_ops():
     """The knob survives model construction and heads BOTH ops' resolved lane
     order once ``build_engine_spec_json`` resolves it against a real database

@@ -50,6 +50,37 @@ def test_sglang_mla_backend_map_follows_serving_selection():
             _selector(unsupported_sm, cuda_ok=True)()
 
 
+def _geometry():
+    return _load_collector_function(
+        "_mla_attention_geometry",
+        {"KV_LORA_RANK": 512, "QK_NOPE_HEAD_DIM": 128, "QK_ROPE_HEAD_DIM": 64, "V_HEAD_DIM": 128},
+    )
+
+
+@pytest.mark.unit
+def test_trtllm_mla_prefill_is_serving_mha_call():
+    # DeepseekV3 on trtllm_mla prefills eagerly through MHA_CHUNKED_KV: attn_mha with
+    # one 192-wide KV head per query head and a 128-wide value, not the latent MQA.
+    assert _geometry()("trtllm_mla", True) == (192, 128, False)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("backend", "is_context_phase"),
+    [("trtllm_mla", False), ("fa3", True), ("fa3", False), ("triton", True), ("triton", False)],
+)
+def test_absorbed_lanes_run_attn_mqa(backend, is_context_phase):
+    # Decode everywhere, and fa3/triton prefill under the default breakable prefill
+    # graph, run the absorbed method: one 576-wide latent KV head, 512-wide output.
+    assert _geometry()(backend, is_context_phase) == (576, 512, True)
+
+
+@pytest.mark.unit
+def test_geometry_rejects_unaudited_backend():
+    with pytest.raises(ValueError, match="attention geometry for backend 'flashmla'"):
+        _geometry()("flashmla", True)
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("backend", "kv_dtype", "expected"),

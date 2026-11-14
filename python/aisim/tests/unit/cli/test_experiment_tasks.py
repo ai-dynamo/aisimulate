@@ -90,6 +90,7 @@ def test_build_experiment_keeps_prefix_at_top_level():
     assert task.database_mode == "HYBRID"
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_build_experiment_forwards_top_level_moe_backend():
     tasks = build_experiment_tasks(
         config={

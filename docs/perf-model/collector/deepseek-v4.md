@@ -59,6 +59,14 @@ the module's local heads happen to match. The correction is admitted only at an
 exact native-geometry match; missing calibration leaves that module path
 uncorrected with a diagnostic instead of borrowing an incompatible delta.
 
+The delta needs both a `flat` and a `top_last` calibration row for a shape. A
+release that times the module on non-degenerate scores ships only `top_last`
+rows, and its module rows are used uncorrected. When earlier releases fill
+missing calibration rows, the highest-priority source that carries rows for a
+native head count decides: if it has no `flat` rows, `flat` rows from the
+other sources are dropped, so an earlier release cannot reintroduce the delta.
+Its `top_last` rows still fill, because context-parallel prefill reads them.
+
 Validate module boundary, native/local geometry, precision, prefix handling,
 finite latency/energy, and positive/negative calibration matches. Exercise both
 Python model lowering and native consumer queries after finalization. Successful

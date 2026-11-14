@@ -691,6 +691,7 @@ class TestBuildDefaultTaskConfigs:
     # The flag-conditioned SGLang DeepEP task variants (agg_deepep/disagg_deepep)
     # and their perf-data skip probe are gone: large-EP/DeepEP participation is
     # coverage-driven per tuple inside the ONE task per (model, serving mode).
+    @pytest.mark.usefixtures("raw_data_coordinates")
     @patch("aisim.legacy_cli.main.Task")
     def test_moe_sglang_builds_one_task_per_mode(self, mock_task_config):
         """No DeepEP fan-out: an sglang MoE model yields exactly one agg and one
@@ -744,6 +745,7 @@ class TestDeprecatedWideepCliFlags:
             **kwargs,
         )
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     @patch("aisim.legacy_cli.main.Task")
     def test_enable_wideep_warns_and_is_ignored(self, mock_task_config):
         with pytest.warns(DeprecationWarning, match="'enable_wideep' is deprecated and ignored"):
@@ -757,6 +759,7 @@ class TestDeprecatedWideepCliFlags:
         assert set(flagged) == set(flagless) == {"agg", "disagg"}
         assert flagged_calls == flagless_calls  # zero effect on the built tasks
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     @patch("aisim.legacy_cli.main.Task")
     def test_moe_backend_deepep_moe_warns_megamoe_does_not(self, mock_task_config):
         import warnings

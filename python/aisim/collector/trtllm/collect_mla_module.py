@@ -17,7 +17,7 @@
 
 # The DSA path uses the cache manager's sparse kwargs and the lowered
 # SparseMetadataParams attention metadata.
-__compat__ = "trtllm==1.3.0rc29"
+__compat__ = "trtllm==1.4.0rc2"
 
 """
 MLA Module Collector for TRT-LLM — unified MLA and DSA benchmarking.
@@ -60,46 +60,24 @@ import weakref
 
 import tensorrt_llm
 import torch
-
-# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
-# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
-# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
-# 'API-compat shims may only change HOW the same kernel is constructed').
-try:
-    from tensorrt_llm._torch.attention.backends.interface import AttentionRuntimeFeatures
-except ModuleNotFoundError:  # < rc29 layout
-    from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
-try:
-    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
-except ModuleNotFoundError:  # < rc29 layout
-    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+from tensorrt_llm._torch.attention.backends.interface import AttentionRuntimeFeatures
+from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+from tensorrt_llm._torch.autotuner import autotune
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_deepseekv3 import (
     DeepseekV3DecoderLayer,
 )
+from tensorrt_llm._torch.modules.linear import Linear
 from tensorrt_llm._torch.modules.rms_norm import RMSNorm
 from tensorrt_llm._torch.pyexecutor._util import get_kv_cache_manager_cls
-
-# ═══════════════════════════════════════════════════════════════════════
-# Config registry patch — TRT-LLM's _CONFIG_REGISTRY only maps
-# "deepseek_v32" but GLM-5 uses model_type "glm_moe_dsa".  Without this
-# patch load_pretrained_config() falls through to AutoConfig which also
-# doesn't know "glm_moe_dsa", causing a KeyError.  The config layout is
-# identical to DeepSeek-V3, so reusing DeepseekV3Config is safe.
-# ═══════════════════════════════════════════════════════════════════════
-from tensorrt_llm._torch.pyexecutor.config_utils import _CONFIG_REGISTRY
 from tensorrt_llm._torch.pyexecutor.model_loader import initialize_dummy_weights
 from tensorrt_llm._torch.utils import AuxStreamType, get_model_extra_attrs, model_extra_attrs
 from tensorrt_llm._utils import torch_dtype_to_binding
 from tensorrt_llm.bindings import DataType
-
-try:
-    from tensorrt_llm.llmapi.llm_args import KvCacheConfig
-except ImportError:
-    from tensorrt_llm.bindings.executor import KvCacheConfig
 from tensorrt_llm.bindings.internal.batch_manager import CacheType
 from tensorrt_llm.functional import AllReduceStrategy
+from tensorrt_llm.llmapi import KvCacheConfig
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
 from tensorrt_llm.quantization.mode import QuantAlgo
@@ -119,10 +97,6 @@ from collector.helper import (
 from collector.op_plans import plan, plan_cases
 from collector.registry_types import PerfFile
 from collector.trtllm.module_series import run_points
-
-if "glm_moe_dsa" not in _CONFIG_REGISTRY:
-    _CONFIG_REGISTRY["glm_moe_dsa"] = "DeepseekV3Config"
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # Test Cases
@@ -156,6 +130,11 @@ def _ceil_div(a, b):
 
 def _round_up(a, b):
     return _ceil_div(a, b) * b
+
+
+# One 32 MiB GPU allocation unit for each pool of a DSA layer (MLA KV, indexer
+# K); see create_kv_cache_and_metadata.
+_DSA_POOL_ROUNDING_BYTES = 2 * (32 << 20)
 
 
 def _replace_quant_config(qc, **kwargs):
@@ -203,13 +182,13 @@ def _apply_gemm_type_quant(model_config, gemm_type: str, use_fp8_kv_cache: bool)
                 # Serving ALWAYS excludes these from FP8_BLOCK_SCALES: every
                 # translation of an fp8 weight_block_size checkpoint appends
                 # ["*kv_b_proj*", "*k_b_proj*", "*eh_proj"] to exclude_modules
-                # (model_config.py:481-490, merged with the HF
-                # modules_to_not_convert; same list at :436-440 for the
+                # (_torch/model_config.py:774-782, merged with the HF
+                # modules_to_not_convert; same list at :720-726 for the
                 # TRTLLM-MoE default), because 128x128 block boundaries need
                 # not align with per-head dims (GLM-5 qk_nope_head_dim=192),
                 # and the weight loader then routes kv_b_proj through the
                 # dequant path so k_b_proj_trans stays bf16
-                # (modeling_deepseekv3.py:378-385). Passing None
+                # (models/modeling_deepseekv3.py:395-405). Passing None
                 # here made k_b_proj_trans fp8 — a bmm path serving never
                 # takes for these checkpoints — which crashed every GLM
                 # fp8_block DSA context case on H20 ("Scale tensor size
@@ -225,10 +204,10 @@ def _apply_gemm_type_quant(model_config, gemm_type: str, use_fp8_kv_cache: bool)
                 model_config.quant_config,
                 quant_algo=QuantAlgo.NVFP4,
                 # NVFP4 scale blocks are 16 elements; without an explicit value the replaced
-                # config keeps the checkpoint's/fp8_block group_size=128 and 1.3.0rc29
-                # NVFP4LinearMethod.resolve_scaling_vector_size rejects module construction
-                # ("supports NVFP4 scale blocks of (16,) elements, but the checkpoint declares
-                # group_size=128" — B200 smoke; nvfp4 is a platform floor on Hopper).
+                # config keeps the checkpoint's/fp8_block group_size=128 and
+                # NVFP4LinearMethod.resolve_scaling_vector_size (modules/linear.py:1603-1611)
+                # rejects module construction ("supports NVFP4 scale blocks of (16,) elements,
+                # but the checkpoint declares group_size=128"; nvfp4 is a platform floor on Hopper).
                 group_size=16,
                 kv_cache_quant_algo=kv_algo,
                 exclude_modules=None,
@@ -238,67 +217,40 @@ def _apply_gemm_type_quant(model_config, gemm_type: str, use_fp8_kv_cache: bool)
         raise ValueError(f"Unknown gemm_type: {gemm_type!r}")
 
 
-def _config_dir_without_layer_types(model_path: str) -> str:
-    """Materialize a config-only local copy of ``model_path`` minus ``layer_types``.
+def _give_index_scores_magnitude(attn_module) -> None:
+    """Bring a sparse module's index scores to the magnitude a trained checkpoint gives them.
 
-    Mirrors the upstream TRT-LLM main fix for glm_moe_dsa (config_utils.py
-    drops the HF-bookkeeping-only ``layer_types`` before building the config;
-    transformers 5.5.x rejects its 'deepseek_sparse_attention' entries). Only
-    JSON config files are fetched — module benchmarks never load weights —
-    and ``ModelConfig.from_pretrained`` then runs unmodified on the local dir,
-    so the framework's own config/quant handling stays authoritative.
+    initialize_dummy_weights draws every float parameter from U(-1e-3, 1e-3), normalization
+    gains included, so the indexer's scores came out near 1e-6. Its top-k bins the scores as
+    fp16 first and restarts as an fp32 radix when that pass cannot resolve the threshold bin
+    (processHistogramStep, "Step 0 is the fp16 fast path", cpp/tensorrt_llm/kernels/
+    indexerTopK.cu): scores that small share a few fp16 bins, so every row took the restart,
+    where the same scores at unit magnitude finish in the first pass in a fraction of the
+    time. Unit normalization gains in the attention module and U(-0.1, 0.1) parameters in the
+    indexer put the scores near 1. Values only: no kernel in the module is chosen by them.
+
+    An NVFP4 projection needs one more thing to produce scores at all: NVFP4LinearMethod
+    creates input_scale, inv_input_scale and alpha with torch.empty (modules/linear.py) and
+    initialize_dummy_weights leaves those names alone, taking their create_weights value for
+    a usable default (its _SKIP_NAME_SUFFIXES note), so they held whatever the allocation
+    did: the index query was zero in most layer builds and not in a few. They are set to 1.
     """
-    import json
-    import shutil
-
-    from helper import config_norm_cache_key
-
-    if os.path.isdir(model_path):
-        # create_attention_layer resolves ids through _resolve_local_model_path
-        # before this shim, so model_path is normally already a local config
-        # dir; snapshot_download requires a Hub repo id and would reject it.
-        src = model_path
-    else:
-        from huggingface_hub import snapshot_download
-
-        src = snapshot_download(model_path, allow_patterns=["*.json"])
-    # Key the cache on the config CONTENT, not just the source path: bundled
-    # model configs can change under an unchanged path (repo update), and a
-    # path-only key would keep serving the stale normalized copy. The key
-    # hashes every JSON in src (config.json + side-cars) — the copytree below
-    # materializes them all and ModelConfig.from_pretrained reads side-cars
-    # too. Content freshness of src itself is the resolver's job:
-    # _materialize_aic_cached_config refreshes the bundled copy on change.
-    dst = os.path.join(
-        os.path.expanduser("~/.cache/aic_collector/glm_dsa_config_norm"),
-        config_norm_cache_key(src),
-    )
-    config_path = os.path.join(dst, "config.json")
-    if not os.path.exists(config_path):
-        staging = f"{dst}.tmp-{os.getpid()}"
-        try:
-            shutil.copytree(src, staging, dirs_exist_ok=True)
-            with open(os.path.join(staging, "config.json"), encoding="utf-8") as f:
-                cfg = json.load(f)
-            cfg.pop("layer_types", None)
-            with open(os.path.join(staging, "config.json"), "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            try:
-                os.replace(staging, dst)
-            except OSError:
-                # Another worker may have won the atomic-rename race — but
-                # verify before trusting that assumption: a permission or
-                # disk-full failure would otherwise be swallowed and a
-                # non-existent path returned.
-                if not os.path.exists(config_path):
-                    raise
-        finally:
-            # Covers both the race-loser branch and any earlier failure
-            # (copytree/json), so a partial staging dir never leaks under
-            # ~/.cache/aic_collector/.
-            shutil.rmtree(staging, ignore_errors=True)
-    return dst
+    indexer = getattr(attn_module, "indexer", None)
+    if indexer is None:
+        return
+    initialize_dummy_weights(indexer, low=-0.1, high=0.1)
+    with torch.no_grad():
+        for module in attn_module.modules():
+            if type(module).__name__ in ("RMSNorm", "LayerNorm"):
+                module.weight.fill_(1.0)
+                if getattr(module, "bias", None) is not None:
+                    module.bias.zero_()
+            # Only the NVFP4 linear methods give a module an alpha parameter.
+            if isinstance(getattr(module, "alpha", None), torch.nn.Parameter):
+                for name in ("input_scale", "inv_input_scale", "alpha"):
+                    scalar = getattr(module, name, None)
+                    if isinstance(scalar, torch.nn.Parameter):
+                        scalar.fill_(1.0)
 
 
 def create_attention_layer(
@@ -324,47 +276,23 @@ def create_attention_layer(
     # path, whose ~/.cache/huggingface/modules/_remote_code.lock serializes the 8
     # parallel workers and caused mass file-lock Timeouts on the *_module ops. The
     # bundled config (src/aisim_core/model_configs/) carries every dimension the
-    # bare-layer build needs — including the sparse index_* fields read below — and
-    # already omits both auto_map and the layer_types field, so this also makes the
-    # GLM-5.2 layer_types shim a no-op for bundled models.
+    # bare-layer build needs, including the sparse index_* fields.
     model_path = _resolve_local_model_path(model_path)
 
-    # GLM-5 uses model_type "glm_moe_dsa" / arch "GlmMoeDsaForCausalLM" which
-    # TRT-LLM doesn't recognise.  ModelConfig.from_pretrained() only auto-builds
-    # sparse_attention_config for "DeepseekV32ForCausalLM", so we pre-read the
-    # HF config and supply it manually for GLM-5. See
-    # _config_dir_without_layer_types for the GLM-5.2 layer_types shim.
-    sparse_attention_config = None
     import transformers
-
-    _cfg_dict, _ = transformers.PretrainedConfig.get_config_dict(model_path)
-    if _cfg_dict.get("model_type") == "glm_moe_dsa":
-        from tensorrt_llm._torch.model_config import DeepSeekSparseAttentionConfig
-
-        sparse_attention_config = DeepSeekSparseAttentionConfig(
-            index_n_heads=_cfg_dict["index_n_heads"],
-            index_head_dim=_cfg_dict["index_head_dim"],
-            index_topk=_cfg_dict["index_topk"],
-        )
-        # glm_moe_dsa checkpoints (GLM-5.2) tag every layer with
-        # layer_types=['deepseek_sparse_attention', ...] for HF bookkeeping.
-        # TRT-LLM never reads the field (DSA layer routing is driven by
-        # index_topk_freq / index_skip_topk_offset), but the transformers
-        # 5.5.x validate_layer_type validator rejects the unknown entry, so
-        # ModelConfig.from_pretrained() cannot load the checkpoint at all on
-        # 1.3.0rc20. Upstream drops the field before building the config
-        # (NVIDIA/TensorRT-LLM main, _torch/pyexecutor/config_utils.py
-        # "elif model_type == 'glm_moe_dsa'", not in any released rc yet);
-        # mirror that by loading from a config-only local copy with the inert
-        # field removed, leaving every framework code path untouched.
-        if "layer_types" in _cfg_dict:
-            model_path = _config_dir_without_layer_types(model_path)
 
     # Capture the original HF architecture *before* from_pretrained() which
     # may remap the model_type.  We return it separately because ModelConfig
     # may be frozen and cannot accept new attrs.
+    _cfg_dict, _ = transformers.PretrainedConfig.get_config_dict(model_path)
     original_architecture = _cfg_dict.get("architectures", [_cfg_dict.get("model_type", "unknown")])[0]
 
+    # No sparse_attention_config is passed, as in a serving deployment that sets none:
+    # from_pretrained builds the DSA config from the checkpoint's index_* fields for both
+    # DeepseekV32ForCausalLM and GlmMoeDsaForCausalLM (_torch/model_config.py:1202-1262,
+    # the no-user-config branch), and loads a glm_moe_dsa config through the registered
+    # DeepseekV3Config after dropping its HF-only layer_types
+    # (pyexecutor/config_utils.py:930, 1017-1027).
     model_config = ModelConfig.from_pretrained(
         model_path,
         mapping=mapping,
@@ -372,7 +300,7 @@ def create_attention_layer(
         use_cuda_graph=False,
         force_dynamic_quantization=False,
         spec_config=None,
-        sparse_attention_config=sparse_attention_config,
+        sparse_attention_config=None,
         max_num_tokens=131072,
         max_seq_len=163840,
         moe_max_num_tokens=None,
@@ -389,13 +317,12 @@ def create_attention_layer(
 
     pretrained_config = model_config.pretrained_config
 
-    # GLM-5 uses model_type "glm_moe_dsa" / arch "GlmMoeDsaForCausalLM" but
-    # TRT-LLM only recognises "deepseek_v32" / "DeepseekV32ForCausalLM".
-    # The architecture is identical, so we remap to avoid falling into the
-    # wrong code path (MLA instead of DSA).
+    # DeepseekV3DecoderLayer builds DeepseekV32Attention (the DSA module) only for
+    # model_type "deepseek_v32" (models/modeling_deepseekv3.py:1348-1360). Serving's
+    # DeepseekV3ForCausalLM.__init__ remaps glm_moe_dsa to it first (:2025-2028); this
+    # bare-layer build skips that constructor, so it applies the same remap.
     if pretrained_config.model_type == "glm_moe_dsa":
         pretrained_config.model_type = "deepseek_v32"
-        pretrained_config.architectures = ["DeepseekV32ForCausalLM"]
 
     # Override for single-layer, single-GPU benchmark
     pretrained_config.num_hidden_layers = 1
@@ -420,15 +347,15 @@ def create_attention_layer(
     # Serving applies QuantConfig.exclude_modules in
     # DecoderModelForCausalLM.__post_init__ via
     # apply_quant_config_exclude_modules() (_torch/models/
-    # modeling_utils.py:488-541): every named module matching an
+    # modeling_utils.py:438-485, 714-720): every named module matching an
     # exclusion pattern has its quant_config replaced by a fresh QuantConfig
     # carrying only kv_cache_quant_algo, before weights are (re)created.
     # This bare-layer build skips __post_init__, which left kv_b_proj
     # quantized even though every fp8 weight_block_size checkpoint
     # translation force-excludes *kv_b_proj*/*k_b_proj*
-    # (model_config.py:481-490, GLM-5's qk_nope_head_dim=192
+    # (_torch/model_config.py:774-782, GLM-5's qk_nope_head_dim=192
     # cannot tile into 128x128 scale blocks) — so MLA.create_weights
-    # (attention.py:1558,1571-1584) built an fp8 k_b_proj_trans and routed
+    # (attention/mla.py:720-752) built an fp8 k_b_proj_trans and routed
     # the absorption bmm down a path serving never takes for these
     # checkpoints. Mirror the pass here, before create_weights, so weight
     # dtypes come out serving-identical. The serving loop's fused-gate_up/
@@ -449,6 +376,7 @@ def create_attention_layer(
     layer.to(device)
 
     initialize_dummy_weights(layer)
+    _give_index_scores_magnitude(layer.self_attn)
     for module in layer.modules():
         if hasattr(module, "post_load_weights") and not getattr(module, "_weights_removed", False):
             module.post_load_weights()
@@ -466,7 +394,56 @@ def create_attention_layer(
     layer.next_layer_layernorm = next_ln
 
     attn_module = layer.self_attn
+    # DSA too: its tunable ops are Linear projections as well. Besides the MLA projections
+    # (attention/backends/sparse/dsa/module.py:258, 272) the indexer adds one, wq_b
+    # (dsa/indexer.py:846, called at :2327) with the layer's GEMM quant. Its fused
+    # wk + weights_proj GEMM is an F.linear (:2383, :2391), and no AutoTuner op runs
+    # anywhere under attention/backends/sparse/dsa/ or modules/top_k.py: the DeepGEMM and
+    # CuTe DSL MQA logits, top-k and the sparse MLA kernels have no tactics to tune.
+    _autotune_projections(attn_module, _SERVING_WARMUP_NUM_TOKENS, device)
     return attn_module, model_config, original_architecture
+
+
+# Serving tunes every tunable op in one autotune() pass at warmup: a context forward of
+# curr_max_num_tokens tokens (max_num_tokens, 8192 by default, llmapi/llm_args.py:5932-5933,
+# unless the KV pool holds fewer), then a one-token generation forward
+# (pyexecutor/engine/runners/decoder/warmup.py:1050-1068, 1098-1159). In the MLA module the
+# tunable ops are the projection GEMMs (collect_gemm.py explains each GEMM type: nvfp4 tunes
+# its backend per power-of-2 bucket up to the pass's M; fp8_block on SM100/103 tunes its quant
+# kernel at the pass's M only and JITs DeepGEMM; bf16 calls no tunable op), and each projection
+# sees the forward's new-token count. The CuTe DSL MLA decode is tunable too, but its one tactic
+# per bucket is the cache-miss default (collect_mla.py). So every projection is tuned at
+# serving's two warmup token counts when the layer is built, and a context point with more new
+# tokens than that first gets a pass at its own count, which a deployment that runs it
+# (max_num_tokens >= that count) tunes at warmup. On the cached-KV context path kv_b_proj also
+# sees the cached prefix (attention/mla.py:1241); serving tunes it only at new-token counts too.
+_SERVING_WARMUP_NUM_TOKENS: tuple[int, ...] = (8192, 1)
+# The largest token count each built attention module is tuned at.
+_TUNED_NUM_TOKENS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _autotune_projections(attn_module, num_tokens: tuple[int, ...], device: str) -> None:
+    """Forward every projection of ``attn_module`` at each count of ``num_tokens`` under
+    autotune(), as serving's warmup pass does; the tuned tactics stay in the worker's
+    AutoTuner cache for the timed forwards."""
+    start = time.perf_counter()
+    projections = [module for module in attn_module.modules() if isinstance(module, Linear)]
+    with torch.inference_mode(), autotune():
+        for tokens in num_tokens:
+            for projection in projections:
+                projection.forward(
+                    torch.randn(
+                        (tokens, projection.in_features),
+                        dtype=projection.dtype or torch.bfloat16,
+                        device=device,
+                    )
+                )
+    torch.cuda.synchronize()
+    _TUNED_NUM_TOKENS[attn_module] = max(max(num_tokens), _TUNED_NUM_TOKENS.get(attn_module, 0))
+    print(
+        f"  [MLA module autotune] {len(projections)} projections at num_tokens={list(num_tokens)}: "
+        f"{time.perf_counter() - start:.1f} s"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -507,6 +484,67 @@ def _cached_attention_layer(model_path: str, num_heads: int, use_fp8_kv_cache: b
     return entry
 
 
+# Distinct history rows: a longer history repeats them, so writing it costs one scatter per
+# this many tokens and no further sampling. A row then recurs a handful of times in the
+# longest histories, far below the tie counts the top-k kernels treat specially.
+_HISTORY_ROWS = 1 << 18
+
+
+def _write_indexer_history(indexer, attn_metadata, device: str) -> None:
+    """Write the index K of the cached history the DSA indexer scores and selects from.
+
+    add_dummy_requests only assigns blocks. Nothing here runs the forwards that would have
+    written the history, so the indexer K-cache held zeros there: every cached candidate
+    scored exactly 0.0 and the top-k was timed on ties, a case serving does not have (a
+    history of exactly index_topk tokens took several times the top-k time of a longer one,
+    and every other indexed row timed the cheapest top-k). Serving writes a token's index K
+    when it computes it: the k_norm output goes through Indexer._prep_q_or_k (fused cat and
+    FP8/FP4 quantize) and Indexer._update_k_cache (indexer_k_cache_scatter_op) at the slots
+    the metadata derives with _compute_slot_mappings (attention/backends/sparse/dsa/indexer.py;
+    on_update_kv_lens, dsa/metadata.py). Seeded N(0, 1) rows take the same quantizer and
+    scatter op at the history positions, outside the measurement. They stand for no particular
+    checkpoint distribution. Same treatment as the SGLang DSA modules.
+    """
+    params = type(indexer).build_indexer_params(attn_metadata)
+    if params is None:
+        return
+    cached = params.cached_kv_tokens.to(device=device, dtype=torch.int64)
+    total = int(cached.sum())
+    if total == 0:
+        return
+    rows = min(total, _HISTORY_ROWS)
+    generator = torch.Generator(device=device).manual_seed(0)
+    k = torch.randn((rows, indexer.head_dim), generator=generator, device=device).to(torch.bfloat16)
+    k_data, k_scale = indexer._prep_q_or_k(*k.split([indexer.rope_dim, indexer.head_dim - indexer.rope_dim], dim=-1))
+    if k_scale.element_size() == 1:
+        k_scale = k_scale.view(torch.int32)
+    # The module of the DSA Indexer, which a DeepSeek-V4 indexer derives from.
+    compute_slot_mappings = next(
+        sys.modules[cls.__module__]._compute_slot_mappings
+        for cls in type(indexer).__mro__
+        if hasattr(sys.modules[cls.__module__], "_compute_slot_mappings")
+    )
+    slot_dtype = attn_metadata.slot_mapping_fp8.dtype
+    k_cache = attn_metadata.kv_cache_manager.get_indexer_k_cache_buffers(indexer.layer_idx)
+    ends = torch.cumsum(cached, 0)
+    for start in range(0, total, rows):
+        # History tokens in request order: the request and the position in its sequence.
+        token = torch.arange(start, min(start + rows, total), device=device)
+        request = torch.searchsorted(ends, token, right=True)
+        data_slots, scale_slots = compute_slot_mappings(
+            token - (ends - cached)[request],
+            attn_metadata.indexer_k_cache_block_offsets,
+            request,
+            params.head_dim,
+            params.tokens_per_block,
+            params.quant_block_size,
+            data_bytes_per_token=params.data_bytes_per_token,
+        )
+        torch.ops.trtllm.indexer_k_cache_scatter_op(
+            k_data, k_scale, k_cache, data_slots.to(slot_dtype), scale_slots.to(slot_dtype), token.numel()
+        )
+
+
 def create_kv_cache_and_metadata(
     model_config: ModelConfig,
     attn_module,
@@ -529,18 +567,12 @@ def create_kv_cache_and_metadata(
     qk_rope_head_dim = config.qk_rope_head_dim
     head_dim = kv_lora_rank + qk_rope_head_dim
 
-    # SM90 serving forces tokens_per_block=64 for FlashMLA-eligible MLA models
-    # (head_dim==576): model_config.enable_flash_mla
-    # (tensorrt_llm/_torch/model_config.py) plus the
-    # py_executor_creator.py override; the attention op enables FlashMLA only
-    # for SM90 && tokens_per_block==64
-    # (cpp/tensorrt_llm/thop/attentionOp.cpp:1235), and its
-    # 1.3.0rc20 SM90 FMHA generation fallback rejects FP8 KV cache.
-    # TRT-LLM PR #10261 (>=1.3.0rc0) dropped numTokensPerPage=64 trtllm-gen MLA
-    # cubins for DeepSeek-V3 dims (headDimQk=576, headDimV=512) on Blackwell;
-    # only P32 remains there.
-    is_sm90_flash_mla = torch.cuda.get_device_capability() == (9, 0) and head_dim == 576
-    tokens_per_block = 64 if is_sm90_flash_mla else 32
+    # SM90 serving runs FlashMLA for head_dim 576 (ModelConfig.enable_flash_mla,
+    # _torch/model_config.py:466-475) and forces 64-token pages for it
+    # (pyexecutor/py_executor_creator.py:859-873); the attention op runs FlashMLA only
+    # on that page (thop/attentionOp.cpp:1474). Every other case keeps TRT-LLM's
+    # KvCacheConfig default (llmapi/llm_args.py:5040-5041), 32.
+    tokens_per_block = 64 if model_config.enable_flash_mla else int(KvCacheConfig().tokens_per_block)
 
     prefix_len = int(prefix_len) if is_context else 0
 
@@ -556,18 +588,33 @@ def create_kv_cache_and_metadata(
         kv_cache_len = seq_len
 
     # --- KV Cache Manager ---
+    # The pool is sized for this case's requests; its size is not a timing input
+    # (MLA and the DSA indexer read KV through the block table). A DSA layer
+    # adds an indexer K-cache buffer (DSACacheManagerV2._extra_buffers_per_layer,
+    # attention/backends/sparse/dsa/cache_manager.py), a second pool in the same
+    # pool group, and V2 splits the quota with every pool rounded up to the GPU
+    # allocation unit, 2 MiB growing to 32 MiB with the quota
+    # (StorageManager::computeSlotCountForLevel, ratioToSlotCountList,
+    # kv_cache_manager_v2/storageManager.cpp). On a one-layer pool that rounding
+    # left the MLA pool short of one request: max_seq_len was clamped
+    # (clamp_max_seq_len_for_mem) and add_dummy_requests overran the page-index
+    # buffer ("base page indices is too short", every DSA case). DSA quotas
+    # therefore carry one largest unit per pool, converted to tokens at the
+    # smallest per-token footprint (head_dim bytes, an FP8 row); dense MLA has
+    # one pool and keeps the exact size.
+    kv_tokens = batch_size * _round_up(max_seq, tokens_per_block)
+    if model_config.sparse_attention_config is not None:
+        kv_tokens += _round_up(-(-_DSA_POOL_ROUNDING_BYTES // head_dim), tokens_per_block)
     kv_cache_config = KvCacheConfig(
-        max_tokens=batch_size * _round_up(max_seq, tokens_per_block),
+        max_tokens=kv_tokens,
         enable_block_reuse=False,
+        # No host tier: the deviation note is at the KvCacheConfig in collect_dsv4_attn.py.
+        host_cache_size=0,
     )
-    import inspect as _inspect
-
-    _kv_sig = _inspect.signature(get_kv_cache_manager_cls)
-    if "kv_cache_config" in _kv_sig.parameters:
-        # TRT-LLM >= rc9: requires kv_cache_config argument
-        kv_cache_manager_cls = get_kv_cache_manager_cls(model_config, kv_cache_config)
-    else:
-        kv_cache_manager_cls = get_kv_cache_manager_cls(model_config)
+    # Serving's class: KvCacheConfig.use_kv_cache_manager_v2 defaults to True
+    # (llmapi/llm_args.py:5057-5064), so a dense MLA model resolves KVCacheManagerV2
+    # (pyexecutor/_util.py:123-128, 447-448) and a DSA model its sparse V2 manager (:438-446).
+    kv_cache_manager_cls = get_kv_cache_manager_cls(model_config, kv_cache_config)
     kv_cache_dtype = DataType.FP8 if use_fp8_kv_cache else torch_dtype_to_binding(torch.bfloat16)
 
     layer_mask = [True]  # single layer
@@ -584,9 +631,8 @@ def create_kv_cache_and_metadata(
         dtype=kv_cache_dtype,
         layer_mask=layer_mask,
         # Serving passes sparse_attention_config + pretrained_config when
-        # constructing cache managers (tensorrt_llm/_torch/pyexecutor/
-        # _util.py::_create_kv_cache_manager); the DSA cache
-        # manager requires both, the dense manager swallows them via kwargs.
+        # constructing MLA cache managers (pyexecutor/_util.py:3575-3607); the DSA
+        # cache managers require both, the dense managers swallow them via kwargs.
         sparse_attention_config=model_config.sparse_attention_config,
         pretrained_config=config,
         model_config=model_config,
@@ -594,7 +640,11 @@ def create_kv_cache_and_metadata(
 
     request_ids = list(range(batch_size))
     token_nums = [prefix_len + seq_len_q] * batch_size if is_context else [max_seq] * batch_size
-    kv_cache_manager.add_dummy_requests(request_ids, token_nums)
+    # add_dummy_requests returns None when the pool cannot hold the requests, which
+    # would leave their block table unset.
+    if kv_cache_manager.add_dummy_requests(request_ids, token_nums) is None:
+        kv_cache_manager.shutdown()
+        raise RuntimeError("FIXME(kernel-limit): does not fit: the KV cache pool cannot hold the case's requests")
 
     # --- Attention Metadata ---
     attention_cls = get_attention_backend(
@@ -602,14 +652,8 @@ def create_kv_cache_and_metadata(
         model_config.sparse_attention_config,
     )
 
-    sm_major = torch.cuda.get_device_capability()[0]
-    _enable_flash_mla = (
-        model_config.attn_backend == "TRTLLM" and (kv_lora_rank + qk_rope_head_dim) == 576 and sm_major == 9
-    )
-
-    # 1.3.0rc20 metadata classes take lowered SparseMetadataParams instead of
-    # the raw sparse_attention_config (tensorrt_llm/_torch/pyexecutor/
-    # model_engine.py::_set_up_attn_metadata).
+    # Metadata classes take the lowered SparseMetadataParams, not the raw
+    # sparse_attention_config (build_attention_metadata, pyexecutor/engine/metadata.py:72-77).
     sparse_metadata_params = (
         model_config.sparse_attention_config.to_sparse_metadata_params(pretrained_config=config)
         if model_config.sparse_attention_config is not None
@@ -621,7 +665,8 @@ def create_kv_cache_and_metadata(
         max_num_tokens=total_tokens,
         kv_cache_manager=kv_cache_manager,
         mapping=mapping,
-        enable_flash_mla=_enable_flash_mla,
+        # build_attention_metadata (pyexecutor/engine/metadata.py:86).
+        enable_flash_mla=model_config.enable_flash_mla,
         seq_lens=torch.tensor([seq_len_q] * batch_size, dtype=torch.int32),
         position_ids=None,
         num_contexts=batch_size if is_context else 0,
@@ -632,11 +677,11 @@ def create_kv_cache_and_metadata(
         cross=None,
         request_ids=request_ids,
         # Serving sets a context request's prompt_lens to the CURRENT-CHUNK
-        # token count only — prompt_tokens = all_prompt_tokens[begin_compute:
-        # end_compute]; prompt_lengths.append(len(prompt_tokens)) — while the
-        # cached prefix travels separately via num_cached_tokens_per_seq
-        # (model_engine.py:2986-3017). kv_lens is then derived as
-        # cached_token_lens + seq_lens_kv (attention_backend/trtllm.py:525),
+        # token count only — prompt_tokens = request.get_tokens_range(0,
+        # begin_compute, end_compute); prompt_lengths.append(len(prompt_tokens)) —
+        # while the cached prefix travels separately via num_cached_tokens_per_seq
+        # (pyexecutor/engine/runners/decoder/inputs.py:1000-1014). kv_lens is then
+        # derived as cached_token_lens + seq_lens_kv (attention/backends/trtllm.py:1047),
         # so prompt_lens must NOT be inflated by the prefix: it feeds
         # host_context_lengths, which the SM100 MLA context rope kernel
         # (applyMLARopeAndAssignQKVKernelOptContext via
@@ -648,7 +693,7 @@ def create_kv_cache_and_metadata(
         # host_context_lengths.
         prompt_lens=[seq_len_q if is_context else kv_cache_len] * batch_size,
         # Serving computes enable_context_mla_with_cached_kv = is_mla &&
-        # (cache_reuse || chunked_prefill) (model_engine.py:1762);
+        # (cache_reuse || chunked_prefill) (pyexecutor/engine/metadata.py:64-68);
         # a prefix-cached context request only exists under cache reuse, so
         # mirror that state here. Without the flag the DSA indexer takes the
         # no-cache alias branch for slot_mapping_*_fullkv (dsa.py
@@ -669,6 +714,14 @@ def create_kv_cache_and_metadata(
         attn_metadata.indexer = attn_module.indexer
 
     attn_metadata.prepare()
+
+    if getattr(attn_module, "indexer", None) is not None:
+        try:
+            with torch.inference_mode():
+                _write_indexer_history(attn_module.indexer, attn_metadata, device)
+        except Exception:
+            kv_cache_manager.shutdown()
+            raise
 
     return kv_cache_manager, attn_metadata
 
@@ -705,10 +758,10 @@ def run_mla_module(
     # this module does not build.
     if attn_type == "mla" and get_sm_version() < 90:
         raise ValueError("FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)")
-    # FIXME(kernel-limit): SM120 MLA context takes serving's dense-expand path
-    # (forward_context_default, attention.py:2015-2040 — SM100/103
-    # route to the absorbed/trtllm-gen path instead), whose
-    # maybe_compiled_copy_ of k_nope into k fails under torch-inductor
+    # FIXME(kernel-limit): SM120 MLA context expands k_nope through kv_b_proj and
+    # maybe_compiled_copy_ into k (forward_context_default, attention/mla.py:1178-1188;
+    # SM100/103 with a bf16 kv_b_proj write k_nope with per-head BMMs instead, :1152-1177,
+    # _use_kvbproj_strided_out :1099-1121), and that copy fails under torch-inductor
     # autotune at huge extents: h=128 cases with ~>=49k total tokens die with
     # CUDA "invalid argument" (deterministic repro on RTX PRO 6000,
     # CUDA_LAUNCH_BLOCKING=1: inductor copy kernel launched with
@@ -745,6 +798,11 @@ def run_mla_module(
     attn_module, model_config, original_architecture = _cached_attention_layer(
         model_path, num_heads, use_fp8_kv_cache, gemm_type, device
     )
+    # A context point past serving's warmup token count tunes its projections at
+    # its own count first (_SERVING_WARMUP_NUM_TOKENS).
+    new_tokens = batch_size * seq_len if is_context else batch_size
+    if new_tokens > _TUNED_NUM_TOKENS.get(attn_module, 0):
+        _autotune_projections(attn_module, (new_tokens,), device)
     _mark("layer")
 
     # The KV pool is released on every exit path: a series keeps running after a
@@ -856,10 +914,16 @@ def run_mla_module(
         architecture = original_architecture
 
         # TRT-LLM's MLA context attention quantizes Q/K/V to FP8 itself when the
-        # KV cache is FP8 on SM90/100/103/120 (thop/attentionOp.cpp), so those rows
-        # time FP8 compute although the inputs are BF16. Same label as collect_mla.py.
+        # KV cache is FP8 on SM90/100/103/107/120 (thop/attentionOp.cpp:1466-1470), so
+        # those rows time FP8 compute although the inputs are BF16. Same label as
+        # collect_mla.py.
         mla_dtype = compute_dtype
-        if attn_type == "mla" and is_context and kv_cache_dtype == "fp8" and get_sm_version() in (90, 100, 103, 120):
+        if (
+            attn_type == "mla"
+            and is_context
+            and kv_cache_dtype == "fp8"
+            and get_sm_version() in (90, 100, 103, 107, 120)
+        ):
             mla_dtype = "fp8"
 
         log_perf(

@@ -407,17 +407,17 @@ def test_moe_ep_alone_resolves_to_the_wideep_trtllm_pin():
 
 
 def test_mixing_stock_and_wideep_trtllm_ops_fail_closes_on_different_pins():
-    # Stock trtllm (1.3.0rc29 default) and wideep_trtllm (1.3.0rc20) no longer
-    # share a pin (framework_manifest.yaml): a mixed stock+wideep
+    # Stock trtllm gemm (its 1.4.0rc2 family pin) and wideep_trtllm (1.3.0rc20)
+    # do not share a pin (framework_manifest.yaml): a mixed stock+wideep
     # request is a multi-runtime request and must be split, exactly like
     # wideep_sglang (0.5.10) vs stock sglang. moe_ep alone still resolves to
-    # the WideEP pin (test above); the stock op alone resolves to rc29.
+    # the WideEP pin (test above); the stock op alone resolves to its own pin.
     from collector.framework_manifest import require_collector_runtime
 
-    with pytest.raises(RuntimeError, match=r"different runtime versions \(1\.3\.0rc29 != 1\.3\.0rc20\)"):
-        require_collector_runtime("trtllm", "1.3.0rc29", requested_ops={"gemm", "moe_ep"}, wideep_ops={"moe_ep"})
-    stock = require_collector_runtime("trtllm", "1.3.0rc29", requested_ops={"gemm"}, wideep_ops={"moe_ep"})
-    assert stock.framework == "trtllm" and stock.version == "1.3.0rc29"
+    with pytest.raises(RuntimeError, match=r"different runtime versions \(1\.4\.0rc2 != 1\.3\.0rc20\)"):
+        require_collector_runtime("trtllm", "1.4.0rc2", requested_ops={"gemm", "moe_ep"}, wideep_ops={"moe_ep"})
+    stock = require_collector_runtime("trtllm", "1.4.0rc2", requested_ops={"gemm"}, wideep_ops={"moe_ep"})
+    assert stock.framework == "trtllm" and stock.version == "1.4.0rc2"
 
 
 def test_moe_ep_is_requested_independently_of_the_default_trtllm_plan():

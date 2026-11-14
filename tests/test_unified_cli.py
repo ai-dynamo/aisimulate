@@ -2827,6 +2827,7 @@ def test_invalid_analytical_epd_table_includes_banner():
     assert "AISim analytical EPD" in output
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):
     shape = {"replicas": 1, "tensor": 2, "pipeline": 1, "attention_data": 4, "moe_tensor": 1, "moe_expert": 8}
     config = {
@@ -2985,6 +2986,7 @@ def test_failed_telemetry_serialization_removes_partial_artifacts(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("detail", ["memory", "all"])
 @pytest.mark.parametrize("afd_roles", [("aggregated",), ("prefill",), ("decode",), ("prefill", "decode")])
 def test_native_afd_detail_reaches_final_cli_consumer(tmp_path, capsys, detail, afd_roles):

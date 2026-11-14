@@ -54,6 +54,11 @@ model_case_values:
       sglang_moe_scoring_func: sigmoid
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
+      # SGLang serves modelopt_fp4 MiniMax-M2 checkpoints on
+      # flashinfer_trtllm_routed on SM100/103
+      # (arg_groups/model_overrides/minimax_m2.py:23-32 at v0.5.23).
+      sglang_moe_backends:
+        nvfp4: {100: flashinfer_trtllm_routed, 103: flashinfer_trtllm_routed}
       wideep: true
       quantization_modes: [nvfp4]
 

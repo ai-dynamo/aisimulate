@@ -405,13 +405,35 @@ class MoeCase(NamedTuple):
 _MOE_SMS = (80, 86, 89, 90, 100, 103, 120)
 _FP4_EXPERT_MODES = frozenset({"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"})
 
+# SGLang serves these architectures' MoE on triton_kernel at EP1 where the per-SM
+# pin is Triton (_sglang_moe_runner). Source: sglang v0.5.23. GPT-OSS's model
+# override turns an auto runner into triton_kernel when ep_size == 1, the
+# triton_kernels package is installed and no --quantization is passed
+# (srt/arg_groups/model_overrides/gpt_oss.py:102-120): sglang-kernel ships the
+# package (kernels/aot/CMakeLists.txt:548-553; is_triton_kernels_available,
+# srt/utils/common.py:4814-4815) and GPT-OSS checkpoints are served without the
+# flag. SM100/103 and SM120 take flashinfer_mxfp4 first (gpt_oss.py:64-75). At
+# EP>1 the runner stays auto, which Mxfp4MoEMethod resolves to Triton
+# (srt/layers/quantization/mxfp4.py:1443-1450): the per-SM pin
+# (cases/base_ops/moe.yaml moe_sglang.backends.w4a16_mxfp4, Triton on SM89/90).
+SGLANG_EP1_TRITON_KERNELS_ARCHITECTURES = frozenset({"GptOssForCausalLM"})
+# SGLang routes these architectures' experts with the model's own routing
+# function, not the row's routing fields; collector/sglang/collect_moe.py builds
+# that TopK (_gemma4_routing_function).
+SGLANG_GEMMA4_ROUTING_ARCHITECTURES = frozenset({"Gemma4ForConditionalGeneration"})
+_SGLANG_ARCHITECTURE_SPECIFIC_MOE = SGLANG_EP1_TRITON_KERNELS_ARCHITECTURES | SGLANG_GEMMA4_ROUTING_ARCHITECTURES
+
 
 def _is_fp4_experts(layer: MoeCommonTestCase, moe_type: str) -> bool:
     return layer.architecture == "DeepseekV4ForCausalLM" and moe_type in _FP4_EXPERT_MODES
 
 
 def _moe_layer_identity(layer: MoeCommonTestCase, moe_type: str) -> tuple:
-    """What a MoE case times besides its consumer key: routing and activation, runner pins, quant config."""
+    """What a MoE case times besides its consumer key: routing and activation, runner pins, quant config.
+
+    An architecture SGLang builds its own way (EP1 runner, routing function)
+    is part of what the case times.
+    """
     routing = tuple(
         (field.name, getattr(layer, field.name))
         for field in dataclasses.fields(layer)
@@ -427,7 +449,8 @@ def _moe_layer_identity(layer: MoeCommonTestCase, moe_type: str) -> tuple:
         json.dumps(get_moe_quantization_module_config(backend, moe_type, model_name=layer.model_name), sort_keys=True)
         for backend in ("sglang", "trtllm", "vllm")
     )
-    return routing, tuple(runners), module_configs, _is_fp4_experts(layer, moe_type)
+    sglang_architecture = layer.architecture if layer.architecture in _SGLANG_ARCHITECTURE_SPECIFIC_MOE else None
+    return routing, tuple(runners), module_configs, _is_fp4_experts(layer, moe_type), sglang_architecture
 
 
 def _expand_moe() -> list[MoeCase]:
@@ -488,9 +511,15 @@ def _sglang_moe_runner(case: MoeCase, sm_version: int | None) -> str:
     """The MoE runner SGLang serving picks for this case's checkpoint and quant mode on this SM.
 
     Pinned in cases/base_ops/moe.yaml moe_sglang.backends and a model row's
-    sglang_moe_backends.
+    sglang_moe_backends; an EP1 case of SGLANG_EP1_TRITON_KERNELS_ARCHITECTURES
+    runs triton_kernel where that pin is Triton, as serving's model override
+    decides by EP size.
     """
-    return get_sglang_moe_backend(_moe_layer_of(case), case.moe_type, sm_version)
+    layer = _moe_layer_of(case)
+    runner = get_sglang_moe_backend(layer, case.moe_type, sm_version)
+    if runner == "triton" and case.ep == 1 and layer.architecture in SGLANG_EP1_TRITON_KERNELS_ARCHITECTURES:
+        return "triton_kernel"
+    return runner
 
 
 def _sglang_moe_rows(case: MoeCase, sm_version: int | None, runner: str | None) -> list[list]:
@@ -1276,8 +1305,7 @@ def _long_context_points(phase: str, sweep, max_position: int | None) -> list[tu
 
     Context follows serving's chunked prefill (the mla_module_plan comments): at most
     chunk_prefill_size new tokens and max_full_sequence_length KV tokens per forward,
-    prefix + seq_len within the model's context, and from long_prefix_min on only the
-    long-prefix sequence lengths. Generation is the decode grid plus the long KV lengths
+    and prefix + seq_len within the model's context. Generation is the decode grid plus the long KV lengths
     at small batch; a KV length leaves room for the decoded token.
     """
     if phase == "context":
@@ -1289,7 +1317,6 @@ def _long_context_points(phase: str, sweep, max_position: int | None) -> list[tu
             if batch * length <= sweep.context_chunk_prefill_size
             and batch * (length + prefix) <= sweep.context_max_full_sequence_length
             and (max_position is None or prefix + length <= max_position)
-            and (prefix < sweep.context_long_prefix_min or length in sweep.context_long_prefix_sequence_lengths)
         ]
     grid = {
         (batch, length)
@@ -1942,6 +1969,16 @@ _DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
 # The mHC call sites each architecture's serving forward runs. GLM-5.3-Flash also
 # fuses the previous sublayer's post into the next pre and expands/contracts the
 # residual stream once per forward (collector/vllm/collect_mhc_module.py).
+#
+# DeepSeek-V4 is collected as separate pre (no fused norm) and post on purpose,
+# although serving fuses post + next pre (+ norm) at every layer boundary but the
+# first and last, on all three frameworks. Measured on H20 (hc_mult 4, hidden 4096,
+# 1k/8k tokens, 2026-07): fused post+pre+norm is within 1-2% of pre + post, and the
+# fused norm adds 2-3% to pre; the SDK's DeepSeekV4 model prices pre + attn_norm +
+# post per layer. Collecting fused_post_pre for DeepSeek-V4 is a producer + consumer
+# contract change (SDK pricing, aiconfigurator#1580), not a pin-bump item: a pin
+# bump keeps these two sites and only notes framework-specific gaps at the
+# collectors. Reopen it with an end-to-end measurement that shows the gap.
 _MHC_SITES = {
     _DSV4_ARCHITECTURE: ("pre", "post"),
     "Glm5NextForConditionalGeneration": ("pre", "post", "fused_post_pre", "expand", "contract"),
@@ -2144,8 +2181,8 @@ def _attention_owners(phase: str, case: AttentionCase) -> tuple[AttentionOwner, 
 def _sglang_attention_dispatch(phase: str) -> Callable[[AttentionCase, int | None], tuple[str, ...]]:
     """The SGLang backends serving runs a case on: one per model that plans the shape.
 
-    A shape two models serve on different backends (Nemotron-H on flashinfer,
-    the generic grid on trtllm_mha) is measured on both.
+    A shape two models serve on different backends (on SM100, Qwen3.5 on
+    triton and Qwen3.8 on trtllm_mha) is measured on both.
     """
 
     def dispatch(case: AttentionCase, sm_version: int | None) -> tuple[str, ...]:
@@ -2247,21 +2284,36 @@ def _vllm_attention_rows(phase: str):
     is_context = phase == "context"
 
     # vLLM's attention collector takes one head_dim and no sinks: it times
-    # MiMo-V2-Flash's head_dim 192 rows with V=192 (serving's V head is 128)
-    # and GPT-OSS's rows without attention sinks.
+    # MiMo-V2-Flash's head_dim 192 rows with V=192 on the native FLASH_ATTN
+    # path, where serving runs V=128 on FLASH_ATTN_DIFFKV or TRITON_ATTN_DIFFKV
+    # (vllm model_executor/models/mimo_v2.py:300-321), and GPT-OSS's rows
+    # without attention sinks.
+    # A shape that model profiles plan names them as a last argument, one
+    # [architecture, model] pair per profile. vLLM applies a model's own
+    # attention decisions through a per-architecture config hook
+    # (model_executor/models/config.py MODELS_CONFIG_MAP, applied by
+    # VllmConfig.try_verify_and_update_config, config/vllm.py:2629-2658 at
+    # v0.32.0); for the owners that have one, the collector builds its
+    # VllmConfig from the model's config so the hook decides as in serving
+    # (vllm/collect_attn.py models_with_config_hook). A shape only the base
+    # grid plans names none and keeps the generic config, as do owners
+    # without a hook.
     def rows(case: AttentionCase, sm_version: int | None, runner: str | None) -> list[list]:
-        return [
-            [
-                case.batch_size,
-                case.input_len,
-                case.num_heads,
-                case.num_kv_heads,
-                case.head_dim,
-                case.kv_cache_dtype == "fp8",
-                is_context,
-                case.window_size,
-            ]
+        row = [
+            case.batch_size,
+            case.input_len,
+            case.num_heads,
+            case.num_kv_heads,
+            case.head_dim,
+            case.kv_cache_dtype == "fp8",
+            is_context,
+            case.window_size,
         ]
+        owners = [owner for owner in _attention_owners(phase, case) if owner.from_model]
+        if any(owner.model_path is None or owner.architecture is None for owner in owners):
+            raise ValueError(f"an attention profile that plans {case} names no architecture or no model_path")
+        named = [list(pair) for pair in dict.fromkeys((owner.architecture, owner.model_path) for owner in owners)]
+        return [[*row, named]] if named else [row]
 
     return rows
 

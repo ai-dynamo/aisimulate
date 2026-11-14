@@ -290,6 +290,7 @@ def test_kv_path_tiny_budget_raises():
         )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.model(MAVERICK)
 def test_tp_that_does_not_split_heads_is_skipped_not_fatal(caplog):
     # 40 heads rule out tp=16 but not tp=8; a 16-GPU budget enumerates both.

@@ -35,9 +35,10 @@ schema_version: 1
 
 mappings:
   # ---------------------------------------------------------------- sglang
-  # Attention backend pins (serving-truth per SM):
-  # collector/sglang/collect_attn.py — SM>=110 or (SM>=100 & head_dim=192) ->
-  # triton; SM>=100 -> TRTLLMHAAttnBackend; else FlashAttentionBackend (fa3).
+  # Attention backend pins (serving-truth per SM): collector/sglang/collect_attn.py
+  # records the plan's dispatch (case_generator.sglang_default_attention_backend,
+  # overridden per architecture by case_generator.SGLANG_ATTENTION_BACKENDS) as
+  # kernel_source: fa3, fa4, flashinfer, trtllm_mha or triton.
   - {framework: sglang, kernel_source: flash_attention, backend: fa3, source: "collector/sglang/collect_attn.py + collect_mla.py (FlashAttentionBackend pin)"}
   - {framework: sglang, kernel_source: flash_attention_v3, backend: fa3, source: "collector/sglang/collect_attn_encoder.py"}
   - {framework: sglang, kernel_source: flash_attention_v4, backend: fa4, source: "collector/sglang/collect_attn_encoder.py"}
@@ -45,6 +46,7 @@ mappings:
   - {framework: sglang, kernel_source: trtllm_mla, backend: trtllm_mla, source: "collector/sglang/collect_mla.py (_select_default_mla_backend, SM100)"}
   - {framework: sglang, kernel_source: mla_trtllm_mla, backend: trtllm_mla, source: "collector/sglang/collect_mla_module.py (ordinary MLA module, server_args.attention_backend)"}
   - {framework: sglang, kernel_source: triton, backend: triton, source: "collector/sglang/collect_attn.py (TritonAttnBackend)"}
+  - {framework: sglang, kernel_source: fa4, backend: fa4, source: "collector/sglang/collect_attn.py (FlashAttentionBackend fa_impl_ver=4; MiMo-V2 on SM100/103)"}
   - {framework: sglang, kernel_source: fa3, backend: fa3, source: "collector/wideep/sglang (attn_backend arg)"}
   - {framework: sglang, kernel_source: flashinfer, backend: flashinfer, source: "collector/wideep/sglang (attn_backend arg)"}
   - {framework: sglang, kernel_source: flash_mla_with_kvcache, backend: flashmla, source: "collector/sglang/collect_dsv4_attn.py"}
@@ -58,7 +60,10 @@ mappings:
   - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: fp8}, backend: cutlass, source: "collector/sglang/collect_gemm.py (sgl_kernel fp8_scaled_mm)"}
   - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: fp8_block}, backend: deepgemm, source: "collector/sglang/collect_gemm.py (fp8_gemm_deepgemm)"}
   - {framework: sglang, kernel_source: sglang, match: {op_file: gemm_perf, gemm_dtype: nvfp4}, backend: flashinfer_cutlass, source: "collector/sglang/collect_gemm.py (flashinfer mm_fp4, backend=cutlass)"}
-  - {framework: sglang, kernel_source: sglang, backend: sgl_kernel, source: "collector/sglang/collect_computescale.py (sgl_per_token_quant_fp8; scale_matrix idem)"}
+  - {framework: sglang, kernel_source: sglang, match: {op_file: scale_matrix_perf}, backend: torch, source: "collector/sglang/collect_computescale.py up to v0.5.21 (static quant as torch div/clamp/cast elementwise ops)"}
+  - {framework: sglang, kernel_source: sglang, backend: sgl_kernel, source: "collector/sglang/collect_computescale.py up to v0.5.21 (AOT sgl_per_token_quant_fp8)"}
+  - {framework: sglang, kernel_source: sglang_jit_per_token_quant_fp8, backend: sgl_kernel, source: "collector/sglang/collect_computescale.py (serving's JIT per_token_quant_fp8, srt/layers/quantization/fp8_utils.py:2625 @v0.5.23)"}
+  - {framework: sglang, kernel_source: sglang_triton_static_quant_fp8, backend: triton, source: "collector/sglang/collect_computescale.py (serving's Triton static_quant_fp8, kernels/ops/quantization/fp8_kernel.py:713-769 @v0.5.23)"}
 
   # mla_bmm "default": torch.bmm for bf16, sgl_kernel bmm_fp8 (cublasLt) for fp8.
   - {framework: sglang, kernel_source: default, match: {op_file: mla_bmm_perf}, backend: cublas, source: "collector/sglang/collect_mla_bmm.py (torch.bmm / sgl_kernel bmm_fp8)"}
@@ -68,12 +73,14 @@ mappings:
   # bmm_out for bf16, fp8_block_scaling_bmm_out for fp8 on SM89/90/120.
   - {framework: trtllm, kernel_source: trtllm_bmm_out, match: {op_file: mla_bmm_perf}, backend: cublas, source: "collector/trtllm/collect_mla_bmm.py (torch.ops.trtllm.bmm_out)"}
   - {framework: trtllm, kernel_source: trtllm_bmm_out_dequant_bf16, match: {op_file: mla_bmm_perf}, backend: cublas, source: "collector/trtllm/collect_mla_bmm.py (fp8 case on SMs where serving dequantizes and runs bf16 bmm_out; attention.py:1159-1190@1.3.0rc20)"}
+  - {framework: trtllm, kernel_source: torch_bmm_dequant_bf16, match: {op_file: mla_bmm_perf}, backend: cublas, source: "collector/trtllm/collect_mla_bmm.py (fp8 case on the SM100 family: serving's fp8_block_scaling_bmm_out runs torch.bmm on the load-time dequantized bf16 weight; _torch/attention/mla.py:219-225@1.4.0rc2)"}
   - {framework: trtllm, kernel_source: trtllm_fp8_block_scaling_bmm_out, match: {op_file: mla_bmm_perf}, backend: trtllm_internal, source: "collector/trtllm/collect_mla_bmm.py (torch.ops.trtllm.fp8_block_scaling_bmm_out, SM89/90/120)"}
   - {framework: trtllm, kernel_source: default, match: {op_file: mla_bmm_perf, bmm_dtype: bfloat16}, backend: cublas, source: "collector/trtllm/collect_mla_bmm.py pre-label rows (rc20 campaign; torch.ops.trtllm.bmm_out)"}
   - {framework: trtllm, kernel_source: default, match: {op_file: mla_bmm_perf, bmm_dtype: fp8}, backend: trtllm_internal, source: "collector/trtllm/collect_mla_bmm.py pre-label rows (rc20 campaign; torch.ops.trtllm.fp8_block_scaling_bmm_out on SM89/90/120)"}
 
   # MoE families (label names the constructed serving method).
   - {framework: sglang, kernel_source: sglang_fused_moe_triton, backend: triton_fused_moe, source: "collector/sglang/collect_moe.py"}
+  - {framework: sglang, kernel_source: sglang_triton_kernel_moe, backend: triton_fused_moe, source: "collector/sglang/collect_moe.py (triton_kernel runner: triton_kernels matmul_ogs MoE; GPT-OSS W4A16 at EP1 on SM89/90, arg_groups/model_overrides/gpt_oss.py:102-120 @v0.5.23)"}
   - {framework: sglang, kernel_source: sglang_marlin_moe, backend: marlin, source: "collector/sglang/collect_moe.py (w4a16_mxfp4 GPT-OSS)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutedsl_moe, backend: flashinfer_cutedsl, source: "collector/sglang/collect_moe.py (nvfp4)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_mxfp4_moe, backend: flashinfer_trtllm_gen, source: "collector/sglang/collect_moe.py (w4a8_mxfp4_mxfp8)"}
@@ -137,17 +144,23 @@ mappings:
   - {framework: sglang, kernel_source: sglang_torch_linear, backend: cublas, source: "PR#1342 collect_gemm.py (torch.matmul/linear)"}
   - {framework: sglang, kernel_source: sglang_torch_bmm, backend: cublas, source: "PR#1342 collect_mla_bmm.py (torch.bmm)"}
   - {framework: sglang, kernel_source: sglang_sgl_kernel_bmm_fp8, backend: cublas, source: "PR#1342 collect_mla_bmm.py (sgl_kernel bmm_fp8 = cublasLt)"}
-  - {framework: sglang, kernel_source: sglang_flashinfer_bmm_fp8, backend: cublas, source: "collector/sglang/collect_mla_bmm.py:22-26 (sglang>=0.5.21: fp8_utils.bmm_fp8 wraps flashinfer.bmm_fp8 as custom op flashinfer_bmm_fp8_batched, docstring 'via flashinfer's cuBLAS backend', fp8_utils.py:246-273 @0.5.21); flashinfer csrc/bmm_fp8.cu bmm_fp8_internal_cublaslt"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bmm_fp8, backend: cublas, source: "collector/sglang/collect_mla_bmm.py (serving's sglang.kernels.ops.gemm.bmm_fp8, models/deepseek_common/attention_forward_methods/forward_mla.py:95-96 @v0.5.23 -> kernel registry gemm.bmm_fp8 -> kernels/ops/gemm/flashinfer_bmm_fp8.py custom op flashinfer_bmm_fp8_batched -> flashinfer.bmm_fp8 backend='cublas' @v0.7.2); flashinfer csrc/bmm_fp8.cu bmm_fp8_internal_cublaslt"}
   - {framework: sglang, kernel_source: sglang_sgl_kernel_fp8_scaled_mm, backend: cutlass, source: "PR#1342 collect_gemm.py (sgl_kernel fp8_scaled_mm)"}
+  - {framework: sglang, kernel_source: sglang_torch_scaled_mm, backend: cublas, source: "collector/sglang/collect_gemm.py (apply_fp8_linear: torch._scaled_mm rowwise when _prefer_torch_rowwise_fp8 holds on SM90, kernels/ops/gemm/__init__.py:30-107 @v0.5.23)"}
+  - {framework: sglang, kernel_source: sglang_triton_scaled_mm, backend: triton, source: "collector/sglang/collect_gemm.py (apply_fp8_linear: tuned or untuned triton_scaled_mm, srt/layers/quantization/fp8_utils.py:2641-2683 @v0.5.23)"}
+  - {framework: sglang, kernel_source: sglang_cutlass_w8a8_block_fp8, backend: cutlass, source: "collector/sglang/collect_gemm.py (dispatch_w8a8_block_fp8_linear CUTLASS runner, sgl-kernel fp8_blockwise_scaled_mm; SM120, srt/layers/quantization/fp8_utils.py:1212-1214, 1389-1414 @v0.5.23)"}
   - {framework: sglang, kernel_source: sglang_deepgemm_gemm_nt_f8f8bf16, backend: deepgemm, source: "PR#1342 collect_gemm.py"}
-  - {framework: sglang, kernel_source: sglang_triton_w8a8_block_fp8, backend: triton, source: "sglang/collect_gemm_0520.py @c540ff90a, retired by #649; labels the shipped 0.5.20 tables (fp8_utils.py:1094-1107 @v0.5.20 N%64/K%128 fallback)"}
+  - {framework: sglang, kernel_source: sglang_triton_w8a8_block_fp8, backend: triton, source: "collector/sglang/collect_gemm.py (dispatch_w8a8_block_fp8_linear Triton: SM89, and DeepGEMM/CUTLASS runners on misaligned N/K, srt/layers/quantization/fp8_utils.py:1170-1204, 1410-1414, 1517-1538 @v0.5.23); also the shipped 0.5.20 tables (sglang/collect_gemm_0520.py @c540ff90a)"}
   - {framework: sglang, kernel_source: sglang_cutedsl_tgv_bf16, backend: cutlass, source: "sglang/collect_gemm_0520.py @c540ff90a, retired by #649; labels the shipped 0.5.20 tables (CuTe DSL TGV bf16, cutedsl_bf16_gemm.py @v0.5.20)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_bf16_splitk, backend: flashinfer, source: "sglang/collect_gemm_0520.py @c540ff90a, retired by #649; labels the shipped 0.5.20 tables (unquant.py split-K @v0.5.20)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_bf16_direct, backend: flashinfer, source: "sglang/collect_gemm_0520.py @c540ff90a, retired by #649; labels the shipped 0.5.20 tables (unquant.py direct @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_warp_splitk, backend: flashinfer, source: "collector/sglang/collect_gemm.py (UnquantizedLinearMethod.apply -> _bf16_gemm_dispatch_impl warp split-K, srt/layers/quantization/unquant.py:142-275, 384-409 @v0.5.23)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutlass_nvfp4, backend: flashinfer_cutlass, source: "PR#1342 collect_gemm.py (flashinfer mm_fp4 cutlass)"}
+  - {framework: sglang, kernel_source: sglang_kda_qwen3x_nvfp4, backend: cutlass, source: "collector/sglang/collect_gemm.py (try_qwen3x_nvfp4_gemm before mm_fp4 on SM120, CuTe DSL kernel, kernels/kda_kernels/qwen3x_nvfp4_gemm.py:13-22 @v0.5.23)"}
   # MoE labels name the constructed serving method + runner.
   - {framework: sglang, kernel_source: sglang_flashinfer_trtllm_moe, backend: flashinfer_trtllm_gen, source: "PR#1342 collect_moe.py"}
   - {framework: sglang, kernel_source: sglang_mxfp4_flashinfer_trtllm_moe, backend: flashinfer_trtllm_gen, source: "PR#1342 collect_moe.py (mxfp4 trtllm-gen)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_trtllm_routed_moe, backend: flashinfer_trtllm_gen, source: "collector/sglang/collect_moe.py _KERNEL_SOURCE_BY_RUNNER; sglang v0.5.23 moe_runner/flashinfer_trtllm.py:1845-1876 (routed TRT-LLM-gen MoE on materialized top-k), arg_groups/model_overrides/deepseek_v4.py:66-74, minimax_m2.py:23-32"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutlass_moe, backend: flashinfer_cutlass, source: "PR#1342 collect_moe.py"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutedsl_nvfp4, backend: flashinfer_cutedsl, source: "PR#1342 collect_moe.py"}
   # GDN sub-kernels and mHC.
@@ -158,10 +171,20 @@ mappings:
   - {framework: sglang, kernel_source: sglang_tilelang_mhc_pre, backend: tilelang, source: "PR#1342 collect_mhc_module.py"}
   - {framework: sglang, kernel_source: sglang_tilelang_mhc_post, backend: tilelang, source: "PR#1342 collect_mhc_module.py"}
   - {framework: sglang, kernel_source: sglang_torch_mhc_pre, backend: torch, source: "PR#1342 collect_mhc_module.py (torch fallback leaf)"}
-  # GLM-5.3-Flash (Glm5Next) mHC labels at 0.5.20 (collector/sglang/collect_mhc_module.py
-  # _glm5next_kernel_source; mhc.py mhc_pre L1034-1044 DeepGEMM tf32_hc_prenorm_gemm + TileLang big_fuse_with_norm).
-  - {framework: sglang, kernel_source: "sglang.hc_pre[tilelang,prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/sglang/collect_mhc_module.py (GLM; observed norm_fused=True)"}
-  - {framework: sglang, kernel_source: "sglang.hc_post[tilelang]", backend: tilelang, source: "collector/sglang/collect_mhc_module.py (GLM; kernels/ops/layernorm/mhc.py mhc_post_tilelang)"}
+  # SGLang mHC labels: DeepSeek-V4 from 0.5.23 (collector/sglang/collect_mhc_module.py
+  # _kernel_source) and GLM-5.3-Flash at 0.5.20. hc_pre's TileLang path is mhc_pre:
+  # DeepGEMM tf32_hc_prenorm_gemm or TileLang GEMM + TileLang big_fuse_with_norm
+  # (kernels/ops/layernorm/mhc.py:1118-1256@v0.5.23); its torch path is F.linear +
+  # hc_split_sinkhorn + Triton mhc_combine, then RMSNorm (models/deepseek_v4.py:3458-3503@v0.5.23).
+  - {framework: sglang, kernel_source: "sglang.hc_pre[tilelang,prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/sglang/collect_mhc_module.py (observed norm_fused=True)"}
+  - {framework: sglang, kernel_source: "sglang.hc_pre[tilelang,prenorm_gemm=tilelang,norm=fused]", backend: tilelang, source: "collector/sglang/collect_mhc_module.py; mhc.py:1139-1200@v0.5.23 (no JIT DeepGEMM)"}
+  - {framework: sglang, kernel_source: "sglang.hc_pre[torch,norm=separate]", backend: torch, source: "collector/sglang/collect_mhc_module.py; deepseek_v4.py:3480-3503@v0.5.23 (SM120 serving)"}
+  - {framework: sglang, kernel_source: "sglang.hc_pre[torch,prenorm_gemm=deepgemm,norm=separate]", backend: deepgemm, source: "collector/sglang/collect_mhc_module.py; deepseek_v4.py:3461-3479@v0.5.23 (>= 1024 tokens)"}
+  - {framework: sglang, kernel_source: "sglang.hc_post[tilelang]", backend: tilelang, source: "collector/sglang/collect_mhc_module.py (kernels/ops/layernorm/mhc.py mhc_post_tilelang)"}
+  - {framework: sglang, kernel_source: "sglang.hc_post[torch]", backend: torch, source: "collector/sglang/collect_mhc_module.py; models/deepseek_v4_mhc.py:600-608@v0.5.23"}
+  - {framework: sglang, kernel_source: "sglang.mhc_fused_post_pre[fused_post_gemm,norm=fused]", backend: tilelang, source: "collector/sglang/collect_mhc_module.py; mhc.py:1693-1731@v0.5.23 (fused post+GEMM TileLang kernel, <= 32 tokens)"}
+  - {framework: sglang, kernel_source: "sglang.mhc_fused_post_pre[post+prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/sglang/collect_mhc_module.py; mhc.py:1733-1755@v0.5.23 (TileLang post + DeepGEMM prenorm GEMM)"}
+  - {framework: sglang, kernel_source: "sglang.mhc_fused_post_pre[post+prenorm_gemm=tilelang,norm=fused]", backend: tilelang, source: "collector/sglang/collect_mhc_module.py; mhc.py:1733-1745,1756-1774@v0.5.23 (TileLang post + TileLang prenorm GEMM, SM120)"}
   - {framework: sglang, kernel_source: "sglang.kernels.ops.layernorm.mhc.hc_expand", backend: torch, source: "kernels/ops/layernorm/mhc.py:1762 x.repeat @v0.5.20"}
   - {framework: sglang, kernel_source: "sglang.kernels.ops.layernorm.mhc.hc_contract", backend: torch, source: "kernels/ops/layernorm/mhc.py:1766 mean @v0.5.20"}
 
@@ -169,7 +192,7 @@ mappings:
   # situ-as-silu measurement variants (0.5.14; suffix marks the activation
   # approximation, dispatch = base label).
   - {framework: sglang, kernel_source: causal_conv1d_fn_qkv3, backend: triton, source: "collector/sglang/collect_kda.py:921 (runtime import from kernels/ops/mamba/causal_conv1d_triton); kernels/ops/mamba/causal_conv1d_triton.py:18@v0.5.16 (@triton.jit _causal_conv1d_fwd_kernel — Triton reimpl. of causal-conv1d, 3-call Q/K/V sequence)"}
-  - {framework: sglang, kernel_source: chunk_kda, backend: fla_triton, source: "collector/sglang/collect_kda.py:920 (import from fla.kda); kernels/ops/attention/fla/kda.py:1140@v0.5.16 (FLA Triton chunked KDA gated-delta-rule scan)"}
+  - {framework: sglang, kernel_source: chunk_kda, backend: fla_triton, source: "collector/sglang/collect_kda.py:920 (import from fla.kda); kernels/ops/attention/fla/kda.py:1140@v0.5.16 (FLA Triton chunked KDA gated-delta-rule scan). Same label, other kernel: from v0.5.23 SM100/SM103 multi-token prefill rows time flashinfer_cutedsl (eager flashinfer.kda.recurrent_kda backend cute-dsl, srt/layers/attention/linear/kernels/kda_flashinfer_prefill.py:91-154, selected by kda_backend.py:74-96 flashinfer_kda_prefill_default; prefill CUDA graph off for Kimi-K3, arg_groups/cuda_graph_hook.py:185-191 @v0.5.23); the label stays chunk_kda so the SDK reads one curve, and this table cannot key on system or version"}
   - {framework: sglang, kernel_source: kda_fused_decode, backend: sgl_kernel, source: "collector/sglang/collect_kda.py:356 (import kda_fused_decode module, kimi-k3 branch); jit_kernel/cutedsl_kda.py:55@v0.5.16 (@cute.kernel CuTeDSL fused conv+recurrence decode, SM90+)"}
   - {framework: sglang, kernel_source: fused_recurrent_kda_packed_decode, backend: fla_triton, source: "collector/sglang/collect_kda.py:914-916 (import from fla.fused_recurrent); kernels/ops/attention/fla/fused_recurrent.py:405@v0.5.16 (@triton.jit fused_recurrent_kda_packed_decode_kernel — packed T=1 recurrence)"}
   - {framework: sglang, kernel_source: fused_kda_decode_mtp_dspark, backend: sgl_kernel, source: "collector/sglang/collect_kda.py:608 (import kimi_k3.kda_decode_mtp, kimi-k3 branch); CuTeDSL fused conv+chain-verify recurrence (collector/sglang/collect_kda.py:27-28), SM10x (cc major == 10) only, collector/sglang/collect_kda.py:597"}
@@ -185,34 +208,41 @@ mappings:
   # 0.5.14 upgrade did for sglang labels), then these entries get split
   # into named backends and trtllm_internal shrinks to zero.
   - {framework: trtllm, kernel_source: torch_flow, match: {op_file: gemm_perf, gemm_dtype: bfloat16}, backend: cublas, source: "collector/trtllm/collect_gemm.py (torch-flow Linear, bf16)"}
-  - {framework: trtllm, kernel_source: torch_flow, match: {op_file: gemm_perf, gemm_dtype: fp8}, backend: cutlass, source: "collector/trtllm/collect_gemm.py (FP8 per-tensor)"}
-  - {framework: trtllm, kernel_source: torch_flow, match: {op_file: gemm_perf, gemm_dtype: fp8_block}, backend: cutlass, source: "collector/trtllm/collect_gemm.py:118-121 (SM90 CUTLASS; SM100 fp8_block is labeled deepgemm instead)"}
-  - {framework: trtllm, kernel_source: torch_flow, match: {op_file: gemm_perf}, backend: trtllm_internal, source: "collector/trtllm/collect_gemm.py (nvfp4: kernel not named by label)"}
+  - {framework: trtllm, kernel_source: torch_flow, match: {op_file: gemm_perf, gemm_dtype: fp8}, backend: cublas, source: "collector/trtllm/collect_gemm.py (FP8 per-tensor: FP8QDQLinearMethod cublas_scaled_mm; cuda_scaled_mm for M <= 8 on SM89/SM120, modules/linear.py:782-839 @1.4.0rc2)"}
+  - {framework: trtllm, kernel_source: torch_flow, match: {op_file: gemm_perf, gemm_dtype: fp8_block}, backend: cutlass, source: "collector/trtllm/collect_gemm.py run_gemm kernel_source (SM89/SM90/SM120 fp8_block_scaling_gemm CUTLASS; SM100/SM103 is labeled deepgemm)"}
+  - {framework: trtllm, kernel_source: torch_flow, match: {op_file: gemm_perf}, backend: cutlass, source: "nvfp4 rows up to 1.3.0rc29: untuned autotuner fallback ('cutlass', -1), one default CUTLASS tile (thop/fp4Gemm.cpp:58-81); from 1.4.0rc2 nvfp4 rows carry nvfp4_<backend>"}
+  - {framework: trtllm, kernel_source: nvfp4_cutlass, backend: cutlass, source: "collector/trtllm/collect_gemm.py (autotuned NVFP4GemmUnifiedRunner tactic, custom_ops/torch_custom_ops.py:1458-1510 @1.4.0rc2)"}
+  - {framework: trtllm, kernel_source: nvfp4_cublaslt, backend: cublas, source: "collector/trtllm/collect_gemm.py (autotuned NVFP4GemmUnifiedRunner tactic, cuBLASLt FP4)"}
+  - {framework: trtllm, kernel_source: nvfp4_cutedsl, backend: cutlass, source: "collector/trtllm/collect_gemm.py (autotuned NVFP4GemmUnifiedRunner tactic, TRT-LLM CuTe DSL FP4 GEMM, SM100/SM103 only)"}
+  - {framework: trtllm, kernel_source: nvfp4_cuda_core, backend: trtllm_internal, source: "collector/trtllm/collect_gemm.py (autotuned NVFP4GemmUnifiedRunner tactic, CUDA-core FP4 GEMM for M <= 8)"}
+  - {framework: trtllm, kernel_source: nvfp4_marlin, backend: marlin, source: "collector/trtllm/collect_gemm.py (NVFP4GemmUnifiedRunner Marlin tactic, opt-in only)"}
   - {framework: trtllm, kernel_source: torch_flow, backend: trtllm_internal, source: "collector/trtllm/collect_attn.py (unified TRTLLM attention backend; fmha kernel chosen inside TRT-LLM)"}
   - {framework: trtllm, kernel_source: torch_flow_flashinfer, backend: flashinfer, source: "collector/trtllm/collect_attn.py (FlashInferAttention per get_attention_backend dispatch, utils.py:27-53@1.3.0rc20; flashinfer_backend='trtllm-gen' pinned mirroring modeling_gemma4.py:263-270, Blackwell-only per fmhaRunner.cuh:37 — sub-backend detail below the catalog's backend-class granularity)"}
   - {framework: trtllm, kernel_source: default, backend: trtllm_internal, source: "collector/trtllm/collect_mla.py, collect_mla_module.py (static label)"}
-  - {framework: trtllm, kernel_source: deepgemm, backend: deepgemm, source: "collector/trtllm/collect_gemm.py:255 (fp8_block on SM100+)"}
-  - {framework: trtllm, kernel_source: torch_ops, backend: torch, source: "collector/trtllm/collect_computescale.py"}
+  - {framework: trtllm, kernel_source: deepgemm, backend: deepgemm, source: "collector/trtllm/collect_gemm.py run_gemm kernel_source (fp8_block on SM100/SM103, is_sm_100f); collector/trtllm/collect_moe.py SM90 fp8_block (impl deepgemm.cuda.hopper_grouped_gemm.fp8_block_scales)"}
+  - {framework: trtllm, kernel_source: torch_ops, backend: trtllm_internal, source: "collector/trtllm/collect_computescale.py (tensorrt_llm::quantize_e4m3_per_tensor and static_quantize_e4m3_per_tensor CUDA kernels, thop/fp8Op.cpp:432-449)"}
   - {framework: trtllm, kernel_source: "trt_flow_/smooth_quant_gemm_L96/PLUGIN_V2_SmoothQuantGemm_0", backend: trt_plugin, source: "legacy TRT engine flow"}
   - {framework: trtllm, kernel_source: "trt_flow_/weight_only_quant_matmul_L257/PLUGIN_V2_WeightOnlyQuantMatmul_0", backend: trt_plugin, source: "legacy TRT engine flow"}
 
   # MoE torch-flow labels.
-  - {framework: trtllm, kernel_source: moe_torch_flow_cutlass, backend: cutlass, source: "collector/trtllm/collect_moe.py (CUTLASS backend arg)"}
-  - {framework: trtllm, kernel_source: moe_torch_flow_triton_fp8_block, backend: triton_fused_moe, source: "collector/trtllm/collect_moe.py (SM120 fp8_block: CutlassFusedMoE dispatches run_triton_fp8_block_scale_moe, fused_moe_cutlass.py:958-960@1.3.0rc20)"}
-  - {framework: trtllm, kernel_source: moe_torch_flow, backend: trtllm_internal, source: "collector/trtllm/collect_moe.py (backend chosen by trtllm per quant/SM; label does not split)"}
-  - {framework: trtllm, kernel_source: moe_torch_flow_min_latency, backend: trtllm_internal, source: "collector/trtllm/collect_moe.py (min-latency mode)"}
-  - {framework: trtllm, kernel_source: moe_torch_flow_nongated, backend: trtllm_internal, source: "collector/trtllm/collect_moe.py"}
+  - {framework: trtllm, kernel_source: moe_torch_flow_cutlass, backend: cutlass, source: "collector/trtllm/collect_moe.py _moe_kernel_source: impl trtllm.cutlass.grouped_gemm.<quant> (moe/fused_moe/cutlass/identity.py @1.4.0rc2)"}
+  - {framework: trtllm, kernel_source: moe_torch_flow_triton_fp8_block, backend: triton_fused_moe, source: "collector/trtllm/collect_moe.py: SM120 fp8_block impl trtllm.triton.grouped_gemm.fp8_block_scales (moe/fused_moe/cutlass/fp8_block_scales_triton.py:39-44,109 @1.4.0rc2; fused_moe_cutlass.py:958-960 @1.3.0rc20)"}
+  - {framework: trtllm, kernel_source: moe_torch_flow_trtllm_gen, backend: trtllm_internal, source: "collector/trtllm/collect_moe.py: impl trtllm.trtllm_gen.fused_moe.<quant> (moe/fused_moe/trtllm_gen/identity.py @1.4.0rc2)"}
+  - {framework: trtllm, kernel_source: moe_torch_flow_triton, backend: triton_fused_moe, source: "collector/trtllm/collect_moe.py: TritonFusedMoE (GPT-OSS SM90, AUTO->TRITON, model_config.py:579-589 @1.4.0rc2)"}
+  - {framework: trtllm, kernel_source: moe_torch_flow, backend: trtllm_internal, source: "collector/trtllm/collect_moe.py up to 1.3.0rc29 (TRTLLM-Gen MXFP4 / Triton GPT-OSS); from 1.4.0rc2 moe_torch_flow_trtllm_gen / moe_torch_flow_triton"}
+  - {framework: trtllm, kernel_source: moe_torch_flow_min_latency, backend: trtllm_internal, source: "collector/trtllm/collect_moe.py (min-latency row: TRTLLM-Gen, do_finalize=False)"}
+  - {framework: trtllm, kernel_source: moe_torch_flow_nongated, backend: trtllm_internal, source: "collector/trtllm/collect_moe.py up to 1.3.0rc29 only (label only: those rows timed SwiGLU)"}
   - {framework: trtllm, kernel_source: wideep_compute_cutlass, backend: cutlass, source: "collector/wideep/trtllm"}
 
   # DeepSeek-V4 mHC module labels. The collector observes the actual
   # pre_mapping dispatch per row (AutoTuner tactic -> mhc_gemm_rms_fma_cuda /
-  # mhc_gemm_rms_dg_cuda, tensorrt_llm/_torch/modules/mhc/mhc_cuda.py:333-347),
+  # mhc_gemm_rms_dg_cuda, tensorrt_llm/_torch/modules/mhc/mhc_cuda.py:363-373@v1.4.0rc2),
   # so these labels name the real kernel family per row —
   # no trtllm_internal coarseness.
   - {framework: trtllm, kernel_source: trtllm_mhc_pre_fma, backend: trtllm_mhc, source: "collector/trtllm/collect_mhc_module.py (observed FMA tactic: mhc_gemm_sqrsum_fma + mhc_big_fuse CUDA kernels)"}
   - {framework: trtllm, kernel_source: trtllm_mhc_pre_dg_splitk, backend: deepgemm, source: "collector/trtllm/collect_mhc_module.py (observed dg_splitk tactic: deep_gemm tf32_hc_prenorm_gemm split-K + mhc_big_fuse)"}
   - {framework: trtllm, kernel_source: trtllm_mhc_pre_dg_nosplit, backend: deepgemm, source: "collector/trtllm/collect_mhc_module.py (observed dg_nosplit tactic: deep_gemm tf32_hc_prenorm_gemm + mhc_big_fuse)"}
-  - {framework: trtllm, kernel_source: trtllm_mhc_post_mapping, backend: trtllm_mhc, source: "collector/trtllm/collect_mhc_module.py (single kernel torch.ops.trtllm.mhc_post_mapping, mhc_cuda.py:472-510 @1.3.0rc20)"}
+  - {framework: trtllm, kernel_source: trtllm_mhc_post_mapping, backend: trtllm_mhc, source: "collector/trtllm/collect_mhc_module.py (single kernel torch.ops.trtllm.mhc_post_mapping, mhc_cuda.py:532-570@v1.4.0rc2)"}
 
   # DeepSeek-V4 attention module label: the attention backend class TRT-LLM's
   # own selector returns for sparse algorithm "deepseek_v4"
@@ -312,8 +342,8 @@ mappings:
   - {framework: vllm, kernel_source: FlashInferCuteDslNvFp4LinearKernel, backend: flashinfer_cutedsl, source: "PR#1344 collect_gemm.py"}
   - {framework: vllm, kernel_source: MarlinFP8ScaledMMLinearKernel, backend: marlin, source: "collect_gemm.py kernel class label; vllm v0.30.0 model_executor/kernels/linear/scaled_mm/marlin.py (apply_fp8_marlin_linear)"}
   - {framework: vllm, kernel_source: "torch.nn.functional.linear", backend: cublas, source: "PR#1344 collect_gemm.py (bf16)"}
-  - {framework: vllm, kernel_source: static_scaled_fp8_quant, backend: vllm_kernel, source: "PR#1344 collect_computescale.py:73 (vllm _custom_ops)"}
-  - {framework: vllm, kernel_source: dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant, backend: vllm_kernel, source: "PR#1344 collect_computescale.py:63 (derived overhead measure)"}
+  - {framework: vllm, kernel_source: static_scaled_fp8_quant, backend: vllm_kernel, source: "PR#1344 collect_computescale.py:112 (vllm _custom_ops)"}
+  - {framework: vllm, kernel_source: dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant, backend: vllm_kernel, source: "PR#1344 collect_computescale.py:101 (derived overhead measure)"}
   # MoE labels: vllm_<quant-method>_<oracle-backend>_<experts-class>.
   - {framework: vllm, kernel_source: vllm_unquantizedfusedmoe_triton_tritonexperts, backend: triton_fused_moe, source: "PR#1344 collect_moe.py (label encodes oracle backend + experts class)"}
   - {framework: vllm, kernel_source: vllm_unquantizedfusedmoe_flashinfer_cutlass_flashinferexperts, backend: flashinfer_cutlass, source: "PR#1344 collect_moe.py"}
@@ -333,6 +363,7 @@ mappings:
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutedsl_flashinfercutedslexperts, backend: flashinfer_cutedsl, source: "collect_moe.py:795; vllm v0.30.0 fused_moe/experts/flashinfer_cutedsl_moe.py:31 FlashInferCuteDSLExperts"}
   - {framework: vllm, kernel_source: vllm_compressedtensorswna16moe_marlin_marlinexperts, backend: marlin, source: "collect_moe.py:795; vllm v0.30.0 fused_moe/experts/marlin_moe.py:648 MarlinExperts"}
   - {framework: vllm, kernel_source: vllm_modeloptnvfp4fusedmoe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic, backend: flashinfer_trtllm_gen, source: "vllm/collect_moe.py GLM-5.3-Flash ModelOptNvFp4Config lane (trtllm_nvfp4_moe.py:498-520 @v0.31.0; :486-508 @v0.30.0)"}
+  - {framework: vllm, kernel_source: vllm_modeloptnvfp4fusedmoe_flashinfer_cutlass_flashinferexperts, backend: flashinfer_cutlass, source: "vllm/collect_moe.py GLM-5.3-Flash ModelOptNvFp4Config lane on the FlashInfer CUTLASS experts (label records the experts class that ran)"}
   - {framework: vllm, kernel_source: vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts, backend: marlin, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_gptossmxfp4moe_marlin_marlinexperts, backend: marlin, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_gptossmxfp4moe_triton_oaitritonmxfp4expertsmonolithic, backend: triton_fused_moe, source: "PR#1344 collect_moe.py (OAI triton mxfp4 experts)"}
@@ -345,14 +376,16 @@ mappings:
   - {framework: vllm, kernel_source: fused_recurrent_gated_delta_rule_packed_decode, backend: fla_triton, source: "PR#1344 collect_gdn.py"}
   - {framework: vllm, kernel_source: "vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang", backend: tilelang, source: "PR#1344 collect_mhc_module.py"}
   - {framework: vllm, kernel_source: "vllm.model_executor.kernels.mhc.tilelang.mhc_post_tilelang", backend: tilelang, source: "PR#1344 collect_mhc_module.py"}
-  # GLM-5.3-Flash (Glm5Next) mHC labels at 0.31.0 (collector/vllm/collect_mhc_module.py
+  # GLM-5.3-Flash (Glm5Next) mHC labels at 0.32.0 (collector/vllm/collect_mhc_module.py
   # _glm5next_kernel_source; kernels/mhc/tilelang.py _hc_prenorm_gemm_outputs L22-71, fused split L814-983; tilelang_kernels.py split config L67-95 (<=32 tokens)).
   - {framework: vllm, kernel_source: "vllm.mhc_pre_tilelang[prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/vllm/collect_mhc_module.py (GLM)"}
   - {framework: vllm, kernel_source: "vllm.mhc_post_tilelang", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM)"}
   - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[fused_post_gemm,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; fused post+GEMM TileLang kernel, small token counts)"}
   - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[post+prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/vllm/collect_mhc_module.py (GLM; post + DeepGEMM prenorm GEMM, large token counts)"}
-  - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_expand", backend: torch, source: "vllm/model_executor/layers/mhc.py:969 @v0.31.0 (byte-identical to 0.30.0)"}
-  - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_contract", backend: torch, source: "vllm/model_executor/layers/mhc.py:974 @v0.31.0 (byte-identical to 0.30.0)"}
+  - {framework: vllm, kernel_source: "vllm.mhc_pre_tilelang[prenorm_gemm=tilelang,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; TileLang prenorm GEMM where is_deep_gemm_supported() is false, kernels/mhc/tilelang.py L22-71)"}
+  - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[post+prenorm_gemm=tilelang,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; post + TileLang prenorm GEMM where is_deep_gemm_supported() is false)"}
+  - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_expand", backend: torch, source: "vllm/model_executor/layers/mhc.py:1013 @v0.32.0"}
+  - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_contract", backend: torch, source: "vllm/model_executor/layers/mhc.py:1018 @v0.32.0"}
   - {framework: vllm, kernel_source: "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits", backend: deepgemm, source: "PR#1344 collect_dsv4_attn.py"}
 
   # --- Kimi-K3 labels: KDA kernels from the vLLM kimi-k3 preview
@@ -367,14 +400,17 @@ mappings:
   - {framework: vllm, kernel_source: fused_recurrent_kda, backend: fla_triton, source: "collector/vllm/collect_kda.py:593,676-704 (spec chain-verify recurrence from ops.third_party.kda, upstream public @0.27.0); identical op also verified at model_executor/layers/fla/ops/kda.py:109@v0.24.0 (flash-linear-attention copy); GLM-5.3-Flash decode: collect_kda.py:1119,1172-1188 (compute_gate=True, sigmoid_beta=True, lower_bound -5; common/kda.py:693-720 @v0.31.0); vllm/models/glm5next/nvidia/ops/third_party/kda/kernels.py:146 @v0.31.0 (docstring-only diff vs v0.30.0)"}
   - {framework: vllm, kernel_source: fused_recurrent_kda_packed_decode, backend: fla_triton, source: "collector/vllm/collect_kda.py:425,532-555 (packed T=1 decode recurrence, same ops.third_party.kda module as the two FLA ops above, upstream public @0.27.0); identical FLA kernel vendored in sglang v0.5.16 (python/sglang/kernels/ops/attention/fla/fused_recurrent.py:405-406 @triton.jit fused_recurrent_kda_packed_decode_kernel)"}
   - {framework: vllm, kernel_source: chunk_gated_delta_rule, backend: fla_triton, source: "pre-0.24 GDN collector label (vllm 0.22.0 gdn_perf rows; superseded by chunk_gated_delta_rule_triton at 0.24.0); model_executor/layers/fla/ops/chunk.py:138@v0.22.0, re-exported unconditionally by fla/ops/__init__.py:9 (flash-linear-attention copy; @triton.jit chunk_gated_delta_rule_fwd_kernel_h_blockdim64 at chunk_delta_h.py:42-43)"}
-  - {framework: vllm, kernel_source: vllm_torch_bmm, backend: cublas, source: "collector/vllm/collect_mla_bmm.py:65 (label) + :87,:124 (torch.bmm; bf16-only lane, fp8 BMM is ROCm/AITER-gated)"}
+  - {framework: vllm, kernel_source: vllm_torch_bmm, backend: cublas, source: "collector/vllm/collect_mla_bmm.py:63 (label) + :100,:139 (torch.bmm; bf16-only lane, fp8 BMM is ROCm/AITER-gated)"}
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts, backend: marlin, source: "collector/vllm/collect_moe.py:700 label grammar (:667 selected mxfp4_backend value, :698 leaf experts class) — Mxfp4MoeBackend.MARLIN (fused_moe/oracle/mxfp4.py:106@v0.24.0) + MarlinExperts (fused_moe/experts/marlin_moe.py:701@v0.24.0); K3 rows collected on the 0.1.dev19262 preview (b200/b300 collection_meta.yaml)"}
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4mxfp4moe_marlin_marlinexperts_situ_as_silu, backend: marlin, source: "collector/vllm/collect_moe.py:712 (situ-as-silu suffix on stock v0.24.0; :702-711 refuses the row unless MarlinExperts actually ran, so dispatch = base label)"}
+  - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4mxfp4moe_cutlass_mxfp4_mxfp4_cutlassexpertsmxfp4, backend: cutlass, source: "collector/vllm/collect_moe.py (CT W4A4 mxfp4 binds CutlassExpertsMxfp4 on SM100-119, compressed_tensors_moe_w4a4_mxfp4.py:51-78 @v0.32.0; backend label Mxfp4MoeBackend.CUTLASS_MXFP4_MXFP4, oracle/mxfp4.py:143,235-240)"}
+  - {framework: vllm, kernel_source: vllm_compressedtensorswna16moe_humming_humminggroupedexperts, backend: humming, source: "collector/vllm/collect_moe.py; SM90 prioritize_humming (quantization/utils/humming/priority.py:11,26-45 @v0.32.0), oracle/int_wna16.py:72-83,126-143"}
+  - {framework: vllm, kernel_source: vllm_compressedtensorswna16moe_humming_hummingindexedexperts, backend: humming, source: "same as humminggroupedexperts (gemm type chosen by get_humming_moe_gemm_type)"}
   - {framework: vllm, kernel_source: vllm_mxfp4moe_flashinfer_trtllm_mxfp4_mxfp8_trtllmmxfp4expertsmodular, backend: flashinfer_trtllm_gen, source: "collector/vllm/collect_moe.py:700 label grammar; Mxfp4MoeBackend.FLASHINFER_TRTLLM_MXFP4_MXFP8 (fused_moe/oracle/mxfp4.py:99,156-166@v0.24.0) -> TrtLlmMxfp4ExpertsModular (experts/trtllm_mxfp4_moe.py:221,335@v0.24.0, wraps flashinfer.trtllm_fp4_block_scale_routed_moe)"}
   # MiniMax-M3 MSA module labels (collector/{sglang,vllm,trtllm}/collect_msa_module.py).
-  - {framework: sglang, kernel_source: sglang_minimax_prefill_triton_sparse, backend: triton, source: "collector/sglang/collect_msa_module.py (_prefill_kernel_source); prefill sparse attention kernel is Triton on every collected SM — kernels/ops/attention/minimax_sparse/prefill/topk_sparse.py@v0.5.16 (the fmha_sm100 main-step upgrade is wheel-gated and absent on the official image, minimax_sparse_backend.py:68-88)"}
-  - {framework: sglang, kernel_source: sglang_minimax_decode_triton_sparse_topk_split, backend: triton, source: "collector/sglang/collect_msa_module.py (_decode_kernel_source + _decode_topk_variant); decode main sparse attention is the Triton kernel, top-k stage = 2-stage Triton top-k (decode/flash_with_topk_idx.py:822-826@v0.5.16 gate not taken)"}
-  - {framework: sglang, kernel_source: sglang_minimax_decode_triton_sparse_topk_radix, backend: triton, source: "collector/sglang/collect_msa_module.py (_decode_kernel_source + _decode_topk_variant); decode main sparse attention is the Triton kernel, top-k stage = JIT radix select (decode/flash_with_topk_idx.py:822-826@v0.5.16, SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX && score blocks <= 4096 && topk <= 32)"}
-  - {framework: trtllm, kernel_source: msa_fmha_sm100, backend: trtllm_internal, source: "collector/trtllm/collect_msa_module.py (implementation=\"msa\" on SM100/103); fmha_sm100 MSA kernel package vendored in the trtllm wheel — sparse/minimax_m3 msa_backend.py + msa_indexer.py@1.3.0rc23, hard-gated by ensure_msa_available (msa_availability.py, SM100/103-only)"}
-  - {framework: vllm, kernel_source: MiniMaxM3SparseMSAImpl, backend: vllm_kernel, source: "collector/vllm/collect_msa_module.py (type(attn_module.impl).__name__); vLLM's own dispatch selects the fmha_sm100 MSA attend+indexer impls on SM100/103 — select_main_impl_cls / select_indexer_impl_cls @0.24.0, kernels shipped in the vllm dist"}
-  - {framework: vllm, kernel_source: MiniMaxM3SparseTritonImpl, backend: triton, source: "collector/vllm/collect_msa_module.py (type(attn_module.impl).__name__); Triton sparse impls selected by select_main_impl_cls off the SM100 family (SM89/90/120 collections) @0.24.0"}
+  - {framework: sglang, kernel_source: sglang_minimax_prefill_triton_sparse, backend: triton, source: "collector/sglang/collect_msa_module.py (_prefill_kernel_source); main sparse step = Triton flash_prefill_with_gqa_share_sparse (layers/attention/minimax_sparse_ops/minimax_sparse.py:217-283@v0.5.23), taken when use_msa is off (fmha_sm100 not importable, page != 128, or SM not 100/103 — minimax_sparse_backend.py:196-234) or MSA fell back (_msa_fallback_warned)"}
+  - {framework: sglang, kernel_source: sglang_minimax_decode_triton_sparse_topk_split, backend: triton, source: "collector/sglang/collect_msa_module.py (_decode_kernel_source + _decode_topk_variant); Triton main sparse decode, top-k = 2-stage Triton top-k (kernels/ops/attention/minimax_sparse/decode/flash_with_topk_idx.py:1051-1055@v0.5.23 radix gate not taken)"}
+  - {framework: sglang, kernel_source: sglang_minimax_decode_triton_sparse_topk_radix, backend: triton, source: "collector/sglang/collect_msa_module.py (_decode_kernel_source + _decode_topk_variant); Triton main sparse decode, top-k = JIT radix select (kernels/ops/attention/minimax_sparse/decode/flash_with_topk_idx.py:25, 1051-1055@v0.5.23: SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX && score blocks <= _JIT_TOPK_MAX_NUM_BLOCKS (16384 on CUDA) && topk <= 32)"}
+  - {framework: trtllm, kernel_source: msa_fmha_sm100, backend: trtllm_internal, source: "collector/trtllm/collect_msa_module.py (implementation=\"msa\" on SM100/103); MiniMaxM3MsaSparseAttention (sparse/minimax_m3/msa_backend.py@v1.4.0rc2): context rows on the fmha_sm100 kernels vendored in the trtllm wheel (fmha/msa_prefill.py), generation rows on the CuTe DSL index scorer + Triton block-sparse decode (fmha/msa_decode.py, msa_indexer.py); hard-gated by ensure_msa_available (msa_availability.py, SM100/103-only)"}
+  - {framework: vllm, kernel_source: MiniMaxM3SparseMSAImpl, backend: vllm_kernel, source: "collector/vllm/collect_msa_module.py (type(attn_module.impl).__name__); vLLM's own dispatch selects the fmha_sm100 MSA attend+indexer impls on the SM100 family — select_main_backend_and_impl_cls (models/minimax_m3/common/sparse_attention.py:525-587) / select_indexer_impl_cls (common/indexer.py:495-550) @v0.32.0, fmha_sm100 vllm-project/MSA@968061ab built into the vllm dist"}
+  - {framework: vllm, kernel_source: MiniMaxM3SparseTritonImpl, backend: triton, source: "collector/vllm/collect_msa_module.py (type(attn_module.impl).__name__); Triton sparse impls selected by select_main_backend_and_impl_cls off the SM100 family (SM89/90/120 collections) @v0.32.0"}

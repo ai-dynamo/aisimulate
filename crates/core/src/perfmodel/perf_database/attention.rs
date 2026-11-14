@@ -98,7 +98,7 @@ impl ContextTimingBoundary {
         // internal RoPE and CacheType.SELF. Older 1.0.0 rows used SELFKONLY;
         // their contract, and other lanes/versions, remain unknown here.
         let inclusive = framework == Some("TRTLLM")
-            && matches!(version, Some("1.3.0rc20" | "1.3.0rc29"))
+            && matches!(version, Some("1.3.0rc20" | "1.3.0rc29" | "1.4.0rc2"))
             && lane == "torch_flow";
         Self {
             includes_rope: inclusive,
@@ -1555,6 +1555,7 @@ mod tests {
         let sources = [PerfSource(path.clone(), None)];
         for (versions, inclusive) in [
             (vec!["1.3.0rc20", "1.0.0"], true),
+            (vec!["1.4.0rc2", "1.0.0"], true),
             (vec!["1.0.0", "1.3.0rc29"], false),
         ] {
             write_boundary_rows(&path, versions, vec![256, 256]);
@@ -1564,6 +1565,13 @@ mod tests {
             assert_eq!(slice.boundary.includes_kv_write, inclusive);
             assert_eq!(slice.grid[&32][&256][&1].latency, 2.0);
         }
+        // A 1.4.0rc2 slice keeps the points only 1.3.0rc29 measured: both
+        // revisions time the same boundary, so backward fill may merge them.
+        write_boundary_rows(&path, vec!["1.4.0rc2", "1.3.0rc29"], vec![256, 512]);
+        let (rows, _) = load_context_parquet(&sources).unwrap();
+        let slice = rows["torch_flow"].values().next().unwrap();
+        assert!(slice.boundary.includes_rope && slice.boundary.includes_kv_write);
+        assert_eq!(slice.grid[&32].len(), 2);
         write_boundary_rows(&path, vec!["1.3.0rc20", "1.0.0"], vec![256, 512]);
         let error = match load_context_parquet(&sources) {
             Err(error) => error,

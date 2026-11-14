@@ -418,6 +418,7 @@ def test_agg_estimate_responds_to_common_nextn():
     ), "nextn=1 produced an estimate identical to nextn=0; the kwarg was dropped"
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_agg_estimate_resolves_lightning_nvfp4_for_hopper_before_model_construction(monkeypatch):
     """Hopper must use the weight-only MoE lane before its ops are built."""
     import aisim.sdk.models as models

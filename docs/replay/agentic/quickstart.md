@@ -98,7 +98,7 @@ engine:
   model: Qwen/Qwen3-4B-Instruct-2507
   hardware: h200_sxm
   backend: vllm
-  backend_version: 0.24.0
+  backend_version: current
   context_length: 262144
   kv_transfer:
     bandwidth_gb_per_second: 400

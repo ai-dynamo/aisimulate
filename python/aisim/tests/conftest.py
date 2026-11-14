@@ -56,6 +56,18 @@ def _restore_root_logger():
 
 
 @pytest.fixture
+def raw_data_coordinates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit perf-data versions outside the queryable slots.
+
+    For tests that pin one collection as a raw data coordinate (a version that
+    ``systems/query_versions.yaml`` no longer lists) through a surface without
+    an ``allow_unlisted_version`` parameter: model configs, the CLI, engine
+    compilation. Request it with ``pytest.mark.usefixtures``.
+    """
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+
+
+@pytest.fixture
 def cli_parser() -> argparse.ArgumentParser:
     """Pre-configured CLI parser for testing."""
     parser = argparse.ArgumentParser()

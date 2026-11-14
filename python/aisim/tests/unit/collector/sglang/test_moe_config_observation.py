@@ -85,5 +85,6 @@ def test_record_lands_in_a_sidecar_outside_the_perf_staging_contract(tmp_path):
 def test_sglang_collector_wraps_the_timed_call_and_writes_triton_rows_only():
     source = (Path(__file__).resolve().parents[4] / "collector/sglang/collect_moe.py").read_text()
     assert "with observe_triton_config_selection(_triton_config_namespaces())" in source
-    assert "return [sys.modules[get_config_dtype_str.__module__], globals()]" in source
+    assert "return [_triton_config_mod]" in source
+    assert "triton_utils.fused_moe_triton_config as _triton_config_mod" in source
     assert re.search(r'if moe_backend == "triton":\n\s+append_triton_config_record\(', source)

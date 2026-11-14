@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: vllm
+  version: 0.32.0
+  image: vllm/vllm-openai:v0.32.0
+  image_digest: sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34
+  source_commit: 5df63a7203cdb9328d824a27b682e77c7b9928be
+tables:
+  moe_perf:
+    rows: 91159
+    status: complete
+    collections:
+    - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194
+      collector_hash: sha256:1a2d43cbcdcc67314d91c2f58701d70431daf848abaa708fa788c090aa22e9fa
+      case_plan_hash: sha256:0f3bbd470b1a5f1094277ba2e3268077bb64b5d3da3b724cdd845dfd3e00dff4
+      collected_at: '2026-11-08'
+      rows: 19749
+      status: complete
+    - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194
+      collector_hash: sha256:1a2d43cbcdcc67314d91c2f58701d70431daf848abaa708fa788c090aa22e9fa
+      case_plan_hash: sha256:cb96cace588fa4d7fbf9e8fdef8da0d88d440b4622e1de973bd373fdfe0dcb27
+      collected_at: '2026-11-08'
+      rows: 14750
+      status: complete
+    - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194
+      collector_hash: sha256:1a2d43cbcdcc67314d91c2f58701d70431daf848abaa708fa788c090aa22e9fa
+      case_plan_hash: sha256:34700fbea202de356b7d414248c68f291221f4856aab816a9b0b0b40f27bb6c9
+      collected_at: '2026-11-08'
+      rows: 22011
+      status: complete
+    - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194
+      collector_hash: sha256:1a2d43cbcdcc67314d91c2f58701d70431daf848abaa708fa788c090aa22e9fa
+      case_plan_hash: sha256:82c04f77e5cbe5bfd1796c5108c17fcccba168b6ce7ed54f5547c681908f51eb
+      collected_at: '2026-11-08'
+      rows: 1131
+      status: complete
+    - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194
+      collector_hash: sha256:1a2d43cbcdcc67314d91c2f58701d70431daf848abaa708fa788c090aa22e9fa
+      case_plan_hash: sha256:e2dea79f801d543a74debaff7e2e5b397b32103c6cd65aa3ddbdf474166393ad
+      collected_at: '2026-11-08'
+      rows: 3140
+      status: complete
+    - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194
+      collector_hash: sha256:1a2d43cbcdcc67314d91c2f58701d70431daf848abaa708fa788c090aa22e9fa
+      case_plan_hash: sha256:8b818adb088c56cd52350ec356e38da657b4f851a34ab83213b9ea59e56d2c9b
+      collected_at: '2026-11-08'
+      rows: 28029
+      status: complete
+    - collector_ref: 1c6512b1c4bd924c47259704975b6b9cb809b194
+      collector_hash: sha256:1a2d43cbcdcc67314d91c2f58701d70431daf848abaa708fa788c090aa22e9fa
+      case_plan_hash: sha256:c63f27baf77a1eda6d33102b17a8e4c6365e73ee4e2c07033f82377ba828135a
+      collected_at: '2026-11-08'
+      rows: 2349
+      status: complete

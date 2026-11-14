@@ -11,12 +11,12 @@ for the four module tables the SDK's ``ContextDeepSeekV4AttentionModule`` /
     dsv4_csa_context_module     dsv4_hca_context_module
     dsv4_csa_generation_module  dsv4_hca_generation_module
 
-TRT-LLM ships full DeepSeek-V4 support from 1.3.0rc21: the model class
-(``_torch/models/modeling_deepseekv4.py``) and the sparse attention stack
-(``_torch/attention_backend/sparse/deepseek_v4/``: DeepseekV4TrtllmAttention,
-DeepseekV4Indexer, DeepseekV4CacheManager, Compressor).
-``ModelConfig.from_pretrained`` auto-builds ``DeepSeekV4SparseAttentionConfig``
-for architecture ``DeepseekV4ForCausalLM`` (model_config.py:948-990),
+TRT-LLM ships the model class (``_torch/models/modeling_deepseekv4.py``) and
+the sparse attention stack (``_torch/attention/backends/sparse/deepseek_v4/``:
+DeepseekV4TrtllmAttention, DeepseekV4Indexer, DeepseekV4CacheManager,
+Compressor). ``ModelConfig.from_pretrained`` auto-builds
+``DeepSeekV4SparseAttentionConfig`` for architecture ``DeepseekV4ForCausalLM``
+(_torch/model_config.py:1273-1365),
 so this collector constructs ``DeepseekV4Attention`` through the
 framework's own config/dispatch path — CSA vs HCA is expressed exclusively by
 the checkpoint config's per-layer ``compress_ratios`` value (4 = CSA c4 +
@@ -32,23 +32,25 @@ config head/o_groups counts (num_attention_heads = native // tp,
 o_groups = max(1, o_groups // tp)) in a single process, matching the vllm
 collector; collective latency is therefore excluded, like both references.
 
-Like the vllm collector, weights are dummy, so the CSA indexer top-k selects
-degenerate indices; the SDK's topK DELTA calibration
-(``dsv4_csa_topk_calib``) corrects this at query time when present and is a
-no-op otherwise ((calib or {}).get(...) -> delta 0.0, operations/dsv4.py).
-No trtllm calib table is produced yet — same accepted state as vllm 0.24.0.
+Weights are dummy. The cached history's index K is written before timing
+(collect_mla_module._write_indexer_history), so the CSA indexer top-k selects
+among distinct scores and the rows need no top-k correction: no trtllm
+``dsv4_csa_topk_calib`` table is produced, and the SDK's topK DELTA is then a
+no-op ((calib or {}).get(...) -> delta 0.0, operations/dsv4.py).
 """
 
 from __future__ import annotations
 
-__compat__ = "trtllm==1.3.0rc29"
+__compat__ = "trtllm==1.4.0rc2"
 
+import contextlib
 import gc
 import json
 import os
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 import weakref
 
@@ -141,14 +143,14 @@ def generation_request_geometry(seq_len: int) -> dict[str, int]:
     """Decode-request state triple, single-sourced so the serving invariant
     cannot drift between construction sites.
 
-    Serving population (model_engine.py ORDINARY decode branch):
-    ``past_seen_token_num = request.max_beam_num_tokens - 1`` (:4308),
-    ``position_id = past_seen_token_num`` (:4315),
-    ``request.cached_tokens = past_seen_token_num`` (:4332) and
+    Serving population (pyexecutor/engine/runners/decoder/inputs.py, ordinary
+    decode of a request without a previous tensor):
+    ``past_seen_token_num = request.max_beam_num_tokens - 1`` (:1616),
+    ``position_id = past_seen_token_num`` (:1625) and
     ``num_cached_tokens_per_seq.append(past_seen_token_num - ...)``
-    (:4333-4335) — i.e. the new token's POSITION equals the PAST-SEEN/CACHED
-    token count. (The extend/spec-decode branch at :4148,4164-4169 keeps the
-    same invariant; this collector's cases are ordinary decode.)
+    (:1663-1665) — i.e. the new token's POSITION equals the PAST-SEEN/CACHED
+    token count. (The draft-token branch at :1410-1422 starts its positions at
+    the same past-seen count; this collector's cases are ordinary decode.)
     The collector's decode dummy request registers ``seq_len + 1`` beam tokens
     (``request_tokens = max_seq = seq_len + 1``), so past-seen == cached ==
     position == ``seq_len``, and the persisted row ``step`` (past-KV length,
@@ -166,7 +168,7 @@ def _patched_config_dir(model_path: str, compress_ratio: int, tp_size: int) -> t
     ``compress_ratios=[compress_ratio]`` expresses CSA (4) vs HCA (128)
     exactly like the vllm collector (collect_dsv4_attn.py:133);
     ModelConfig.from_pretrained reads it into
-    DeepSeekV4SparseAttentionConfig (model_config.py:956-990).
+    DeepSeekV4SparseAttentionConfig (_torch/model_config.py:1281-1365).
     """
     cfg_fname = model_path.replace("/", "--") + "_config.json"
     config_file = os.path.join(_MODEL_CONFIG_DIR, cfg_fname)
@@ -197,8 +199,8 @@ def _patched_config_dir(model_path: str, compress_ratio: int, tp_size: int) -> t
     config["architectures"] = [ARCHITECTURE]
     # The DSV4 release artifacts tag model_type "deepseek_ref" (remote-code
     # config class). TRT-LLM's native config class registers as
-    # "deepseek_v4" (configs/__init__.py:38,
-    # CONFIG_MAPPING.register) and its defaults supply the DSV4 dims the
+    # "deepseek_v4" (_torch/configs/__init__.py:84, written into transformers'
+    # CONFIG_MAPPING at import, :55-141) and its defaults supply the DSV4 dims the
     # artifact json omits (kv_lora_rank=448, v_head_dim=512,
     # qk_nope_head_dim=448 — configs/deepseekv4.py:35-39), so
     # rewrite the type instead of pulling remote code.
@@ -229,7 +231,7 @@ def create_dsv4_attention_module(
     unit the SDK module tables bill.
     """
     # Registers model_type "deepseek_v4" -> DeepseekV4Config into transformers
-    # CONFIG_MAPPING at import (configs/__init__.py); required
+    # CONFIG_MAPPING at import (_torch/configs/__init__.py:84, 141); required
     # before ModelConfig.from_pretrained resolves the patched config.
     import tensorrt_llm._torch.configs  # noqa: F401
     from tensorrt_llm._torch.model_config import ModelConfig
@@ -238,9 +240,13 @@ def create_dsv4_attention_module(
     from tensorrt_llm.models.modeling_utils import QuantConfig
 
     try:
-        from .collect_mla_module import _apply_gemm_type_quant, initialize_dummy_weights
+        from .collect_mla_module import (
+            _apply_gemm_type_quant,
+            _give_index_scores_magnitude,
+            initialize_dummy_weights,
+        )
     except ImportError:
-        from collect_mla_module import _apply_gemm_type_quant, initialize_dummy_weights
+        from collect_mla_module import _apply_gemm_type_quant, _give_index_scores_magnitude, initialize_dummy_weights
 
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO[attn_kind]
     config_dir, head_info = _patched_config_dir(model_path, compress_ratio, tp_size)
@@ -285,10 +291,12 @@ def create_dsv4_attention_module(
 
     # Provenance: print the RESOLVED kernel-selection knobs (same auto-build
     # code path default serving takes when the user sets no
-    # sparse_attention_config; model_config.py:948-990). Audits
-    # compare these against serving defaults — e.g. the 12.7x CSA
-    # long-prefix gap vs vllm traces to cute-dsl topk/paged-mqa being
-    # default-OFF here.
+    # sparse_attention_config; _torch/model_config.py:1116-1365). Audits
+    # compare these against serving defaults. use_cute_dsl_paged_mqa_logits
+    # defaults to True (llmapi/llm_args.py:1339-1344, inherited by the V4
+    # config), so on the SM100 family the decode indexer runs the CuTe DSL paged
+    # MQA logits kernel instead of DeepGEMM (sparse/dsa/indexer.py:92-100);
+    # cute-dsl top-k stays off.
     _sc = model_config.sparse_attention_config
     print(
         "[dsv4-collector] resolved sparse config: "
@@ -309,44 +317,33 @@ def create_dsv4_attention_module(
 
     if get_sm_version() == 90:
         # Serving publishes the requested pool dtype to the attention modules through the
-        # model's extra attrs (pyexecutor/model_loader.py:1934 extra_attrs['kv_cache_dtype']
-        # = kv_cache_config.dtype; read by attention/mla.py:341). On Hopper that is
+        # model's extra attrs (pyexecutor/model_loader.py:2113-2114 extra_attrs['kv_cache_dtype']
+        # = kv_cache_config.dtype; read by attention/mla.py:345). On Hopper that is
         # 'fp8_ds_mla' (see the KvCacheConfig below) and it also switches the DSV4 module
-        # OFF the fused Q-FP8/KV-norm prologue (sparse/deepseek_v4/module.py:470-480
-        # _is_fused_q_fp8_quant_enabled: "fp8_ds_mla does not use the fused Q FP8 path").
+        # OFF the fused Q-FP8/KV-norm prologue (sparse/deepseek_v4/module.py:580-592
+        # _is_fused_q_fp8_quant_enabled: "fp8_ds_mla ... does not use the fused Q FP8 path").
         # Without it the module takes the fused path, hands the footer-scale cache a
         # strided raw latent and mla_rope_inplace rejects it ("data must be contiguous",
         # H20 ctx capture) — a path serving never runs on Hopper.
         model_config.extra_attrs["kv_cache_dtype"] = "fp8_ds_mla"
 
+    # DeepseekV4Attention takes the model's per-purpose stream dict, as
+    # DeepseekV4DecoderLayer passes it (models/modeling_deepseekv4.py:1463-1470, 1970-1975).
+    from tensorrt_llm._torch.utils import AuxStreamType
+
     aux_stream = torch.cuda.Stream(device=device)
-    import inspect
-
-    _ctor_params = inspect.signature(DeepseekV4Attention.__init__).parameters
-    if "aux_stream_dict" in _ctor_params:
-        # 1.3.0rc29: DeepseekV4Attention takes the model's per-purpose stream dict
-        # (modeling_deepseekv4.py:1371-1376, built by DeepseekV4ForCausalLM :1521-1570),
-        # as collect_mla_module already does for the MLA module.
-        from tensorrt_llm._torch.utils import AuxStreamType
-
-        attn_module = DeepseekV4Attention(
-            model_config=model_config,
-            layer_idx=0,
-            aux_stream_dict={
-                AuxStreamType.Attention: aux_stream,
-                AuxStreamType.MoeShared: aux_stream,
-                AuxStreamType.MoeChunkingOverlap: torch.cuda.Stream(device=device),
-            },
-        )
-    else:
-        attn_module = DeepseekV4Attention(
-            model_config=model_config,
-            layer_idx=0,
-            aux_stream=aux_stream,
-        )
+    attn_module = DeepseekV4Attention(
+        model_config=model_config,
+        layer_idx=0,
+        aux_stream_dict={
+            AuxStreamType.Attention: aux_stream,
+            AuxStreamType.MoeShared: aux_stream,
+            AuxStreamType.MoeChunkingOverlap: torch.cuda.Stream(device=device),
+        },
+    )
 
     # Serving applies QuantConfig.exclude_modules before weight creation
-    # (apply_quant_config_exclude_modules, modeling_utils.py @runtime version);
+    # (apply_quant_config_exclude_modules, _torch/models/modeling_utils.py:438-485, 714-720);
     # mirror it like collect_mla_module does (see the long citation there).
     quant_config = model_config.quant_config
     if quant_config is not None and quant_config.exclude_modules is not None:
@@ -363,12 +360,14 @@ def create_dsv4_attention_module(
     attn_module.to(device)
 
     initialize_dummy_weights(attn_module)
+    _give_index_scores_magnitude(attn_module)
     for module in attn_module.modules():
         if hasattr(module, "post_load_weights") and not getattr(module, "_weights_removed", False):
             module.post_load_weights()
 
     attn_module.eval()
     attn_module.requires_grad_(False)
+    _autotune_dsv4_module(attn_module, model_config, _SERVING_AUTOTUNE_PASSES, device, kv_cache_dtype)
     return attn_module, model_config, head_info
 
 
@@ -389,39 +388,30 @@ def create_dsv4_kv_cache_and_metadata(
 ):
     """DSV4 cache manager + attention metadata, following the serving
     construction path with a DIRECT pinned citation on every hand-set field
-    (layer_permissions.md metadata-parity rule; audited against TensorRT-LLM
-    1.3.0rc23 sources):
+    (layer_permissions.md metadata-parity rule; TensorRT-LLM paths under
+    tensorrt_llm/_torch/, re-checked at the module's pin):
 
-    - manager construction  -> pyexecutor/_util.py:1843-1867 (is_mla branch)
-    - Metadata construction -> pyexecutor/model_engine.py:2475-2489
-      (_set_up_attn_metadata)
-    - mixed-batch metadata assignment -> model_engine.py:4735-4777
-      (seq_lens :4735-4739; request_ids/prompt_lens/num_contexts
-      :4759-4761; KVCacheParams(use_cache=True, num_cached_tokens_per_seq)
-      :4772-4775)
-    - context per-request population -> begin_compute/prompt slicing
-      :3941-3945, position_ids.extend(range(begin_compute, ...)) :3946-3947,
-      past-seen prefix accounting :3960-3998
-    - ordinary decode per-request population -> :4308-4337
+    - manager construction  -> pyexecutor/_util.py:3575-3609 (is_mla branch)
+    - Metadata construction -> pyexecutor/engine/metadata.py:48-90
+      (build_attention_metadata)
+    - per-batch metadata assignment -> pyexecutor/engine/runners/decoder/
+      inputs.py (seq_lens :2031-2035; request_ids/prompt_lens/num_contexts
+      :2054-2056; KVCacheParams(use_cache=True, num_cached_tokens_per_seq)
+      :2088-2095)
+    - context per-request population -> inputs.py: chunk slicing and
+      position_ids.extend(range(begin_compute, ...)) :985-1001, prompt length
+      and past-seen prefix accounting :1012-1014
+    - ordinary decode per-request population -> inputs.py:1610-1667
       (past_seen/position/cached/prompt_len)
-    - decode dummy-request prompt_len proof -> resource_manager.py:988-995
-      (is_gen: req.prompt_len = token_num - 1; py_prompt_len = prompt_len),
-      consumed at model_engine.py:4336
+    - decode dummy-request prompt_len proof -> pyexecutor/kv_cache/
+      kv_cache_manager_v2.py:6052-6055 (is_gen: req.prompt_len = token_num - 1;
+      py_prompt_len = prompt_len), consumed at inputs.py:1667
     """
-    try:
-        from tensorrt_llm._torch.attention.backends.interface import (
-            AttentionRuntimeFeatures,
-            KVCacheParams,
-        )
-    except ModuleNotFoundError:  # < rc29 layout
-        from tensorrt_llm._torch.attention_backend.interface import (
-            AttentionRuntimeFeatures,
-            KVCacheParams,
-        )
-    try:
-        from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
-    except ModuleNotFoundError:  # < rc29 layout
-        from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+    from tensorrt_llm._torch.attention.backends.interface import (
+        AttentionRuntimeFeatures,
+        KVCacheParams,
+    )
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
     from tensorrt_llm.bindings import DataType
     from tensorrt_llm.bindings.internal.batch_manager import CacheType
 
@@ -432,9 +422,9 @@ def create_dsv4_kv_cache_and_metadata(
     from tensorrt_llm.llmapi.llm_args import KvCacheConfig
 
     try:
-        from .collect_mla_module import get_kv_cache_manager_cls
+        from .collect_mla_module import _write_indexer_history, get_kv_cache_manager_cls
     except ImportError:
-        from collect_mla_module import get_kv_cache_manager_cls
+        from collect_mla_module import _write_indexer_history, get_kv_cache_manager_cls
 
     config = model_config.pretrained_config
     mapping = model_config.mapping
@@ -443,10 +433,10 @@ def create_dsv4_kv_cache_and_metadata(
     qk_rope_head_dim = config.qk_rope_head_dim
     head_dim = kv_lora_rank + qk_rope_head_dim
 
-    # DeepSeek-V4 serving default page size ("TensorRT LLM defaults
-    # DeepSeek-V4 to tokens_per_block=128",
-    # examples/models/core/deepseek_v4/README.md:66-67;
-    # DeepseekV4CacheManager asserts 128/256).
+    # DeepSeek-V4 serving default page size: the model's kv_cache_config default is
+    # tokens_per_block=128 on every SM, 256 only for an explicit fp8_ds_mla pool off
+    # Hopper (models/modeling_deepseekv4.py:2914-2925); DeepseekV4CacheManager accepts
+    # 128 or 256 (attention/backends/sparse/deepseek_v4/cache_manager.py:363-366).
     tokens_per_block = 128
 
     prefix_len = int(prefix_len) if is_context else 0
@@ -461,9 +451,10 @@ def create_dsv4_kv_cache_and_metadata(
         seq_len_q = 1
         kv_cache_len = generation_request_geometry(seq_len)["num_cached_tokens"]
     # Serving's max_seq_len is the ENGINE envelope, not the request length:
-    # the DSV4 metadata derives num_sparse_topk = window(128) +
-    # next_pow2(ceil(max_seq_len/128)) (sparse_deepseek_v4.py:435-444)
-    # and the trtllmGen fmha kernel asserts it is a multiple of 4
+    # the DSV4 metadata sizes the HCA indices as
+    # next_pow2(ceil(max_seq_len/128)) (sparse/deepseek_v4/metadata.py:244-253),
+    # num_sparse_topk = window(128) + that, and the trtllmGen fmha kernel asserts
+    # it is a multiple of 4
     # — request-sized envelopes (< 257) yield pow2 1/2 -> 129/130 and crashed
     # every tiny-KV HCA decode case on B200 (smoke round 3). Floor ONLY the
     # envelope; per-request state (add_dummy_requests token_nums, metadata
@@ -474,7 +465,8 @@ def create_dsv4_kv_cache_and_metadata(
     max_seq = max(max_seq, 512)
 
     # KVCacheManagerV2 requires an explicit quota (max_tokens or
-    # max_gpu_total_bytes; kv_cache_manager_v2.py "Quota not set")
+    # max_gpu_total_bytes; pyexecutor/kv_cache/kv_cache_manager_v2.py:1651-1674
+    # "Quota not set")
     # — in serving, free_gpu_memory_fraction is converted to a byte quota by
     # the executor's KV estimation before the manager is built, so pass the
     # equivalent byte quota directly (half of currently-free device memory,
@@ -487,16 +479,16 @@ def create_dsv4_kv_cache_and_metadata(
     # is handed to the manager's own arithmetic, never computed here.
     free_bytes, _ = torch.cuda.mem_get_info(torch.device(device))
     # Pool size is a per-case cost, not a measurement input: the manager
-    # physically backs the whole quota at construction (runtime/
-    # kv_cache_manager_v2/_storage_manager.py:248-249 slot counts from the
-    # GPU-tier quota, expand_pool_group :826) and this collector
+    # sizes its GPU-tier pools from the whole quota at construction
+    # (cpp/tensorrt_llm/batch_manager/kv_cache_manager_v2/storageManager.cpp:269-277)
+    # and this collector
     # builds and tears one down per case. Cap the quota at what this batch
     # can touch via kv_cache_config.max_tokens — the manager converts it with
     # its own DSV4 arithmetic (DeepseekV4CacheManager._get_quota_from_max_tokens,
-    # sparse/deepseek_v4/cache_manager.py:926-981: non-sliding KV +
+    # sparse/deepseek_v4/cache_manager.py:951-1006: non-sliding KV +
     # SWA per token/request + indexer/compress pools + per-type padding) and
     # takes min(max_gpu_total_bytes, quota_from_max_tokens) (pyexecutor/kv_cache/
-    # kv_cache_manager_v2.py:1384-1398). The envelope is doubled and rounded
+    # kv_cache_manager_v2.py:1651-1670). The envelope is doubled and rounded
     # to whole pages so dummy-request allocation never sits at the edge; a
     # pool that is still too small fails allocation loudly (classified),
     # never silently. The free-memory half stays as the upper bound, matching
@@ -524,19 +516,27 @@ def create_dsv4_kv_cache_and_metadata(
         max_gpu_total_bytes=int(free_bytes * 0.5),
         max_tokens=int(planned_tokens),
         enable_block_reuse=False,
+        # Deviation (every SM; also collect_mla_module.py and collect_msa_module.py): the
+        # manager is built without a host tier. Serving leaves host_cache_size unset, and
+        # KVCacheManagerV2 then adds a host tier sized from the GPU quota
+        # (pyexecutor/kv_cache/kv_cache_manager_v2.py:1718-1764@v1.4.0rc2) that a background
+        # thread prefaults and registers with CUDA (kv_cache_manager_v2/storage/core.cpp:392
+        # waitForFill=false, utils/hostMem.cpp:187-216). That tier holds offloaded blocks; the
+        # attention kernels timed here read the GPU pool. These collectors build a manager per
+        # point, so the fill ran while the point was timed: it stalled the timed loop at random
+        # (B200 and B300 rows up to 2,700x their neighbours) and cost about 17 s per point here.
+        # Without the tier the latencies are the same (B200 CSA context, 1,235 points: median
+        # 0.99x, 1st to 99th percentile 0.96-1.04x) and nine rows take 17 minutes instead of 6
+        # hours. Retire it when a row reuses one manager for all its points.
+        host_cache_size=0,
     )
     if get_sm_version() == 90:
-        # 1.3.0rc29 on Hopper: DeepseekV4CacheManager refuses any pool but the packed
-        # FP8 sparse-MLA cache (attention/backends/sparse/deepseek_v4/cache_manager.py:
-        # 343-349 "DeepSeek-V4 on Hopper requires kv_cache_config.dtype='fp8_ds_mla'"),
-        # the option llm_args.py:4256-4262 documents for SM90/SM120/SM121; serving
-        # deployments on H20 carry kv_cache_config.dtype=fp8_ds_mla (harness targets
-        # customization, matrix pass+custom). Earlier rc KvCacheConfig has no such
-        # literal and used the plain FP8 pool — keep that path for them.
-        try:
-            kv_cache_config = KvCacheConfig(dtype="fp8_ds_mla", **kv_cache_kwargs)
-        except (ValueError, TypeError):
-            kv_cache_config = KvCacheConfig(**kv_cache_kwargs)
+        # On Hopper DeepseekV4CacheManager refuses any pool but the packed FP8
+        # sparse-MLA cache (attention/backends/sparse/deepseek_v4/cache_manager.py:368-374
+        # "DeepSeek-V4 on Hopper requires kv_cache_config.dtype='fp8_ds_mla'"), and the
+        # model's serving default sets that dtype there (models/modeling_deepseekv4.py:
+        # 2920-2921; the option llmapi/llm_args.py:4985-4989 documents for SM90/SM120/SM121).
+        kv_cache_config = KvCacheConfig(dtype="fp8_ds_mla", **kv_cache_kwargs)
     else:
         kv_cache_config = KvCacheConfig(**kv_cache_kwargs)
     kv_cache_manager_cls = get_kv_cache_manager_cls(model_config, kv_cache_config)
@@ -544,11 +544,12 @@ def create_dsv4_kv_cache_and_metadata(
     # resolution from kv_cache_quant_algo (set by _apply_gemm_type_quant).
     kv_cache_dtype = DataType.BF16 if kv_cache_dtype_str == "bfloat16" else DataType.FP8
 
-    # Serving construction site: pyexecutor/_util.py:1843-1867
-    # (is_mla branch): CacheType.SELFKONLY :1846, num_kv_heads=1 :1848,
-    # head_dim=kv_lora_rank+qk_rope_head_dim :1849, dtype=kv_cache_dtype,
-    # vocab_size=config.vocab_size :1856, sparse_attention_config :1862,
-    # pretrained_config + layer_mask forwarded (single-layer here).
+    # Serving construction site: pyexecutor/_util.py:3575-3609
+    # (is_mla branch): CacheType.SELFKONLY :3585, num_kv_heads=1 :3587,
+    # head_dim=kv_lora_rank+qk_rope_head_dim :3588-3591, dtype=kv_cache_dtype :3596,
+    # sparse_attention_config :3603, pretrained_config :3604, layer_mask :3607
+    # (single-layer here). vocab_size only keys multimodal block-reuse events;
+    # serving passes None for a text-only engine (:3442-3449), and no kernel reads it.
     kv_cache_manager = kv_cache_manager_cls(
         kv_cache_config,
         CacheType.SELFKONLY,
@@ -575,11 +576,14 @@ def create_dsv4_kv_cache_and_metadata(
         request_ids = list(range(batch_size))
         token_nums = [request_tokens] * batch_size
         # add_dummy_requests is serving's own warmup-request mechanism
-        # (model_engine.py:2141-2160, :2277, :2300 register dummy
-        # requests the same way before capture/warmup); is_gen mirrors the
+        # (pyexecutor/engine/runners/decoder/dummy_requests.py:234-251 register
+        # dummy requests the same way before capture/warmup); is_gen mirrors the
         # request phase (generation metadata below declares num_contexts=0
-        # with cached KV).
-        kv_cache_manager.add_dummy_requests(request_ids, token_nums, is_gen=not is_context)
+        # with cached KV). The V2 manager returns None, with nothing left allocated,
+        # when the pool cannot hold the requests (pyexecutor/kv_cache/
+        # kv_cache_manager_v2.py:5927-5931); their block tables would stay unset.
+        if kv_cache_manager.add_dummy_requests(request_ids, token_nums, is_gen=not is_context) is None:
+            raise RuntimeError("FIXME(kernel-limit): does not fit: the KV cache pool cannot hold the case's requests")
 
         attention_cls = get_attention_backend(
             model_config.attn_backend,
@@ -590,12 +594,12 @@ def create_dsv4_kv_cache_and_metadata(
             pretrained_config=config
         )
 
-        # Constructor kwargs mirror _set_up_attn_metadata
-        # (model_engine.py:2475-2489); per-batch fields mirror the
-        # _prepare_tp_inputs population sites cited per field below.
+        # Constructor kwargs mirror build_attention_metadata
+        # (pyexecutor/engine/metadata.py:48-90); per-batch fields mirror the
+        # inputs.py population sites cited per field below.
         attn_metadata = attention_cls.Metadata(
             # max_num_requests/max_num_tokens are CAPACITY BOUNDS
-            # (model_engine.py:2476-2477 passes engine-lifetime capacity).
+            # (engine/metadata.py:78-80 passes engine-lifetime capacity).
             # This collector prepares exactly one batch, so the tight bound
             # (= this batch's request/token counts) satisfies the same
             # buffer-sizing contract; the parity test asserts
@@ -606,40 +610,39 @@ def create_dsv4_kv_cache_and_metadata(
             mapping=mapping,
             # seq_lens: per-request current-step token counts — context
             # appends the fresh chunk length, decode appends 1; assigned as a
-            # tensor at model_engine.py:4735-4739.
+            # tensor at inputs.py:2031-2035.
             seq_lens=torch.tensor([seq_len_q] * batch_size, dtype=torch.int32),
             # position_ids: interface dataclass default None
-            # (attention_backend/interface.py:100) — serving never assigns it
+            # (attention/backends/interface.py:110) — serving never assigns it
             # on this metadata; positions travel as a model input (the tensor
-            # built in the runner below, mirroring model_engine.py
-            # :3946-3947 / :4315).
+            # built in the runner below, mirroring inputs.py:1001 / :1625).
             position_ids=None,
             # num_contexts = scheduled context-request count
-            # (model_engine.py:4761); ordinary decode batches carry 0.
+            # (inputs.py:2056); ordinary decode batches carry 0.
             num_contexts=batch_size if is_context else 0,
             # num_cached_tokens_per_seq: context = begin_compute prefix
-            # (:3973-3976); decode = past_seen - compressed (:4333-4335,
+            # (inputs.py:1013-1014); decode = past_seen - compressed (:1663-1665,
             # compressed offset 0 for these single-layer dummy weights);
             # wrapped into KVCacheParams(use_cache=True, ...) exactly as
-            # model_engine.py:4772-4775 does.
+            # inputs.py:2088-2095 does.
             kv_cache_params=KVCacheParams(
                 use_cache=True,
                 num_cached_tokens_per_seq=[kv_cache_len] * batch_size,
             ),
-            # cross: interface default None (interface.py:135) — cross
+            # cross: interface default None (interface.py:145) — cross
             # metadata exists only for encoder-decoder attention.
             cross=None,
             request_ids=request_ids,
-            # prompt_lens: context = chunk-local fresh length (:3941-3945
-            # prompt slicing; the SM100 cached-KV walker consumes chunk-local
+            # prompt_lens: context = chunk-local fresh length (inputs.py:1000,
+            # 1012 prompt slicing; the SM100 cached-KV walker consumes chunk-local
             # semantics); decode = py_prompt_len, which for is_gen dummy
             # requests IS the past-KV length: add_dummy_requests sets
-            # req.prompt_len = token_num - 1 (resource_manager.py:988-995)
+            # req.prompt_len = token_num - 1 (kv_cache_manager_v2.py:6052-6055)
             # and we register token_num = seq_len + 1, so py_prompt_len ==
-            # seq_len == kv_cache_len, appended at model_engine.py:4336.
+            # seq_len == kv_cache_len, appended at inputs.py:1667.
             prompt_lens=[seq_len_q if is_context else kv_cache_len] * batch_size,
             # cached-KV context flag: is_mla AND cache_reuse|chunked_prefill
-            # (model_engine.py:2419-2422) — true here exactly for
+            # (engine/metadata.py:65-68) — true here exactly for
             # prefix-carrying context cases.
             enable_context_mla_with_cached_kv=bool(is_context and prefix_len > 0),
             runtime_features=AttentionRuntimeFeatures(
@@ -647,14 +650,14 @@ def create_dsv4_kv_cache_and_metadata(
                 cache_reuse=bool(is_context and prefix_len > 0),
             ),
             # all_rank_num_tokens stays None: attention-DP only
-            # (model_engine.py:3280-3283); single-process collection.
+            # (inputs.py:459-460); single-process collection.
             all_rank_num_tokens=None,
             # workspace: optional attention-kernel scratch
-            # (attention_backend/trtllm.py:77, lazily grown at :306); an
+            # (attention/backends/trtllm.py:129, lazily allocated at :470-475); an
             # empty tensor is the pre-warmup serving state.
             workspace=torch.tensor([], device=device, dtype=torch.int8),
             # sparse_metadata_params: same to_sparse_metadata_params call
-            # serving makes (model_engine.py:2442-2446).
+            # serving makes (engine/metadata.py:73-77).
             sparse_metadata_params=sparse_metadata_params,
         )
 
@@ -662,10 +665,114 @@ def create_dsv4_kv_cache_and_metadata(
             attn_metadata.indexer = attn_module.indexer
 
         attn_metadata.prepare()
+        # CSA only (HCA builds no indexer): the cached history's index K, which the shared DSA
+        # indexer path scores and selects from. The reason is at _write_indexer_history.
+        if getattr(attn_module, "indexer", None) is not None:
+            with torch.inference_mode():
+                _write_indexer_history(attn_module.indexer, attn_metadata, device)
         return kv_cache_manager, attn_metadata, attention_cls
     except Exception:
         kv_cache_manager.shutdown()
         raise
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Inputs, forward and serving's warm-up autotuning
+# ═══════════════════════════════════════════════════════════════════════
+
+# Serving tunes every tunable op in one autotune() pass at warmup, forwarding the whole
+# model on a context batch of curr_max_num_tokens tokens (max_num_tokens, 8192 by
+# default, llmapi/llm_args.py:5932-5933, unless the KV pool holds fewer) and then on one
+# one-token generation request (pyexecutor/engine/runners/decoder/warmup.py:1050-1068,
+# 1098-1159). The DSV4 module has tunable ops beyond its Linear projections: on the SM100
+# family o_a_proj runs the autotuned CuTe DSL FP8 BMM (attention/backends/sparse/
+# deepseek_v4/module.py:301-322, custom_ops/cute_dsl_custom_ops.py:5559-5590) and the
+# indexer may run the autotuned fused FP8 Q GEMM (sparse/deepseek_v4/indexer.py:133-169),
+# so the module itself is forwarded under autotune() at both passes when it is built, each
+# on its own KV pool and metadata. The tuned tactics stay in the worker's AutoTuner cache.
+# A context point with more new tokens than the context pass is first forwarded under
+# autotune() at its own count, which a deployment that runs it (max_num_tokens >= that
+# count) tunes at warmup; collect_mla_module tunes its projections the same way.
+_SERVING_AUTOTUNE_PASSES: tuple[tuple[bool, int], ...] = ((True, 8192), (False, 1))
+# The largest new-token count each built attention module is tuned at.
+_TUNED_NUM_TOKENS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _dsv4_inputs(model_config, batch_size: int, seq_len: int, prefix_len: int, is_context: bool, device: str):
+    """(num_tokens, position_ids, hidden_states) of one uniform batch."""
+    torch_device = torch.device(device)
+    hidden_size = model_config.pretrained_config.hidden_size
+    # int32 position_ids: serving populates them int32 and the DSV4 rope ops assert it
+    # (cpp/tensorrt_llm/thop/mlaRopeInplaceOp.cpp:52, compressorOp.cpp:121
+    # "position_ids must be int32").
+    if is_context:
+        num_tokens = seq_len * batch_size
+        position_ids = (
+            torch.arange(prefix_len, prefix_len + seq_len, device=torch_device, dtype=torch.int32)
+            .unsqueeze(0)
+            .expand(batch_size, -1)
+            .reshape(-1)
+            .contiguous()
+        )
+    else:
+        num_tokens = batch_size
+        # position == past-seen/cached count, NOT seq_len - 1: see
+        # generation_request_geometry (ordinary decode, inputs.py:1616, 1625,
+        # 1663-1665). Off-by-one here rotates rope one step early; it does not
+        # change kernel shapes or measured cost.
+        position_ids = torch.full(
+            (batch_size,),
+            generation_request_geometry(seq_len)["position"],
+            device=torch_device,
+            dtype=torch.int32,
+        )
+    hidden_states = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=torch_device)
+    return num_tokens, position_ids, hidden_states
+
+
+def _forward_dsv4(attn_module, model_config, attn_metadata, position_ids, hidden_states) -> None:
+    """One eager forward with the metadata published the way the model publishes it."""
+    from tensorrt_llm._torch.utils import get_model_extra_attrs, model_extra_attrs
+
+    with model_extra_attrs(model_config.extra_attrs):
+        get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
+        with torch.inference_mode():
+            attn_module.forward(position_ids, hidden_states, attn_metadata)
+
+
+def _autotune_dsv4_module(attn_module, model_config, passes, device: str, kv_cache_dtype: str) -> None:
+    """Forward ``attn_module`` under autotune() on one request per (is_context, tokens)
+    pass of ``passes``, as serving's warmup does (_SERVING_AUTOTUNE_PASSES)."""
+    from tensorrt_llm._torch.autotuner import autotune
+
+    try:
+        from .collect_mla_module import _cleanup
+    except ImportError:
+        from collect_mla_module import _cleanup
+
+    start = time.perf_counter()
+    for is_context, num_tokens in passes:
+        kv_cache_manager = None
+        try:
+            kv_cache_manager, attn_metadata, _ = create_dsv4_kv_cache_and_metadata(
+                model_config=model_config,
+                attn_module=attn_module,
+                batch_size=1,
+                seq_len=num_tokens,
+                is_context=is_context,
+                device=device,
+                kv_cache_dtype_str=kv_cache_dtype,
+            )
+            _, position_ids, hidden_states = _dsv4_inputs(model_config, 1, num_tokens, 0, is_context, device)
+            with autotune():
+                _forward_dsv4(attn_module, model_config, attn_metadata, position_ids, hidden_states)
+            torch.cuda.synchronize()
+        finally:
+            _cleanup(kv_cache_manager)
+    _TUNED_NUM_TOKENS[attn_module] = max(
+        [num_tokens for is_context, num_tokens in passes if is_context] + [_TUNED_NUM_TOKENS.get(attn_module, 0)]
+    )
+    print(f"  [DSV4 module autotune] passes={list(passes)}: {time.perf_counter() - start:.1f} s")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -698,7 +805,7 @@ def run_dsv4_attn(
     """
     import tensorrt_llm
     import tensorrt_llm._torch.utils as _trtllm_utils
-    from tensorrt_llm._torch.utils import get_model_extra_attrs, model_extra_attrs
+    from tensorrt_llm._torch.autotuner import autotune
 
     try:
         from .collect_mla_module import _cleanup
@@ -741,50 +848,23 @@ def run_dsv4_attn(
             kv_cache_dtype_str=kv_cache_dtype,
         )
 
-        hidden_size = model_config.pretrained_config.hidden_size
-        # int32 position_ids: serving populates them int32 and the DSV4 indexer
-        # rope op asserts it (sparse/deepseek_v4/deepseek_v4.py mla_rope_inplace
-        # "position_ids must be int32").
-        if is_context:
-            num_tokens = seq_len * batch_size
-            position_ids = (
-                torch.arange(prefix_len, prefix_len + seq_len, device=torch_device, dtype=torch.int32)
-                .unsqueeze(0)
-                .expand(batch_size, -1)
-                .reshape(-1)
-                .contiguous()
-            )
-        else:
-            num_tokens = batch_size
-            # position == past-seen/cached count, NOT seq_len - 1: see
-            # generation_request_geometry (ordinary decode,
-            # model_engine.py:4308,4315,4332-4335). Off-by-one
-            # here rotates rope one step early; it does not change kernel
-            # shapes or measured cost.
-            position_ids = torch.full(
-                (batch_size,),
-                generation_request_geometry(seq_len)["position"],
-                device=torch_device,
-                dtype=torch.int32,
-            )
+        num_tokens, position_ids, hidden_states = _dsv4_inputs(
+            model_config, batch_size, seq_len, prefix_len, is_context, device
+        )
 
-        hidden_states = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=torch_device)
-
-        # FIXME(kernel-limit): context shapes at bs*sl == 262144 query tokens
-        # fail with cudaLaunchKernelEx "invalid argument" (grid-dim limit) on
-        # B200/1.3.0rc23 — serving chunks prefill at max_num_tokens (<<262144),
-        # so these sweep extremes exceed the serving envelope; unverified which
-        # kernel hits the limit. Cases fail into the classified log.
-        if dry_run:
-            with model_extra_attrs(model_config.extra_attrs):
-                get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
-                try:
-                    with torch.inference_mode():
-                        attn_module.forward(position_ids, hidden_states, attn_metadata)
-                except Exception:
-                    print("  Dry run failed:")
-                    traceback.print_exc()
-                    raise  # the finally below releases the KV pool
+        # A point past the tuned token count runs its checking forward under
+        # autotune() (_SERVING_AUTOTUNE_PASSES).
+        tune = num_tokens > _TUNED_NUM_TOKENS.get(attn_module, 0)
+        if dry_run or tune:
+            try:
+                with autotune() if tune else contextlib.nullcontext():
+                    _forward_dsv4(attn_module, model_config, attn_metadata, position_ids, hidden_states)
+            except Exception:
+                print("  Dry run failed:")
+                traceback.print_exc()
+                raise  # the finally below releases the KV pool
+            if tune:
+                _TUNED_NUM_TOKENS[attn_module] = num_tokens
 
         _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
         _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
@@ -796,6 +876,10 @@ def run_dsv4_attn(
             device=torch_device,
             kernel_func=kernel_func,
             num_warmups=warming_up,
+            # A dry run of this seq_len already executed this forward (this point or
+            # an earlier one of the series); three eager passes cover lazily
+            # initialised paths before capture, as in the MLA and DSA modules.
+            num_eager_warmups=3,
             num_runs=test_ite,
             repeat_n=1,
             allow_graph_fail=False,
@@ -850,9 +934,9 @@ def run_dsv4_attn(
         return latency
     finally:
         _trtllm_utils._model_extra_attrs.attrs = saved_extra_attrs
+        # Shuts the KV pool down, empties the CUDA cache and collects garbage
+        # periodically (a full collection per point cost 0.2-0.4 s).
         _cleanup(kv_cache_manager)
-        gc.collect()
-        torch.cuda.empty_cache()
 
 
 def run_dsv4_attn_worker(

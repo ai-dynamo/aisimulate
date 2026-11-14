@@ -13,7 +13,7 @@ engine:
   model: Qwen/Qwen3-VL-8B-Instruct
   hardware: h200_sxm
   backend: sglang
-  backend_version: 0.5.14
+  backend_version: current
   mode: aggregated
   workers:
     encoder: {tensor: 1, replicas: 1, batch_size: 2}

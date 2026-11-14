@@ -3,9 +3,10 @@
 
 # vLLM owns block-FP8 dispatch. Its FlashInfer/DeepGEMM dynamic wrapper
 # (FlashInfer for m < 32, DeepGEMM above) is selectable on SM90 only
-# (has_flashinfer_fp8_blockscale_gemm in utils/flashinfer.py); SM10x selects
-# DeepGEMM or CUTLASS directly (see the __compat__ comment below). Keep every grid M/N/K shape observable instead
-# of hiding a presumed M-divisibility restriction in population logic.
+# (has_flashinfer_fp8_blockscale_gemm in utils/flashinfer.py); SM10x and SM120
+# select DeepGEMM or CUTLASS directly (see the __compat__ comment below). Keep
+# every grid M/N/K shape observable instead of hiding a presumed M-divisibility
+# restriction in population logic.
 
 """vLLM GEMM collector for CUDA backends.
 
@@ -15,120 +16,66 @@ from `case_generator.py`; this file handles vLLM config contexts, distributed se
 quantized-weight preparation, and selected-kernel reporting.
 """
 
-# Verified against the vLLM v0.24.0 and v0.27.1 tags (source clones). Every
-# framework surface this collector touches is either byte-identical or a
-# pure line-number shift between the two tags -- no version branching is
-# needed, unlike the sglang gemm precedent, where the
-# same call shape silently dispatched to a different kernel at the newer
-# pin. Checked: vllm.envs.VLLM_BATCH_INVARIANT (unchanged flag; its two
-# reroute sites shifted line-only, see the guard's comment below);
-# vllm._custom_ops.scaled_fp4_quant (op registration unchanged);
-# vllm.config.{VllmConfig,set_current_vllm_config} (already a package with
-# these two names re-exported at both versions); FlashInferFp8DeepGEMM
-# DynamicBlockScaledKernel (scaled_mm/flashinfer.py -- file byte-identical,
-# same class, same m>=32 DeepGEMM/FlashInfer .fallback/.base split);
-# RowParallelLinear (byte-identical class body, same __init__ kwargs);
-# CompressedTensorsConfig.from_config's nvfp4-pack-quantized parsing path
-# and compressed_tensors_w4a4_nvfp4.py's process_weights_after_loading
-# (byte-identical file); Fp8Config and its fp8/fp8_block kernel-candidate
-# lists (model_executor/kernels/linear/__init__.py) -- 0.27.1 appends a new
-# "Humming" kernel family to the END of every list this collector's lanes
-# consult (_POSSIBLE_FP8_KERNELS[CUDA] and _POSSIBLE_FP8_BLOCK_KERNELS[CUDA]
-# both keep their pre-existing entries, including
-# FlashInferFp8DeepGEMMDynamicBlockScaledKernel, ahead of the Humming
-# addition -- selection is first-match by is_supported(), so today's
-# selected kernels for fp8/fp8_block are unaffected); vllm.utils.deep_gemm
-# (per_block_cast_to_fp8 -- file byte-identical in its entirety, both
-# clones).
-# 0.25.0 collection audit against the installed official runtime, vLLM
-# dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
-# RowParallelLinear's class body is AST-identical to 0.24.0; Fp8LinearMethod
-# changes only type annotations. scaled_mm/flashinfer.py is byte-identical,
-# preserving its m>=32 leaf dispatch. The CUDA fp8/block-fp8 selector lists
-# append Humming after the existing candidates (kernels/linear/__init__.py:
-# 322-363); NVFP4 still uses CT's factory and records the selected kernel
-# (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
-# exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
-# 0.30.0 source audit (tag v0.30.0 == ced6857afa0e vs v0.27.1):
-# the shipped 0.30.0 tables and the baseline of the 0.31.0 audit below.
-# The gemm family runs on 0.31.0 (framework_manifest.yaml family pin),
-# so this file targets exactly 0.31.0.
-# One release per file; earlier code is `git log -- <this file>` away.
-# bf16: UnquantizedLinearMethod now binds its GEMM at __init__ from
-#   kernel_config.linear_backend (layers/linear.py:169-174, apply :234-238);
-#   dispatch_unquantized_gemm (layers/utils.py:584-616) returns
-#   default_unquantized_gemm = F.linear (:84-90) unless the opt-in
-#   linear_backend "flashinfer_cutedsl" is set (default "auto",
-#   config/kernel.py:300). run_gemm asserts that binding below.
-# fp8: per-token dynamic activation key when cutlass is supported
-#   (fp8.py:289-297). _POSSIBLE_FP8_KERNELS[CUDA]
-#   (kernels/linear/__init__.py:421-430) is now FlashInfer, Cutlass,
-#   B12xTensor (SM12x, static only), Torch x2, Marlin, Humming; FlashInfer
-#   rejects per-token activations (scaled_mm/flashinfer.py:56-65), so SM89+
-#   still selects CutlassFP8ScaledMMLinearKernel (cutlass.py:163-173).
-# fp8_block: _POSSIBLE_FP8_BLOCK_KERNELS[CUDA] (__init__.py:457-466) is
-#   FlashInferDyn (SM90 only), DeepGemm, Cutlass, B12x (SM12x only,
-#   scaled_mm/b12x.py:53-66), Marlin, Humming, Triton, BlockWiseTorch. SM10x:
-#   DeepGemm when N%64==0 and K%128==0 (scaled_mm/deep_gemm.py:46-82,
-#   utils/deep_gemm.py:775-794), else Cutlass (cutlass.py:287-310). SM89:
-#   Marlin lost its VLLM_TEST_FORCE_FP8_MARLIN guard (scaled_mm/marlin.py:
-#   35-46), so Marlin (W8A16) now replaces Triton there -- kernel_source
-#   records it. The FlashInferDyn m<32 leaf split is unchanged
-#   (scaled_mm/flashinfer.py:301-316, file byte-identical).
-# nvfp4: CT from_config (compressed_tensors.py:231) only adds an actorder
-#   rejection; compressed_tensors_w4a4_nvfp4.py is byte-identical.
-#   _POSSIBLE_NVFP4_KERNELS[CUDA] (__init__.py:551-567) inserts
-#   FlashInferB12x (SM120+, nvfp4/flashinfer.py:383-393): SM10x still
-#   selects FlashInferCuteDsl (:115-123), SM12x FlashInferCutlass (:183-197).
-# Byte-identical helpers: scaled_fp4_quant (_custom_ops.py:1525-1600),
-#   per_block_cast_to_fp8 (utils/deep_gemm.py:737-756).
-# 0.31.0 audit (source-only: tag v0.31.0 == db9527a46873 vs
-# v0.30.0 ced6857afa0e; stock image, no overlay). Python dispatch for every
-# lane is unchanged; only line numbers and non-CUDA branches moved.
-# bf16: UnquantizedLinearMethod.__init__ binds dispatch_unquantized_gemm(
-#   kernel_config.linear_backend) (layers/linear.py:171-175, apply
-#   :229-239; only the CPU-only skip attribute was renamed).
-#   dispatch_unquantized_gemm (layers/utils.py:602-634) and
-#   default_unquantized_gemm = F.linear (:83-89) are AST-identical; the
-#   linear_backend default is still "auto" (config/kernel.py:293).
-# fp8: the per-token dynamic activation key is still chosen when cutlass is
-#   supported (fp8.py:273-280). _POSSIBLE_FP8_KERNELS[CUDA]
-#   (kernels/linear/__init__.py:420-429) is unchanged. FlashInfer still
-#   rejects per-token activations (scaled_mm/flashinfer.py:56-65), so
-#   CutlassFP8ScaledMMLinearKernel is selected (cutlass.py:157-174).
-#   is_supported now checks cutlass_fp8_supported() instead of is_cuda()
-#   (:165-170), which is true on SM89+. The per-tensor weight transpose
-#   moved from fp8.py into process_fp8_weight_tensor_strategy
-#   (quantization/utils/fp8_utils.py:1370-1395). The resulting layout is the
-#   same.
-# fp8_block: _POSSIBLE_FP8_BLOCK_KERNELS[CUDA] (__init__.py:458-467) is
-#   unchanged. SM10x still uses DeepGemm when N%64==0 and K%128==0
-#   (scaled_mm/deep_gemm.py:46-82, byte-identical;
-#   utils/deep_gemm.py:1020-1039) and otherwise uses Cutlass
-#   (cutlass.py:288-311, class AST-identical). Kernel-side change: the SM100
-#   CUTLASS blockwise swap-AB heuristic went from
-#   (m < 16 || m % 4 != 0) to (m <= 64), with padded SFA for misaligned M
-#   (csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/
-#   scaled_mm_blockwise_sm100_fp8_dispatch.cuh). The fp32-scale
-#   per_token_group_quant_8bit gained a register fast path for bf16
-#   group-128 (w8a8/fp8/per_token_group_quant.cu), which the Cutlass
-#   lane's QuantFP8 reaches. The labels stay the same, but the timings of
-#   the Cutlass-routed rows change.
-# nvfp4: compressed_tensors_w4a4_nvfp4.py and nvfp4/flashinfer.py are
-#   byte-identical; _POSSIBLE_NVFP4_KERNELS[CUDA] (__init__.py:551-567) and
-#   init_nvfp4_linear_kernel (:1075-1192) are unchanged. SM10x still
-#   selects FlashInferCuteDsl (nvfp4/flashinfer.py:116-123) on FlashInfer
-#   0.7.0.post1 (was 0.6.18.post1).
+# Audited against vLLM v0.32.0 (from v0.31.0): every import, constructor
+# argument and config field used below is unchanged, and so is the Python
+# kernel selection of every lane. Earlier audits are git history. Selection is
+# first-match over the CUDA candidate lists in model_executor/kernels/linear/
+# __init__.py with linear_backend "auto" (config/kernel.py:350); the new
+# prioritize_humming (:411) only moves Humming ahead of Marlin, and only on
+# SM90 (quantization/utils/humming/priority.py:11), where no lane reaches
+# either.
+# bf16, every SM: UnquantizedLinearMethod.__init__ binds
+#   dispatch_unquantized_gemm(linear_backend) (layers/linear.py:170-175, apply
+#   :229-239), which returns default_unquantized_gemm = F.linear
+#   (layers/utils.py:620-652, :83-89). run_gemm asserts that binding below.
+# fp8, SM89-SM120: dynamic activations take the per-token key when CUTLASS FP8
+#   is supported (fp8.py:272-280). FlashInferFP8ScaledMMLinearKernel, first in
+#   _POSSIBLE_FP8_KERNELS (__init__.py:444-452), needs per-tensor activations
+#   (scaled_mm/flashinfer.py:56-65), so CutlassFP8ScaledMMLinearKernel runs
+#   (scaled_mm/cutlass.py:158-175).
+# fp8_block (_POSSIBLE_FP8_BLOCK_KERNELS, __init__.py:481-490):
+#   SM89: no DeepGEMM (platforms/cuda.py:689-695) or CUTLASS block-FP8
+#     (cutlass_scaled_mm_supports_block_fp8 needs SM90+) and B12x is SM12x only
+#     (scaled_mm/b12x.py:53-67), so MarlinFP8ScaledMMLinearKernel (W8A16,
+#     scaled_mm/marlin.py:29-49).
+#   SM90: FlashInferFp8DeepGEMMDynamicBlockScaledKernel when N%64==0 and
+#     K%128==0 (scaled_mm/flashinfer.py:88-195, utils/flashinfer.py:1160-1199),
+#     else CutlassFp8BlockScaledMMKernel (scaled_mm/cutlass.py:277-312).
+#   SM100, SM103, SM120: DeepGemmFp8BlockScaledMMKernel when N%64==0 and
+#     K%128==0 (scaled_mm/deep_gemm.py:47-82, utils/deep_gemm.py:111-117 and
+#     :1021-1040; DeepGEMM covers families 100 and 120), else Cutlass.
+# nvfp4: CT from_config (compressed_tensors.py:235) maps the config below to
+#   CompressedTensorsW4A4Fp4 (:804), whose init_nvfp4_linear_kernel
+#   (__init__.py:1128-1246) walks _POSSIBLE_NVFP4_KERNELS (:575-591): SM100 and
+#   SM103 FlashInferCuteDslNvFp4LinearKernel (nvfp4/flashinfer.py:112-126),
+#   SM120 FlashInferCutlassNvFp4LinearKernel (:185-206). The new
+#   B12xNvFp4W4A16LinearKernel is weight-only and listed after both.
+# Kernel-side changes since v0.31.0: DeepGEMM moves from vllm-project/DeepGEMM
+#   e1f418c2 to 1e1842a8 (cmake/external_projects/deepgemm.cmake:37), a
+#   binding migration that leaves the SM90/SM100 FP8 GEMM kernels and
+#   heuristics as they were but replaces the SM120 device layer, so SM120
+#   DeepGEMM rows change. nvidia-cutlass-dsl, the compiler of FlashInfer's
+#   cute-dsl NVFP4 GEMM, moves 4.7.1 -> 4.8.0 (requirements/cuda.txt).
+#   FlashInfer 0.7.0.post1, CUTLASS v4.7.1, torch 2.13.0 and CUDA 13.0.3 are
+#   unchanged; vLLM's own CUTLASS scaled-mm, FP8/FP4 quant and Marlin sources
+#   moved out of csrc/libtorch_stable with include-only edits.
 # Helpers with identical bodies: scaled_fp4_quant (_custom_ops.py:1513-1588),
-#   per_block_cast_to_fp8 (utils/deep_gemm.py:983-1002). All imports below
-#   resolve at 0.31.0.
-__compat__ = "vllm==0.31.0"
+#   per_block_cast_to_fp8 (utils/deep_gemm.py:984-1003).
+# One release per file; earlier code is `git log -- <this file>` away.
+__compat__ = "vllm==0.32.0"
 
+import contextlib
 from types import SimpleNamespace
 
 import torch
 import vllm.envs as envs
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.helper import (
+    benchmark_with_power,
+    flashinfer_autotuned,
+    flashinfer_tuning_bucket,
+    get_sm_version,
+    log_perf,
+)
 from collector.op_plans import plan_cases
 from collector.vllm.utils import setup_distributed, with_exit_stack
 from vllm._custom_ops import scaled_fp4_quant as _scaled_fp4_quant
@@ -141,15 +88,15 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
     CompressedTensorsConfig as _CompressedTensorsConfig,
 )
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
+from vllm.platforms import current_platform
 from vllm.utils.deep_gemm import per_block_cast_to_fp8
+from vllm.utils.flashinfer import has_flashinfer
 from vllm.version import __version__ as vllm_version
 
 FP8_BLOCK_SHAPE = (128, 128)
 
-# NVFP4 is source-supported by vLLM 0.24.0 on datacenter and RTX Blackwell
-# (SM100+). The SM100/SM103/SM120 paths remain hardware-unvalidated in this
-# effort.
-
+# Weights and input activations of an nvfp4-pack-quantized compressed-tensors
+# checkpoint (W4A4, 16-element groups); the header lists the kernel per SM.
 _NVFP4_QUANT_ARGS = {
     "num_bits": 4,
     "type": "float",
@@ -170,13 +117,11 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
 
     if envs.VLLM_BATCH_INVARIANT:
         # Batch-invariant mode reroutes bf16 linears to linear_batch_invariant
-        # (vllm/model_executor/layers/linear.py:223-224, :228-229
-        # -- byte-identical body, 5-line shift) and per-tensor fp8 to
-        # a BF16-dequant F.linear path (fp8.py:452-486, :442-476
-        # -- byte-identical body, 10-line shift). At 0.30.0 the bf16
-        # reroute is linear.py:234-237 and the fp8 one fp8.py:444-477; at 0.31.0
-        # linear.py:237-238 and fp8.py:426-459 (bodies unchanged). Either way
-        # the kernel_source values recorded below would not be ground truth.
+        # (layers/linear.py:235-238), per-tensor fp8 to a BF16-dequant F.linear
+        # path unless fp8_scaled_mm_is_batch_invariant accepts the kernel
+        # (fp8.py:426-459, kernels/linear/__init__.py:815-825), and NVFP4 to
+        # CUTLASS or emulation (__init__.py:1145-1173), so the kernel_source
+        # values recorded below would not be ground truth.
         raise RuntimeError("VLLM_BATCH_INVARIANT is set; gemm kernel_source recording assumes default dispatch")
 
     dtype = torch.bfloat16
@@ -187,13 +132,14 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     x = torch.randn((m, k), dtype=dtype, device=torch.device(device))
 
     if gemm_type == "fp8":
-        # This row times dynamic per-tensor activations, and the perf model derives
-        # fp8_static from it plus compute_scale, assuming both schemes run one
-        # kernel. On compute capability 10.0 and newer, vLLM serves static
-        # per-tensor checkpoints with FlashInferFP8ScaledMMLinearKernel while this
-        # row runs Cutlass (kernel priority in model_executor/kernels/linear/__init__.py;
-        # scaled_mm/flashinfer.py), so fp8_static predictions there are approximate,
-        # in an unknown direction (seen on SM120:
+        # This row times dynamic per-token activations on per-tensor weights, and
+        # the perf model derives fp8_static from it plus compute_scale, assuming
+        # both schemes run one kernel. On compute capability 10.0 and newer, vLLM
+        # serves static per-tensor checkpoints with FlashInferFP8ScaledMMLinearKernel,
+        # first in _POSSIBLE_FP8_KERNELS (kernels/linear/__init__.py:444-452) and
+        # limited to SM100+ with per-tensor activations (scaled_mm/flashinfer.py:
+        # 39-65), while this row runs Cutlass, so fp8_static predictions there are
+        # approximate, in an unknown direction (seen on SM120:
         # benchmarks/evidence/collector/op-probe-2026-10/findings.yaml,
         # sm120_collector_gemm_fp8_static_row). Retire it by also timing
         # activation_scheme="static" on those systems and preferring that row, or
@@ -279,8 +225,26 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
 
         return gemm
 
-    vllm_config = VllmConfig()
+    # Serving's VllmConfig carries the checkpoint's quant config
+    # (config/vllm.py:1507-1510). For block FP8 that turns on the CUDA
+    # quant_fp8 custom op (has_blocked_weights, :1733-1748), so the block
+    # kernels' QuantFP8 runs forward_cuda (per-token-group quant, with packed
+    # UE8M0 scales for DeepGEMM on SM100/SM103/SM120; input_quant_fp8.py:83-133)
+    # instead of the torch.compile'd forward_native that the custom_ops "none"
+    # of a bare VllmConfig() selects (model_executor/custom_op.py:172-192). The
+    # fp8 and nvfp4 configs leave custom ops unchanged, as in serving.
+    vllm_config = VllmConfig(quant_config=qc)
     if vllm_config.model_config is None:
+        # Fp8LinearMethod reads model_config.dtype (fp8.py:245), and
+        # DeepGemmFp8BlockScaledMMKernel.can_implement reads
+        # hf_text_config.model_type (scaled_mm/deep_gemm.py:69-76).
+        # Deviation (fp8_block on SM100, SM103 and SM120): serving disables
+        # DeepGEMM for model types qwen3_5_text and qwen3_5_moe_text
+        # (utils/deep_gemm.py:27-52) and runs CutlassFp8BlockScaledMMKernel on
+        # every shape, but this shape-keyed table times DeepGEMM wherever
+        # N%64==0 and K%128==0. Block-FP8 GEMMs of those models are predicted on
+        # the wrong kernel, direction unknown. Retire it with a per-model
+        # dispatch for the excluded model types.
         vllm_config.model_config = SimpleNamespace(
             dtype=dtype,
             hf_text_config=SimpleNamespace(model_type=""),
@@ -299,22 +263,19 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
             selected_kernel = op.quant_method.fp8_linear
             if isinstance(selected_kernel, FlashInferFp8DeepGEMMDynamicBlockScaledKernel):
                 # SM90-only wrapper (see header). vLLM's custom op selects the
-                # same two leaf objects at scaled_mm/flashinfer.py:301-316
-                # (byte-identical 0.24.0-0.30.0; :298-313, same
-                # body): DeepGEMM for m >= 32,
-                # FlashInfer swap-AB below. Its batch-invariant branch is
-                # unreachable here — run_gemm raises on VLLM_BATCH_INVARIANT
-                # at entry — so the label depends on m alone.
+                # same two leaf objects at scaled_mm/flashinfer.py:298-313:
+                # DeepGEMM for m >= 32, FlashInfer swap-AB below. Its
+                # batch-invariant branch is unreachable here — run_gemm raises
+                # on VLLM_BATCH_INVARIANT at entry — so the label depends on m
+                # alone.
                 selected_kernel = selected_kernel.fallback if m >= 32 else selected_kernel.base
             kernel_sources.add(type(selected_kernel).__name__)
     elif gemm_type == "nvfp4":
         kernel_sources = {type(op.scheme.kernel).__name__ for op in op_list}
     else:
-        # From 0.30.0 UnquantizedLinearMethod binds its GEMM at __init__
-        # (layers/linear.py:169-174 -> layers/utils.py:584-616; :171-175 ->
-        # 602-634); earlier
-        # releases have no _gemm_impl and always call F.linear. Assert the
-        # binding instead of assuming the label.
+        # UnquantizedLinearMethod binds its GEMM at __init__ (layers/linear.py:
+        # 170-175 -> layers/utils.py:620-652). Assert the binding instead of
+        # assuming the label.
         from vllm.model_executor.layers.utils import default_unquantized_gemm
 
         bound = {getattr(op.quant_method, "_gemm_impl", default_unquantized_gemm) for op in op_list}
@@ -325,22 +286,71 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         raise RuntimeError(f"vLLM selected inconsistent GEMM kernels: {sorted(kernel_sources)}")
     kernel_source = kernel_sources.pop()
 
+    # Deviation (fp8, fp8_block and nvfp4, every SM): each row times the
+    # activation quantization the linear runs on its own input. Under serving's
+    # default compilation (O2, config/vllm.py:289-293) that quantization is
+    # mostly folded into the op producing the input. FP8 per-token stays a
+    # native op that Inductor compiles together with the RMSNorm or
+    # SiLU-and-mul in front of it. Block FP8 is fused by RMSNormQuantFusionPass
+    # and ActivationQuantFusionPass (compilation/passes/fusion/
+    # rms_quant_fusion.py:772-837, act_quant_fusion.py:33-44). NVFP4 is fused
+    # into SiLU-and-mul only (act_quant_fusion.py:36-40; models/llama.py:120
+    # also fuses it by hand through maybe_fused_act_quant, which reaches the
+    # SM100/SM103 cute-dsl kernel since it declares kNvfp4Dynamic input,
+    # nvfp4/flashinfer.py:115-116). The quantization stays standalone for
+    # projections fed by attention (o_proj), for NVFP4 qkv/gate_up, and on
+    # SM90 inside the FlashInfer/DeepGEMM wrapper's opaque custom op
+    # (scaled_mm/flashinfer.py:228-296). Elsewhere rows over-predict by about
+    # one quantization kernel, most visibly at small m. Retire it by timing the
+    # quantization apart from the GEMM and billing it only where serving does
+    # not fuse it, as compute_scale does for FP8 per-tensor.
+
     def kernel_func():
         for op in op_list:
             op.forward(x)
 
-    with benchmark_with_power(
-        device=device,
-        kernel_func=kernel_func,
-        num_warmups=3,
-        num_runs=6,
-        repeat_n=1,
-        # These rows model GPU execution, including graph-replayed decode.
-        # Eager fp8_block timing includes host launch gaps and is not a valid
-        # substitute for this contract. Capture failures must remain failures.
-        allow_graph_fail=False,
-        use_cuda_graph=True,
-    ) as results:
+    # FlashInfer kernels run on the tactic serving tunes: kernel warmup autotunes
+    # every FlashInfer op on SM90 and newer (warmup/kernel_warmup.py:261-268;
+    # enable_flashinfer_autotune is on from O1, config/vllm.py:286-328) and skips
+    # fp4_gemm only when the SM100/SM103 cute-dsl NVFP4 kernel is selected, whose
+    # fallback is already the heuristic (:295-311). The only tuner-owned op these
+    # rows reach is that fp4_gemm under the SM120 FlashInferCutlassNvFp4LinearKernel
+    # (nvfp4/flashinfer.py:185-260 -> flashinfer mm_fp4, backend "cutlass" with the
+    # 128x4 scale layout, utils/flashinfer.py:1079-1115); the SM90 FlashInfer
+    # block-FP8 swap-AB GEMM runs a fixed heuristic (flashinfer 0.7.0.post1
+    # gemm/gemm_base.py:10005-10219), and F.linear, vLLM CUTLASS, DeepGEMM and
+    # Marlin are not FlashInfer's. Warmup profiles the hybrid token buckets up to
+    # max_num_batched_tokens (kernel_warmup.py:334-374) and mm_fp4 maps a runtime
+    # m up to the next bucket (gemm_base.py:7887-7915), so tune at that bucket
+    # and time m on its tactic. Serving never runs a single linear above
+    # max_num_batched_tokens, so every m of the grid has a tuned bucket.
+    tune_m = None
+    if (
+        kernel_source != "FlashInferCuteDslNvFp4LinearKernel"
+        and has_flashinfer()
+        and current_platform.has_device_capability(90)
+    ):
+        tune_m = flashinfer_tuning_bucket(m)
+    if tune_m is None:
+        autotuned = contextlib.nullcontext()
+    else:
+        autotuned = flashinfer_autotuned(tune_m, kernel_func, label=kernel_source)
+
+    with (
+        autotuned,
+        benchmark_with_power(
+            device=device,
+            kernel_func=kernel_func,
+            num_warmups=3,
+            num_runs=6,
+            repeat_n=1,
+            # These rows model GPU execution, including graph-replayed decode.
+            # Eager fp8_block timing includes host launch gaps and is not a valid
+            # substitute for this contract. Capture failures must remain failures.
+            allow_graph_fail=False,
+            use_cuda_graph=True,
+        ) as results,
+    ):
         pass
     if results.get("used_cuda_graph") is not True:
         raise RuntimeError("vLLM GEMM collection requires CUDA Graph replay; refusing to publish eager timing")

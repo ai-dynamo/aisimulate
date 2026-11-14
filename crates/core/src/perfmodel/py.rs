@@ -2976,6 +2976,8 @@ mod tests {
     fn legacy_compilation_with_only_correction_controls_keeps_default_method() {
         py_init();
         let mut config = fixture_engine_config();
+        // This compilation enters the Python SDK, which accepts query-slot versions only.
+        config.backend_version = Some("current".to_string());
         config.extra.insert(
             "estimator_config".into(),
             r#"{"correction":{"enabled":false},"fpm_interpolation":{"text_only":false,"unrecorded_quant_modes":[]}}"#.into(),

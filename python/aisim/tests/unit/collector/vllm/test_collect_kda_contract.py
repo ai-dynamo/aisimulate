@@ -297,13 +297,13 @@ def _gate_namespace():
 @pytest.mark.parametrize(
     ("model_name", "version", "audited"),
     [
-        ("moonshotai/Kimi-K3", "0.31.0", True),
+        ("moonshotai/Kimi-K3", "0.32.0", True),
         ("moonshotai/Kimi-K3", "0.1.dev19262+gb6bbf29dd", False),
         ("moonshotai/Kimi-K3", "0.27.0", False),
-        ("moonshotai/Kimi-K3", "0.30.0", False),
-        ("zai-org/GLM-5.3-Flash", "0.31.0", True),
-        ("nvidia/GLM-5.3-Flash-NVFP4", "0.31.0", True),
-        ("zai-org/GLM-5.3-Flash", "0.30.0", False),
+        ("moonshotai/Kimi-K3", "0.31.0", False),
+        ("zai-org/GLM-5.3-Flash", "0.32.0", True),
+        ("nvidia/GLM-5.3-Flash-NVFP4", "0.32.0", True),
+        ("zai-org/GLM-5.3-Flash", "0.31.0", False),
         ("zai-org/GLM-5.3-Flash", "0.29.0", False),
         ("nvidia/GLM-5.3-Flash-NVFP4", "0.1.dev19262", False),
     ],

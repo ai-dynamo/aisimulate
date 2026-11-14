@@ -3,52 +3,55 @@
 
 # MiniMax-M3 support landed in SGLang v0.5.16 (models/minimax_m3.py +
 # layers/attention/minimax_sparse_backend.py + minimax_sparse_ops/); the msa
-# family now runs on the 0.5.21 default (the v0.5.16 family pin is retired).
-# One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+# family runs on 0.5.23. One release per file; earlier code is
+# `git log -- <this file>` away.
+__compat__ = "sglang==0.5.23"
 
 """
 MSA Module Collector for SGLang — MiniMax-M3 sparse-attention benchmarking.
 
-Profiles the complete MiniMax-M3 sparse-attention module forward pass
-(fused qkv+index projections + per-head Gemma QK norm + partial RoPE +
-index attention + top-k block selection + sparse GQA + output projection)
-at the ModelRunner level, using SGLang's own ServerArgs → ModelRunner →
-ScheduleBatch → ForwardBatch pipeline with dummy weights — the same
-construction pattern as ``collect_mla_module.py`` (DSA/MLA modules).
+Profiles the complete MiniMax-M3 sparse-attention module forward pass (the
+fused qkv+index projection, grouped Gemma QK norm + partial RoPE, index
+attention + top-k block selection, sparse GQA and the output projection) at
+the ModelRunner level, through SGLang's own ServerArgs → ModelRunner →
+ScheduleBatch → ForwardBatch pipeline with dummy weights.
 
-Module construction is serving-faithful for the sparse layers (layers 3+
-of the real checkpoint): ``MiniMaxM3DecoderLayer`` builds
+Construction follows serving for the sparse layers (layers 3+ of the real
+checkpoint): ``MiniMaxM3DecoderLayer`` builds
 ``MiniMaxM3Attention(is_sparse_attention_layer=True, disable_index_value=True)``
 for every layer whose ``sparse_attention_freq``/``sparse_disable_index_value``
-entries are set (models/minimax_m3.py:1146-1165@v0.5.16); the collector
-truncates those per-layer arrays so its benchmark layer takes exactly that
-construction path. Attention dispatch is SGLang's own:
+entries are set (models/minimax_m3.py:1702-1721@v0.5.23); the collector
+truncates those per-layer arrays so its benchmark layer takes that path.
+Serving fuses qkv_proj and index_qkv_proj into one GEMM at the end of
+``load_weights`` (models/minimax_m3.py:2244-2246, 1117-1158); the dummy loader
+never calls ``load_weights`` (model_loader/loader.py:1493-1530), so
+``load_model_runner`` runs that same step. Attention dispatch is SGLang's own:
 ``attn_backend_wrapper`` wraps the platform dense backend with
 ``MiniMaxHybridAttnBackend``/``MiniMaxSparseAttnBackend`` for every
-``is_minimax_sparse`` model (layers/attention/attention_registry.py:272-283
-@v0.5.16), and the benchmarked layer id is verified to route to the sparse
-backend.
+``is_minimax_sparse`` model (layers/attention/attention_registry.py:375-391),
+and the benchmarked layer id is verified to route to the sparse backend.
 
-On SM90 (Hopper) SGLang's own M3 server-args override selects
-attention_backend=fa3 + page_size=128 and the sparse layers run the Triton
-sparse path (arg_groups/overrides.py:521-537@v0.5.16 — "MSA is SM100-only;
-sparse attention runs on the Triton path"); on SM100/103 the main sparse
-attention step upgrades to the fmha_sm100 MSA kernel when available
-(minimax_sparse_backend.py:68-88, minimax_sparse_ops/msa.py:41-56
-@v0.5.16). On CC 8.9 (SM89) and CC major 12 (SM120/121) the M3 override
-has NO branch and SGLang's generic default (flashinfer + page 1) crashes
-at backend init on the M3 KV pool — every case on those SMs fails
-classified (the honest unsupported signal; see the ServerArgs
-construction note in ``load_model_runner``). The collector never pins a
-kernel: it records what the backend actually selected in
-``kernel_source``.
+Per SM, SGLang's M3 server-args override
+(arg_groups/model_overrides/minimax_m3.py@v0.5.23) resolves backend and page:
+  * SM90: fa3 + page 128 (:178-192); the sparse layers run the Triton path.
+  * SM100/103: fa4 + page 128 with a BF16 KV cache, trtllm_mha + page 128 with
+    fp8_e4m3 (:147-177). The latter turns on the fp8 attention GEMMs: fp8 q,
+    an fp8 index cache and fp8 sparse kernels (server_args.py:592-610
+    m3_fp8_attn_gemm_enabled). The main sparse step runs fmha_sm100 (MSA)
+    when the image ships it (minimax_sparse_ops/msa.py:68-82,
+    minimax_sparse_backend.py:196-249), else Triton.
+  * SM89, SM120/121: no override branch. The generic default is flashinfer
+    (arg_groups/model_override_base.py:277-334) at page 1
+    (arg_groups/overrides.py:1341-1362); the sparse layers run Triton.
+The collector never pins a kernel: ``kernel_source`` records what ran.
 
 Op names / perf schema are aligned with collector/trtllm/collect_msa_module.py
 (msa_context_module / msa_generation_module, architecture
 MiniMaxM3ForCausalLM) so perf_database queries work across frameworks.
+Unless noted, SGLang citations in this file are @v0.5.23 and relative to
+python/sglang/srt (kernel paths start at python/sglang/kernels).
 
-Usage (inside the pinned lmsysorg/sglang:v0.5.16 image):
+Usage (inside the pinned SGLang image, collector/framework_manifest.yaml):
     python3 -m collector.sglang.collect_msa_module --mode context --quick \
         --batch-size 2 --seq-len 512 --num-heads 64
     python3 -m collector.sglang.collect_msa_module --mode generation --quick \
@@ -63,6 +66,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from array import array
 from importlib.metadata import version as get_version
 
 import torch
@@ -83,8 +87,8 @@ from collector.helper import (
 from collector.op_plans import plan, plan_cases
 
 try:
+    from collector.sglang.runtime_compat import resolved_arg
     from collector.sglang.runtime_limits import (
-        alloc_prefix_indices,
         kernel_limit_error,
         kv_pool_capacity_tokens,
         kv_pool_page_size,
@@ -94,11 +98,12 @@ try:
         refuse,
         required_kv_alloc_tokens,
         runtime_chunk_size,
+        serving_memory_defaults,
         temporarily_chunked_alloc_extend,
     )
 except ModuleNotFoundError:  # direct-script import inside the subprocess
+    from runtime_compat import resolved_arg
     from runtime_limits import (
-        alloc_prefix_indices,
         kernel_limit_error,
         kv_pool_capacity_tokens,
         kv_pool_page_size,
@@ -108,6 +113,7 @@ except ModuleNotFoundError:  # direct-script import inside the subprocess
         refuse,
         required_kv_alloc_tokens,
         runtime_chunk_size,
+        serving_memory_defaults,
         temporarily_chunked_alloc_extend,
     )
 
@@ -120,11 +126,11 @@ MSA_ARCHITECTURE = "MiniMaxM3ForCausalLM"  # AIC-canonical persisted architectur
 # MiniMaxAI/MiniMax-M3 checkpoint is a VL repo whose text_config declares
 # architectures=["MiniMaxM3SparseForCausalLM"] (HF config.json), and SGLang
 # keys every M3 code path on that name: is_minimax_sparse
-# (configs/model_config.py:136-141), the model EntryClass
-# (models/minimax_m3.py:1690), the server-args override handler
-# (arg_groups/overrides.py:465), and the KV-pool / attention-backend wiring
-# (mem_cache/kv_cache_configurator.py:842-845,
-# layers/attention/attention_registry.py:272-283).
+# (configs/model_config.py:426-431), the model EntryClass
+# (models/minimax_m3.py:2274), the server-args override
+# (arg_groups/model_overrides/minimax_m3.py:37-41), and the KV-pool /
+# attention-backend wiring (mem_cache/kv_cache_configurator.py:1890-1896,
+# 2552-2600; layers/attention/attention_registry.py:375-391).
 SGLANG_MSA_ARCHITECTURE = "MiniMaxM3SparseForCausalLM"
 
 # Perf-database dtype strings → SGLang ServerArgs kv_cache_dtype values
@@ -133,16 +139,19 @@ SGLANG_KV_DTYPE = {"bfloat16": "bfloat16", "fp8": "fp8_e4m3"}
 
 # MiniMax-M3 native GQA geometry (bundled MiniMaxAI--MiniMax-M3_config.json,
 # identical to the HF checkpoint text_config): 64 query heads / 4 KV heads /
-# 4 index heads. Serving TP sharding:
-#   q  heads: num_heads = total // attn_tp_size    (minimax_m3.py:475-477)
-#   kv heads: max(1, total_kv // attn_tp_size)     (minimax_m3.py:478-488,
+# 4 index heads. Serving TP sharding (models/minimax_m3.py):
+#   q  heads: num_heads = total // attn_tp_size    (:749-751)
+#   kv heads: max(1, total_kv // attn_tp_size)     (:752-762,
 #             replicated when attn_tp_size > total_kv)
 #   index heads: idx_head_tp_size = min(attn_tp_size, total_idx);
 #             num_idx_heads = total_idx // idx_head_tp_size — i.e.
 #             max(1, total_idx // attn_tp_size), replica ranks share one
-#             head when attn_tp_size > total_idx (minimax_m3.py:509-521).
+#             head when attn_tp_size > total_idx (:784-796).
 # All three are emulated on one GPU by shrinking the config head counts.
 
+# Tokens of cached history written per store call (_initialize_msa_history):
+# 64K tokens of K/V + index K stay below 200 MiB at TP 1.
+_HISTORY_CHUNK_TOKENS = 1 << 16
 
 # Per-subprocess sum of the point phase times printed by run_msa_module.
 _POINT_PHASE_TOTALS: dict[str, float] = {}
@@ -179,7 +188,7 @@ def _register_minimax_m3_text_config():
     generic attribute bag: SGLang's own VL config coerces the checkpoint's
     text_config dict through CONFIG_MAPPING.get(model_type, PretrainedConfig)
     — an unknown model_type "falls back to PretrainedConfig so dict keys
-    still become real attributes" (configs/minimax_vl.py:9-23), and
+    still become real attributes" (configs/minimax_vl.py:10-23), and
     the M3 modeling code reads plain attributes only. Registering a bare
     PretrainedConfig alias therefore changes HOW the config object is
     constructed, never which kernel runs (M3 dispatch keys on
@@ -245,16 +254,16 @@ def _build_model_override_args(config: dict, num_heads: int, target_tp_size: int
     """Single-GPU emulation of one target-TP rank + benchmark-layer surgery.
 
     Head shrinking mirrors SGLang's own TP sharding math (citations at the
-    top of this file: models/minimax_m3.py:475-488 q/kv, :509-521 index
+    top of this file: models/minimax_m3.py:749-762 q/kv, :784-796 index
     heads). The per-layer pattern arrays are truncated so every loaded layer
     takes the sparse construction path of serving layers 3+
     (is_sparse_attention_layer=True, disable_index_value=True —
-    models/minimax_m3.py:1146-1165 reading get_minimax_sparse_layer_ids /
+    models/minimax_m3.py:1702-1721 reading get_minimax_sparse_layer_ids /
     get_minimax_sparse_disable_value_layer_ids,
-    configs/model_config.py:158-170). The MLP is made dense
-    (moe_layer_freq=0 → MiniMaxM3MLP, models/minimax_m3.py:1167-1193) —
-    it is outside the timed attention module; same single-layer surgery as
-    the trtllm MSA collector. All sparse scalar fields stay
+    configs/model_config.py:460-471). The MLP is made dense
+    (moe_layer_freq=0 → MiniMaxM3MLP, models/minimax_m3.py:1725-1744,
+    1791-1793) — it is outside the timed attention module; same single-layer
+    surgery as the trtllm MSA collector. All sparse scalar fields stay
     checkpoint-verbatim.
     """
     native_q = int(config["num_attention_heads"])
@@ -291,10 +300,13 @@ def _validate_msa_module(model_runner, attn, num_heads: int, target_tp_size: int
     """Verify the single-GPU module emulates one target-TP rank of serving.
 
     Shapes per models/minimax_m3.py: qkv_proj packs
-    (num_heads + 2*num_kv_heads)*head_dim (:523-533), o_proj input
-    num_heads*head_dim (:535-544), index_qkv_proj packs
+    (num_heads + 2*num_kv_heads)*head_dim (:801-810), o_proj input
+    num_heads*head_dim (:812-820), index_qkv_proj packs
     (num_idx_heads + 1)*idx_head_dim with v_head_size=0 when
-    disable_index_value (:554-566), index_o_proj is None (:568-569).
+    disable_index_value (:830-841), index_o_proj is None (:843-844). The
+    projection serving runs is their concatenation (_FusedQKVIndexProj,
+    :245-284, built by maybe_build_fused_qkv_index :1117-1158 for a CUDA sparse
+    layer whose two projections share one quant method, as BF16 ones do).
     """
     local_kv = max(1, num_heads // 16)  # native 64q/4kv → GQA ratio 16
     local_idx = max(1, 4 // target_tp_size)
@@ -323,13 +335,24 @@ def _validate_msa_module(model_runner, attn, num_heads: int, target_tp_size: int
     )
     if attn.index_o_proj is not None:
         raise RuntimeError("index_o_proj exists despite disable_index_value=True")
+    fused = getattr(attn, "_fused_qkv_index", None)
+    if fused is None:
+        raise RuntimeError(
+            "benchmark layer has no fused qkv+index projection; serving builds it after loading "
+            "(models/minimax_m3.py:1117-1158, 2244-2246) and forward_prepare runs it (:1491-1551)"
+        )
+    _expect(
+        int(fused.output_size_per_partition),
+        (num_heads + 2 * local_kv) * head_dim + (local_idx + 1) * int(attn.idx_head_dim),
+        "fused_qkv_index_proj.output_size_per_partition",
+    )
 
     backend = model_runner.attn_backend
     sparse = getattr(backend, "sparse", None)
     if sparse is None or attn.attn.layer_id not in getattr(backend, "sparse_layer_ids", ()):
         raise RuntimeError(
             "benchmark layer does not route to MiniMaxSparseAttnBackend; "
-            "attn_backend_wrapper did not wrap the runner (attention_registry.py:272-283)"
+            "attn_backend_wrapper did not wrap the runner (attention_registry.py:375-391)"
         )
 
 
@@ -355,22 +378,19 @@ def load_model_runner(
 ):
     """Load an SGLang ModelRunner hosting the M3 sparse module (dummy weights).
 
-    Serving-selected defaults are deliberately NOT overridden: the M3
-    server-args handler resolves attention_backend / page_size per platform
-    (arg_groups/overrides.py:465-537 — fa3 + page 128 on SM90,
-    fa4 + page 128 on SM100) inside ServerArgs.__post_init__
-    (server_args.py:2969 _handle_model_specific_adjustments). Sole
-    exception: on CC major 12 (SM120/121) that handler has no branch and
-    the generic default crashes, so the explicit ``--attention-backend
-    triton`` serving knob is passed — see the owner-authorized block at
-    the ServerArgs construction below.
+    Serving-selected defaults are deliberately NOT overridden: attention
+    backend, page size and the fp8 attention-GEMM mode resolve exactly as for
+    a server launched with only --kv-cache-dtype (the M3 override and the
+    generic default, cited at the top of this file). The prefill CUDA graph
+    config is left at serving's default too; this collector never captures a
+    prefill graph (deviation note at _run_prefill_point).
 
     max_running_requests / max_total_tokens / mem_fraction_static are
     benchmark-harness resource knobs (user-tunable ServerArgs, not kernel
     dispatch). run_msa_module leaves chunked_prefill_size to SGLang, which
     derives it from device memory as serving does, and refuses a prefill
     beyond it; mem_fraction_static is pinned because SGLang's heuristic
-    couples it to chunked_prefill_size (server_args.py
+    couples it to chunked_prefill_size (arg_groups/memory_hook.py
     _handle_gpu_memory_settings) and would go negative.
     """
     from sglang.srt.configs.model_config import ModelConfig
@@ -397,22 +417,16 @@ def load_model_runner(
         raw_config = json.load(f)
     override_args = _build_model_override_args(raw_config, num_heads, target_tp_size, num_layers)
 
-    # attention_backend deliberately stays framework-selected (None): the
-    # collector measures serving truth. KNOWN GAP — v0.5.16's M3 server-args
-    # handler has no branch for CC major 8 or 12 (arg_groups/overrides.py
-    # :465-548; predicates are capability-major-exact, majors [9]/[10]), so
-    # SM89/SM120/SM121 fall to the generic flashinfer + page-1 default,
-    # which crashes at backend init on the M3 KV pool
-    # (get_kv_cache_quant_method returns None -> flashinfer_backend.py:328
-    # AttributeError). Every case on those SMs therefore FAILS CLASSIFIED —
-    # the honest unsupported signal. An earlier revision worked around this
-    # with the user-facing ``--attention-backend triton`` escape hatch and
-    # collected l40s/rtx tables, but serving's own default deployment cannot
-    # initialize there and the generator does not emit the knob, so those
-    # tables were withdrawn (review 4969690316 Standards-1) — re-collect
-    # when SGLang grows the CC-8.9/12 branches upstream.
-    attention_backend = None
-
+    # attention_backend stays framework-selected (None): the collector measures
+    # serving truth. SM89 and SM12x have no M3 override branch and take the
+    # generic flashinfer + page-1 default. Through v0.5.16 that crashed at
+    # backend init on the M3 KV pool (get_kv_cache_quant_method returned
+    # None), and the l40s/rtx tables collected with --attention-backend triton
+    # were withdrawn (review 4969690316 Standards-1). MiniMaxSparseKVPool now
+    # forwards get_kv_cache_quant_method to its main pool
+    # (mem_cache/memory_pool.py:6057-6060), so the default may initialize
+    # there; whether it does is unverified on a GPU at this pin. Cases that
+    # still fail stay classified failures.
     server_args = ServerArgs(
         model_path=local_model_path,
         dtype="auto",
@@ -422,20 +436,13 @@ def load_model_runner(
         trust_remote_code=True,
         disable_radix_cache=True,
         kv_cache_dtype=sglang_kv_dtype,
-        attention_backend=attention_backend,
+        attention_backend=None,
         max_total_tokens=max_total_tokens,
         chunked_prefill_size=chunked_prefill_size,
         max_prefill_tokens=(chunked_prefill_size or 16384),
         mem_fraction_static=0.80,
         max_running_requests=max_running_requests,
         json_model_override_args=json.dumps(override_args),
-    )
-
-    print(
-        f"ServerArgs resolved: attention_backend={server_args.attention_backend}, "
-        f"page_size={server_args.page_size}, kv_cache_dtype={sglang_kv_dtype}, "
-        f"chunked_prefill_size={server_args.chunked_prefill_size}, "
-        f"max_total_tokens={max_total_tokens}, max_running_requests={max_running_requests}"
     )
 
     _set_envs_and_config(server_args)
@@ -447,17 +454,9 @@ def load_model_runner(
             f"SGLang loaded architecture={actual_architecture!r} for {model_path}, expected {SGLANG_MSA_ARCHITECTURE!r}"
         )
 
-    import socket
+    from collector.sglang.runtime_compat import free_local_port, init_runtime_config
 
-    # Reserve an actually free port for NCCL init: arithmetic guesses can
-    # collide between concurrent per-GPU workers, and a collision surfaces
-    # as a framework failure that hides a harness bug.
-    with socket.socket() as _sock:
-        _sock.bind(("127.0.0.1", 0))
-        nccl_port = _sock.getsockname()[1]
-
-    from collector.sglang.runtime_compat import init_runtime_config
-
+    nccl_port = free_local_port()
     _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     model_runner = ModelRunner(
         model_config=model_config,
@@ -467,6 +466,18 @@ def load_model_runner(
         **_runner_parallel_kwargs,
         server_args=server_args,
     )
+    # Serving's load_weights ends by fusing each sparse layer's qkv_proj and
+    # index_qkv_proj into one GEMM (models/minimax_m3.py:2244-2246), which
+    # forward_prepare then runs with the grouped QK norm/RoPE kernel
+    # (:1491-1551). The dummy loader never calls load_weights
+    # (model_loader/loader.py:1493-1530; M3 has no post_load_weights hook,
+    # :315-321), so without this step the module times two GEMMs and two
+    # norm/RoPE kernels. The BF16 weights need no post-processing on CUDA
+    # (layers/quantization/unquant.py:568-570), so fusing after the dummy
+    # loader's pass gives serving's weights.
+    from sglang.srt.models.minimax_m3 import build_minimax_fused_qkv_index
+
+    build_minimax_fused_qkv_index(model_runner.model)
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()
 
@@ -474,6 +485,15 @@ def load_model_runner(
     attn = model_runner.model.model.layers[0].self_attn
     _validate_msa_module(model_runner, attn, num_heads, target_tp_size, head_dim)
 
+    sparse = model_runner.attn_backend.sparse
+    print(
+        f"SGLang resolved: dense={type(model_runner.attn_backend.dense).__name__}, "
+        f"attention_backend={resolved_arg(server_args, 'attention_backend')}, page_size={sparse.page_size}, "
+        f"kv={sparse.kv_pool.main_pool.dtype}, index_kv={getattr(sparse.kv_pool.index_k_pool, 'dtype', None)}, "
+        f"fp8_attn_gemm={sparse.fp8_attn_gemm}, use_msa={sparse.use_msa}, msa_decode={sparse._use_msa_decode}, "
+        f"chunked_prefill_size={resolved_arg(server_args, 'chunked_prefill_size')}, "
+        f"max_total_tokens={max_total_tokens}, max_running_requests={max_running_requests}"
+    )
     return model_runner
 
 
@@ -486,58 +506,72 @@ class PerfLogWriteError(RuntimeError):
     """Fail the subprocess when a measured row was not durably persisted."""
 
 
-def _forward_ctx(model_runner):
+def _forward_ctx(model_runner, forward_batch):
     """Publish SGLang's per-forward control context, exactly as serving does
-    around every model forward (model_executor/model_runner.py:1383-1386
-    _forward_raw). RadixAttention resolves the attention backend
-    through it (layers/radix_attention.py get_attn_backend)."""
+    around every model forward (model_executor/model_runner.py:1973-1981).
+    RadixAttention resolves the attention backend through it
+    (layers/radix_attention.py:183, model_executor/forward_context.py:73-74)."""
     from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 
-    return forward_context(ForwardContext(attn_backend=model_runner.attn_backend))
+    return forward_context(ForwardContext(attn_backend=model_runner.attn_backend), forward_batch=forward_batch)
 
 
-def _make_reqs(batch_size: int, full_length: int, extend_len: int, prefix_indices=None):
-    from array import array
-
+def _make_reqs(batch_size: int, full_length: int):
+    """Requests with a full_length-token prompt, built as SGLang's offline batch
+    builder builds them (benchmark/one_batch.py:450-476): fill ids are the
+    prompt and this round extends [prefix_len=0, extend_end) (managers/
+    schedule_batch.py:1103-1106, 1218-1220). The token ids are never embedded."""
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     reqs = []
     for i in range(batch_size):
+        # A bulk copy: per-token Python ints cost seconds at 1M-token prompts.
+        prompt = array("q")
+        prompt.frombytes(torch.randint(0, 10000, (full_length,), dtype=torch.int64).numpy().tobytes())
         req = Req(
             rid=str(i),
             origin_input_text="",
-            origin_input_ids=list(torch.randint(0, 10000, (full_length,)).tolist()),
+            origin_input_ids=prompt,
             sampling_params=SamplingParams(temperature=0, max_new_tokens=1),
         )
-        req.prefix_indices = prefix_indices[i] if prefix_indices is not None else torch.empty((0,), dtype=torch.int64)
-        req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
-        # v0.5.16 admission contract: extend_range spans the tokens this
-        # extend batch processes; prepare_for_extend derives input_ids /
-        # seq_lens / prefix_lens from it (managers/schedule_batch.py:
-        # 2157-2163 get_fill_ids()[len(prefix_indices):], extend_range.end,
-        # extend_range.length).
-        req.set_extend_range(full_length - extend_len, full_length)
+        req.full_untruncated_fill_ids = array("q", prompt)
         req.logprob_start_len = 0
-        req.cached_tokens = 0
-        req.already_computed = 0
+        req.extend_end = full_length
         reqs.append(req)
     return reqs
 
 
-def _make_schedule_batch(model_runner, reqs):
-    from sglang.srt.managers.schedule_batch import ScheduleBatch
+def _radix_disabled_tree_cache(model_runner):
+    """The prefix cache serving runs with --disable-radix-cache (load_model_runner sets it).
+
+    v0.5.23 deleted ChunkCache (sglang #43201). For a full-attention-only model a
+    disabled cache is a UnifiedRadixCache with disable=True and the FULL component
+    (mem_cache/registry.py:83-98 -> create_unified_radix_cache :149-191;
+    CacheInitParams as mem_cache/kv_cache_builder.py:389-402 builds it, page_size
+    the allocator's without DCP). It matches, inserts and evicts nothing. Same
+    construction as collect_mla_module._radix_disabled_tree_cache.
+    """
     from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-    from sglang.srt.mem_cache.chunk_cache import ChunkCache
+    from sglang.srt.mem_cache.unified_cache.components import ComponentType
+    from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
+
+    return UnifiedRadixCache(
+        CacheInitParams(
+            disable=True,
+            req_to_token_pool=model_runner.req_to_token_pool,
+            token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
+            page_size=model_runner.token_to_kv_pool_allocator.page_size,
+            tree_components=(ComponentType.FULL,),
+        )
+    )
+
+
+def _make_schedule_batch(model_runner, reqs, tree_cache):
+    """A non-overlap, non-speculative batch, as the scheduler builds one (ScheduleBatch.init_new)."""
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-    cache_params = CacheInitParams(
-        disable=True,
-        req_to_token_pool=model_runner.req_to_token_pool,
-        token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
-        page_size=model_runner.token_to_kv_pool_allocator.page_size,
-    )
-    tree_cache = ChunkCache(cache_params)
     return ScheduleBatch.init_new(
         reqs=reqs,
         req_to_token_pool=model_runner.req_to_token_pool,
@@ -549,72 +583,171 @@ def _make_schedule_batch(model_runner, reqs):
     )
 
 
-def _decode_graph_covered(model_runner, num_tokens: int) -> bool:
-    """Whether serving would run this decode batch under a captured CUDA
-    graph: cuda_graph_config.decode coverage (backend != disabled; bs list
-    or max_bs — resolved per GPU tier by server_args
-    _handle_gpu_memory_settings, e.g. 256 on the SM90 validation node at tp<4)."""
-    cuda_graph_config = model_runner.server_args.cuda_graph_config
-    if cuda_graph_config is None:
-        # sglang>=0.5.21: derived config lives behind the resolving view (arg_groups/model_override_base.py:120)
-        from sglang.srt.arg_groups.model_override_base import resolving_view
+def _extend_batch(model_runner, reqs, prefix_len: int):
+    """An extend batch over [prefix_len, extend_end) whose cached prefix is an earlier chunk.
 
-        cuda_graph_config = resolving_view(model_runner.server_args).cuda_graph_config
-    decode_cfg = cuda_graph_config.decode
-    if decode_cfg.backend == "disabled":
-        return False
-    if decode_cfg.bs:
-        return int(num_tokens) in set(decode_cfg.bs)
-    if decode_cfg.max_bs is None:
-        # _handle_gpu_memory_settings resolves max_bs per GPU tier during
-        # server-args init; absent here means the contract moved. Guessing
-        # would change both the measured latency and the kernel_source label.
-        raise RuntimeError(
-            "cuda_graph_config.decode.max_bs is unresolved after model load; "
-            "cannot determine serving decode-graph coverage"
+    With the radix cache disabled serving matches nothing, so a prefix lives only in
+    the request's own row from its previous chunk (mem_cache/allocation.py:363-371).
+    The row is built as serving builds it: an extend over [0, prefix_len) allocates it
+    (schedule_batch.py:2847-2919, allocation.py:374+), the scheduler's checkpoint
+    advances prefix_len to its end (mem_cache/common.py:271-280), and the next round
+    extends [prefix_len, extend_end). The KV pool's page size is whatever serving
+    resolved: at page 1 both rounds take the token allocator, as serving does. The
+    prefill ids reach the forward stream the way SGLang's offline builder hands them
+    over (benchmark/one_batch.py:516-523), so the ForwardBatch counts its real tokens
+    (model_executor/forward_batch_info.py:1364-1382).
+    """
+    from sglang.srt.mem_cache.common import checkpoint_kv_cache
+
+    batch_size = len(reqs)
+    full_length = reqs[0].extend_end
+    tree_cache = _radix_disabled_tree_cache(model_runner)
+    if prefix_len:
+        for req in reqs:
+            req.extend_end = prefix_len
+        prefix_batch = _make_schedule_batch(model_runner, reqs, tree_cache)
+        with temporarily_chunked_alloc_extend(model_runner, batch_size * prefix_len):
+            prefix_batch.prepare_for_extend()
+        for req in reqs:
+            checkpoint_kv_cache(req, tree_cache)
+            req.extend_end = full_length
+    batch = _make_schedule_batch(model_runner, reqs, tree_cache)
+    with temporarily_chunked_alloc_extend(model_runner, batch_size * (full_length - prefix_len)):
+        batch.prepare_for_extend()
+    batch.input_ids = batch.prefill_input_ids_cpu.to(batch.device, non_blocking=True)
+    batch.prefill_input_ids_cpu = None
+    return batch
+
+
+def _initialize_msa_history(model_runner, attention_module, forward_batch, history_length: int) -> None:
+    """Write the cached history the benchmark layer reads, through serving's own KV writer.
+
+    The allocator only assigns slots. The pools start as zeros
+    (mem_cache/memory_pool.py:2580-2600 MHATokenToKVPool._create_buffers_normal) and
+    nothing here runs the forwards that would fill them, so every history block
+    would score the same and the decode radix top-k would select among ties. Serving
+    stores post-norm/RoPE K/V and index K with set_fused_kv_index_buffer
+    (layers/attention/minimax_sparse_backend.py:1483-1494, 1724-1735; the pool's writer
+    mem_cache/memory_pool.py:6211-6280); seeded N(0, 1) activations go through the same
+    writer outside the measurement. They stand for no particular checkpoint distribution.
+    Same treatment as the DSA modules (collect_mla_module._initialize_dsa_history).
+    """
+    if history_length <= 0:
+        return
+    layer = attention_module.attn
+    pool = model_runner.token_to_kv_pool
+    locations = (
+        model_runner.req_to_token_pool.req_to_token[forward_batch.req_pool_indices.long(), :history_length]
+        .flatten()
+        .to(torch.int64)
+        .contiguous()
+    )
+    expected = int(forward_batch.batch_size) * history_length
+    if locations.numel() != expected:
+        raise ValueError(f"MSA history has {locations.numel()} locations; expected {expected}")
+    num_kv_heads, head_dim = int(attention_module.num_kv_heads), int(attention_module.head_dim)
+    idx_head_dim = int(attention_module.idx_head_dim)
+    generator = torch.Generator(device=locations.device)
+    generator.manual_seed(0)
+
+    def activations(n: int, heads: int, dim: int):
+        return torch.randn((n, heads, dim), generator=generator, device=locations.device, dtype=torch.bfloat16)
+
+    for start in range(0, expected, _HISTORY_CHUNK_TOKENS):
+        slots = locations[start : start + _HISTORY_CHUNK_TOKENS]
+        n = slots.numel()
+        pool.set_fused_kv_index_buffer(
+            layer,
+            slots,
+            activations(n, num_kv_heads, head_dim),
+            activations(n, num_kv_heads, head_dim),
+            activations(n, 1, idx_head_dim),
+            None if attention_module.disable_index_value else activations(n, 1, idx_head_dim),
+            layer.k_scale_float,
+            layer.v_scale_float,
+            layer.idx_k_scale_float,
+            layer.idx_v_scale_float,
         )
-    return 0 < int(num_tokens) <= int(decode_cfg.max_bs)
+
+
+def _serving_decode_graph_batch(model_runner, batch_size: int, target_tp_size: int) -> int | None:
+    """The captured batch size serving replays this decode batch on, or None when it runs eagerly.
+
+    DecodeCudaGraphRunner replays a batch no larger than its max_bs, padded up to
+    the next captured size (model_executor/runner/decode_cuda_graph_runner.py:845-905,
+    1615-1631). The sizes come from generate_decode_cuda_graph_batch_sizes over the
+    decode max_bs (arg_groups/cuda_graph_hook.py:500-531), which
+    _handle_gpu_memory_settings derives from device memory and the server's TP size
+    (arg_groups/memory_hook.py:89-183). This runner resolved them for TP 1; the row
+    stands for one rank of a TP-``target_tp_size`` server, which below 160 GiB
+    captures up to 512 at TP >= 4 instead of 256 (runtime_limits.serving_memory_defaults).
+    """
+    decode_cfg = resolved_arg(model_runner.server_args, "cuda_graph_config").decode
+    if decode_cfg.backend == "disabled":
+        return None
+    from sglang.srt.arg_groups.cuda_graph_hook import generate_decode_cuda_graph_batch_sizes
+
+    capture_bs = generate_decode_cuda_graph_batch_sizes(
+        model_runner.server_args, serving_memory_defaults(target_tp_size)[1]
+    )
+    return next((int(bs) for bs in sorted(capture_bs) if int(bs) >= batch_size), None)
+
+
+def _minimax_sparse_ops():
+    from sglang.srt.layers.attention.minimax_sparse_ops import minimax_sparse
+
+    return minimax_sparse
+
+
+def _ran_msa(use_msa: bool) -> bool:
+    """Whether the main sparse step ran fmha_sm100 since _run_*_point cleared the flag.
+
+    minimax_sparse_prefill/decode fall back to the Triton kernel when MSA raises
+    MSAUnavailableError and record it in _msa_fallback_warned
+    (layers/attention/minimax_sparse_ops/minimax_sparse.py:28-40, 217-257, 446-447).
+    """
+    return use_msa and not _minimax_sparse_ops()._msa_fallback_warned
 
 
 def _decode_topk_variant(sparse_backend, max_seqlen_k: int) -> str:
-    """Report which decode top-k kernel the sparse indexer selects — the
-    same gate as decode/flash_with_topk_idx.py:822-826
-    (SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX && score blocks <= 4096 &&
-    topk <= 32 → JIT radix select; otherwise 2-stage Triton top-k)."""
+    """The decode top-k kernel the sparse indexer selects for this KV bound — the
+    gate of flash_decode_with_topk_idx (kernels/ops/attention/minimax_sparse/decode/
+    flash_with_topk_idx.py:25, 1040-1055): SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX,
+    score blocks of min(max_seqlen, req_to_token width) <= _JIT_TOPK_MAX_NUM_BLOCKS
+    (16384 on CUDA; 4096 at v0.5.21) and topk <= 32 select the JIT radix select,
+    otherwise the 2-stage Triton top-k."""
+    from sglang.kernels.ops.attention.minimax_sparse.decode.flash_with_topk_idx import _JIT_TOPK_MAX_NUM_BLOCKS
     from sglang.srt.environ import envs
 
-    score_blocks = _ceil_div(max_seqlen_k, sparse_backend.block_size_k)
+    score_kv_len = min(int(max_seqlen_k), int(sparse_backend.req_to_token.shape[1]))
+    score_blocks = _ceil_div(score_kv_len, sparse_backend.block_size_k)
     use_radix = (
         envs.SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX.get()
-        and score_blocks <= 4096
+        and score_blocks <= _JIT_TOPK_MAX_NUM_BLOCKS
         and sparse_backend.topk_blocks <= 32
     )
     return "topk_radix" if use_radix else "topk_split"
 
 
 def _prefill_kernel_source(model_runner) -> str:
-    sparse = model_runner.attn_backend.sparse
-    main = "msa_fmha_sm100" if sparse.use_msa else "triton_sparse"
+    """use_msa selects fmha_sm100 for the main step (minimax_sparse_backend.py:196-234)."""
+    main = "msa_fmha_sm100" if _ran_msa(model_runner.attn_backend.sparse.use_msa) else "triton_sparse"
     return f"sglang_minimax_prefill_{main}"
 
 
-def _decode_kernel_source(model_runner, use_graph: bool, actual_kv: int) -> str:
+def _decode_kernel_source(model_runner, max_seqlen_k: int) -> str:
+    """``max_seqlen_k`` is the bound the decode kernels were launched with (see _run_decode_point)."""
     sparse = model_runner.attn_backend.sparse
     if not hasattr(sparse, "_use_msa_decode"):
         # kernel_source records ground truth; a silent False default would
         # mislabel every decode row as triton_sparse if SGLang renames the
-        # flag (minimax_sparse_backend.py sets it in __init__).
+        # flag (minimax_sparse_backend.py:289-291 sets it in __init__).
         raise RuntimeError(
             "MiniMaxSparseAttnBackend has no _use_msa_decode attribute "
             "(renamed upstream?); refusing to guess the decode kernel identity"
         )
-    main = "msa_fmha_sm100" if sparse._use_msa_decode else "triton_sparse"
-    # Under a captured decode graph the indexer metadata is built with
-    # in_capture=True → _max_seqlen_k = max_context_len
-    # (minimax_sparse_backend.py:175-178), which is what gates the top-k
-    # kernel choice; eager decode uses the live KV length.
-    bound = sparse.max_context_len if use_graph else actual_kv
-    return f"sglang_minimax_decode_{main}_{_decode_topk_variant(sparse, bound)}"
+    main = "msa_fmha_sm100" if _ran_msa(sparse._use_msa_decode) else "triton_sparse"
+    return f"sglang_minimax_decode_{main}_{_decode_topk_variant(sparse, max_seqlen_k)}"
 
 
 def _log_msa_row(
@@ -662,37 +795,6 @@ def _log_msa_row(
         raise PerfLogWriteError(f"failed to persist MSA row to {perf_filename}")
 
 
-def _alloc_prefix_indices_compat(model_runner, batch_size: int, prefix_len: int) -> list:
-    """Prefix-cache emulation across BOTH SGLang allocator families.
-
-    ``runtime_limits.alloc_prefix_indices`` drives the PAGED allocator's
-    ``alloc_extend`` — correct on every page>1 platform (fa3/fa4 + page 128
-    on SM90/SM100). At page_size==1 SGLang builds ``TokenToKVPoolAllocator``
-    instead (mem_cache/kv_cache_configurator.py:1464-1476), whose
-    inherited ``alloc_extend`` raises NotImplementedError("alloc_extend is
-    only for paged allocator") (mem_cache/allocator/base.py:95) — the SM120
-    smoke failure signature (every prefix>0 context case died there while
-    prefix==0 and decode passed). Serving never calls
-    ``alloc_extend`` at page 1: extend batches take the token branch
-    ``alloc_token_slots`` → ``allocator.alloc(N)``
-    (mem_cache/allocation.py:350-351 in alloc_for_extend, :146
-    alloc_token_slots; allocator/token.py:55-63 free-list slice), and a
-    radix-cache prefix hit hands back exactly such token-granular
-    ``req.prefix_indices``. Mirror that same call for the synthetic prefix;
-    eviction is moot here (collector runs a disabled ChunkCache and clears
-    the pool between shapes).
-    """
-    if prefix_len <= 0 or kv_pool_page_size(model_runner) > 1:
-        return alloc_prefix_indices(model_runner, batch_size, prefix_len)
-    allocator = model_runner.token_to_kv_pool_allocator
-    flat = allocator.alloc(batch_size * prefix_len)
-    if flat is None:
-        raise RuntimeError(
-            f"failed to allocate token-level prefix cache: batch_size={batch_size}, prefix_len={prefix_len}"
-        )
-    return [flat[i * prefix_len : (i + 1) * prefix_len].contiguous() for i in range(batch_size)]
-
-
 def _run_prefill_point(
     model_runner,
     attention_module,
@@ -706,13 +808,23 @@ def _run_prefill_point(
 ):
     """Benchmark one context (prefill) point; returns (latency_ms, power_stats).
 
-    The module is timed EAGERLY: SGLang prefill runs the attention op
-    outside any captured graph segment even under the piecewise prefill
-    CUDA graph (RadixAttention extend routes through the
-    unified_attention_with_output split op —
-    layers/radix_attention.py:161-243, @register_split_op), so eager module
-    timing is the serving prefill attention path. Same choice as
-    collect_mla_module's DSA prefill.
+    The whole module is timed eagerly. Deviation (every CUDA SM): v0.5.23 serves
+    M3 prefill under the breakable prefill CUDA graph (default_prefill_backend,
+    model_executor/cuda_graph_config.py:119-123; M3 is on the BCG allow-list,
+    configs/model_config.py:2501-2516, and no rule in
+    arg_groups/cuda_graph_hook.py:170-245 turns it off). The sparse attention
+    runs eagerly between the graph segments there too
+    (RadixAttention._eager_attention, layers/radix_attention.py:133-185, 187-250),
+    on the same backend code and metadata, so its kernels match. What differs:
+    serving replays the fused qkv+index GEMM, the grouped QK norm/RoPE and o_proj
+    from captured segments at the token count padded to the capture bucket, and
+    copies the attention output into the segment's buffer; this collector
+    launches them eagerly at the real token count. Launch overhead reads slower
+    here for short prefills, bucket padding makes serving's GEMMs larger than
+    timed here; neither is measured. The DSA prefill tables carry the same
+    deviation (collect_mla_module.load_model_runner). Retire by timing prefill
+    under the breakable runner once the measurement method for prefill graphs is
+    decided.
     """
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
@@ -720,28 +832,19 @@ def _run_prefill_point(
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
 
-    prefix_indices = _alloc_prefix_indices_compat(model_runner, batch_size, prefix_len)
-    full_length = prefix_len + seq_len
-    reqs = _make_reqs(
-        batch_size,
-        full_length,
-        seq_len if prefix_len else full_length,
-        prefix_indices=prefix_indices,
-    )
-    batch = _make_schedule_batch(model_runner, reqs)
-    with temporarily_chunked_alloc_extend(model_runner, batch_size * seq_len):
-        batch.prepare_for_extend()
+    batch = _extend_batch(model_runner, _make_reqs(batch_size, prefix_len + seq_len), prefix_len)
     point_clock.mark("batch")
     # return_hidden_states_before_norm=False mirrors the serving worker
-    # (managers/tp_worker.py:267,548).
+    # (managers/tp_worker.py:274).
     forward_batch = ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
     # Serving metadata init for the eager forward (base
     # AttentionBackend.init_forward_metadata → out_graph + in_graph;
-    # MiniMaxHybrid fans out to sparse+dense —
-    # minimax_sparse_backend.py:505-507, base_attn_backend.py:48-54).
-    with _forward_ctx(model_runner):
+    # MiniMaxHybrid fans out to sparse+dense — minimax_sparse_backend.py:1878-1881).
+    with _forward_ctx(model_runner, forward_batch):
         model_runner.attn_backend.init_forward_metadata(forward_batch)
     point_clock.mark("metadata")
+    _initialize_msa_history(model_runner, attention_module, forward_batch, prefix_len)
+    point_clock.mark("history")
 
     hidden_states = torch.randn(
         batch_size * seq_len,
@@ -759,13 +862,14 @@ def _run_prefill_point(
     point_clock.mark("inputs")
 
     def kernel_func():
-        with _forward_ctx(model_runner):
+        with _forward_ctx(model_runner, forward_batch):
             return attention_module(
                 positions=positions,
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
             )
 
+    _minimax_sparse_ops()._msa_fallback_warned = False
     try:
         with benchmark_with_power(
             device=torch.device(device),
@@ -794,21 +898,32 @@ def _run_decode_point(
     attention_module,
     batch_size: int,
     kv_len: int,
+    target_tp_size: int,
     *,
     num_warmup: int,
     num_iterations: int,
     device: str,
 ):
-    """Benchmark one generation (decode) point.
+    """Benchmark one generation (decode) point; returns (latency_ms, power_stats, kernel_source).
 
-    Returns (latency_ms, power_stats, used_graph). Decode is timed under a
-    captured CUDA graph exactly where serving covers the batch size with a
-    decode graph. For graphed points, capture-parity metadata is built with
-    in_capture=True — the decode graph runner's pre-capture call
-    (model_executor/runner/decode_cuda_graph_runner.py:942) — which
-    fixes the sparse indexer's KV bound at max_context_len
-    (minimax_sparse_backend.py:175-178) and therefore the top-k kernel
-    choice, matching what serving replays.
+    Decode is timed under a captured CUDA graph exactly where serving replays one
+    (_serving_decode_graph_batch). Serving's DecodeCudaGraphRunner allocates the
+    backend's graph state (init_cuda_graph_state,
+    model_executor/runner/decode_cuda_graph_runner.py:429), builds metadata at
+    capture with init_forward_metadata_out_graph(in_capture=True) (:1400) and
+    refills it before every replay with init_forward_metadata_out_graph (:1812).
+    For the sparse backend the benchmark layer routes to
+    (minimax_sparse_backend.py:1985-1988), that sequence reduces to the capture
+    call: its init_cuda_graph_state is a no-op (:614-615); in_capture fixes the
+    host-side _max_seqlen_k at max_context_len (:452-461), which sizes the score
+    tensor and picks the top-k kernel baked into the graph; the refill only resets
+    that host value to the live length (:463), which the captured kernels never
+    read again, so replaying it before this capture would bake the live length in
+    instead. Its decode kernels read req_to_token at full width in graph and eager
+    mode alike (:1811-1852), so no page-table width differs from serving (unlike
+    DSA's). Serving's MSA decode plan is built only when MSA owns decode, which a
+    graph-enabled server never does (:289-291, 305-307, 469-470). The dense half
+    of the hybrid backend is never read by the benchmark layer.
     """
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
@@ -816,30 +931,37 @@ def _run_decode_point(
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
 
-    reqs = _make_reqs(batch_size, kv_len, kv_len)
-    batch = _make_schedule_batch(model_runner, reqs)
-    with temporarily_chunked_alloc_extend(model_runner, batch_size * kv_len):
-        batch.prepare_for_extend()
+    graph_batch = _serving_decode_graph_batch(model_runner, batch_size, target_tp_size)
+    if graph_batch is not None and graph_batch != batch_size:
+        # The plan's decode batches are capture sizes; an ad-hoc --quick batch may not be.
+        raise RuntimeError(
+            f"decode batch {batch_size} replays on serving's padded graph batch {graph_batch}; "
+            "the collector times captured batch sizes only"
+        )
+    use_graph = graph_batch is not None
+
+    batch = _extend_batch(model_runner, _make_reqs(batch_size, kv_len), 0)
     for req in batch.reqs:
         req.output_ids.append(0)
+    # The sampled token of the previous step (benchmark/one_batch.py:536-538);
+    # prepare_for_decode allocates its slot and advances seq_lens
+    # (managers/schedule_batch.py:3780-3789).
+    batch.input_ids = torch.zeros(batch_size, dtype=torch.int64, device=batch.device)
     batch.prepare_for_decode()
     forward_batch = ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
     point_clock.mark("batch")
 
-    use_graph = _decode_graph_covered(model_runner, batch_size)
-    with _forward_ctx(model_runner):
+    sparse = model_runner.attn_backend.sparse
+    with _forward_ctx(model_runner, forward_batch):
         model_runner.attn_backend.init_forward_metadata(forward_batch)
         if use_graph:
-            # Capture parity for the SPARSE backend only: the benchmarked
-            # layer routes exclusively to MiniMaxSparseAttnBackend
-            # (hybrid dispatch by layer id, minimax_sparse_backend.py:585-597),
-            # so only its capture-time metadata is consumed. The dense fa3
-            # side of the hybrid wrapper needs its full graph-runner state
-            # (init_cuda_graph_state buffers) for an in_capture call, which
-            # the serving decode graph runner owns — the module bench never
-            # executes a dense layer, so its eager metadata is kept.
-            model_runner.attn_backend.sparse.init_forward_metadata_out_graph(forward_batch, in_capture=True)
+            sparse.init_forward_metadata_out_graph(forward_batch, in_capture=True)
+    # The KV bound every decode kernel of this point is launched with
+    # (minimax_sparse_backend.py:1823 passes it to minimax_sparse_decode).
+    max_seqlen_k = int(sparse._max_seqlen_k)
     point_clock.mark("metadata")
+    _initialize_msa_history(model_runner, attention_module, forward_batch, kv_len)
+    point_clock.mark("history")
 
     hidden_states = torch.randn(
         batch_size,
@@ -847,17 +969,19 @@ def _run_decode_point(
         dtype=torch.bfloat16,
         device="cuda",
     )
+    # The decoded token's position (seq_lens - 1 after prepare_for_decode).
     positions = torch.full((batch_size,), kv_len, device="cuda", dtype=torch.int64)
     point_clock.mark("inputs")
 
     def kernel_func():
-        with _forward_ctx(model_runner):
+        with _forward_ctx(model_runner, forward_batch):
             return attention_module(
                 positions=positions,
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
             )
 
+    _minimax_sparse_ops()._msa_fallback_warned = False
     try:
         with benchmark_with_power(
             device=torch.device(device),
@@ -871,7 +995,7 @@ def _run_decode_point(
             pass
         point_clock.mark("bench")
         point_clock.absorb(results.get("phase_seconds"), prefix="bench_")
-        return results["latency_ms"], results["power_stats"], use_graph
+        return results["latency_ms"], results["power_stats"], _decode_kernel_source(model_runner, max_seqlen_k)
     finally:
         model_runner.req_to_token_pool.clear()
         model_runner.token_to_kv_pool_allocator.clear()
@@ -909,14 +1033,13 @@ def run_msa_module(
     torch.cuda.set_device(device)
 
     if compute_dtype != "bfloat16":
-        raise ValueError(
-            f"M3 sparse attention at SGLang v0.5.16 computes in bf16 "
-            f"(kernels assert q.dtype in bf16/fp16, decode/flash_with_topk_idx.py:778-782); "
-            f"got compute={compute_dtype}"
-        )
+        # SGLang derives the attention GEMM precision itself: bf16, or fp8 q with
+        # an fp8_e4m3 KV cache on trtllm_mha + SM100 (server_args.py:592-610).
+        raise ValueError(f"the MSA plan collects compute bfloat16 only; got compute={compute_dtype}")
     if gemm_type != "bfloat16":
         raise ValueError(
-            f"MiniMax-M3 is a BF16 artifact; SGLang's quantized-M3 flow is MXFP8, "
+            f"MiniMax-M3 is a BF16 artifact; SGLang's quantized-M3 flows are MXFP8 and the "
+            f"M3.1 NVFP4 stack (arg_groups/model_overrides/minimax_m3.py:18-34), "
             f"not {gemm_type!r} (skips.py leaves these cases out)"
         )
     if kv_cache_dtype not in SGLANG_KV_DTYPE:
@@ -941,21 +1064,19 @@ def run_msa_module(
     # allocated for it, and the ModelRunner is sized for the points that remain.
     refused: dict[tuple, str] = {}
     if is_prefill:
-        # SGLang derives its prefill chunk from device memory (the same tiering as
-        # ServerArgs._handle_gpu_memory_settings); serving chunks a longer prefill.
-        try:
-            from collector.sglang.deepseekv4_sparse_modules import _sglang_chunked_prefill_size
-        except ModuleNotFoundError:
-            from deepseekv4_sparse_modules import _sglang_chunked_prefill_size
-        chunk = _sglang_chunked_prefill_size()
+        # SGLang derives its prefill chunk from device memory alone
+        # (_handle_gpu_memory_settings, arg_groups/memory_hook.py:89-176); serving
+        # chunks a longer prefill.
+        chunk = int(serving_memory_defaults(tp_size=1)[0])
         refuse(shapes, refused, lambda shape: over_chunk(shape, chunk))
     runnable = [shape for shape in shapes if shape not in refused]
     if not runnable:
         raise RuntimeError(refusal_summary(refused, len(shapes)))
 
-    # 128 is the M3 serving page on SM90/SM100 (overrides.py:502-529); page-128
-    # rounding is an upper bound for any smaller resolved page. The pool SGLang
-    # builds is checked against the real page below.
+    # 128 is the M3 serving page on SM90/SM100 (arg_groups/model_overrides/
+    # minimax_m3.py:163-168, 181-187), 1 elsewhere; page-128 rounding is an upper
+    # bound for any smaller resolved page. The pool SGLang builds is checked
+    # against the real page below.
     page_size_guess = 128
     max_total_tokens = max(
         required_kv_alloc_tokens(b, s, p, page_size_guess, is_prefill=is_prefill) for (b, s, p) in runnable
@@ -1023,16 +1144,16 @@ def run_msa_module(
                     kernel_source = _prefill_kernel_source(model_runner)
                     isl, step = s, p
                 else:
-                    latency, power_stats, used_graph = _run_decode_point(
+                    latency, power_stats, kernel_source = _run_decode_point(
                         model_runner,
                         attention_module,
                         b,
                         s,
+                        target_tp_size,
                         num_warmup=8,
                         num_iterations=10,
                         device=device,
                     )
-                    kernel_source = _decode_kernel_source(model_runner, used_graph, s)
                     isl, step = 1, s
                 _log_msa_row(
                     perf_filename=perf_filename,

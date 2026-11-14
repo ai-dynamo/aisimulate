@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: trtllm
+  version: 1.4.0rc2
+  image: nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc2
+  image_digest: sha256:93a3eaf1fa574813d608a7147735134bcfbd06d18d1aa98e8ee0d5da09e51e3a
+tables:
+  mhc_module_perf:
+    rows: 124
+    status: complete
+    collections:
+    - collector_ref: 9b71fb89a5d045e350daa7c53677dedcfeaf8ede
+      collector_hash: sha256:007912ac621d5f8aae168552a57f788c412ebc2eed9f5d88c721ba1cc108dcbe
+      case_plan_hash: sha256:f882d053c464eb38ee2a65acc4c5166de3c7e33f8599fbffcb3a7d25690cf77d
+      collected_at: '2026-11-09'
+      rows: 124
+      status: complete

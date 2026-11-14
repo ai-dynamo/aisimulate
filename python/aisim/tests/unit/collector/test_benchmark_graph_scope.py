@@ -199,6 +199,21 @@ def test_eager_warmups_can_be_fewer_than_replay_warmups(monkeypatch):
     assert default["events"].count("kernel") == 3  # num_warmups eager passes + capture, unchanged
 
 
+def test_a_minimum_warmup_time_keeps_replaying_before_the_timed_runs(monkeypatch):
+    default = trace_benchmark(monkeypatch)
+    assert default == trace_benchmark(monkeypatch, min_warmup_seconds=0.0)
+    warmed = trace_benchmark(monkeypatch, min_warmup_seconds=0.02)
+    extra = warmed["events"].count("graph:replay") - default["events"].count("graph:replay")
+    assert extra > 0 and extra % 8 == 0  # whole batches of replays
+    # The extra replays come before the timed block, which still holds exactly num_runs (3).
+    ev = warmed["events"]
+    start = ev.index("event:record")
+    assert ev[start + 1 : start + 5] == ["graph:replay"] * 3 + ["event:record"]
+    assert ev[start - 3] == "synchronize"  # warmup ends synced, then the two timing events
+    eager = trace_benchmark(monkeypatch, eager=True, min_warmup_seconds=0.02)
+    assert eager["events"].count("kernel") > trace_benchmark(monkeypatch, eager=True)["events"].count("kernel")
+
+
 def test_every_measurement_beats_the_stall_watchdog_before_touching_the_kernel(monkeypatch):
     graph = trace_benchmark(monkeypatch)
     assert graph["events"].count("heartbeat") == 1

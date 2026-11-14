@@ -355,6 +355,9 @@ def test_shipped_mla_kernel_tables_carry_num_heads():
 # [native][local] (same recipe as the MLA module tables above).
 _DSA_MODEL_NATIVE_HEADS = {
     "deepseek-ai/DeepSeek-V3.2": 128,
+    # The NVFP4 artifact of the same architecture: vLLM 0.32.0 DSA rows name the checkpoint
+    # whose self_attn projections they quantize.
+    "nvidia/DeepSeek-V3.2-NVFP4": 128,
     "zai-org/GLM-5": 64,
     "zai-org/GLM-5-FP8": 64,
     "nvidia/GLM-5-NVFP4": 64,

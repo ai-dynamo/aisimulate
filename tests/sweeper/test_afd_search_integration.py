@@ -171,6 +171,7 @@ def test_afd_companion_checks_frontend_measurement():
         prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("frontend", [False, True])
 def test_afd_companion_preserves_and_executes_host_loop_and_frontend(frontend):
     raw = prediction("disaggregated", ("decode",))
@@ -228,6 +229,7 @@ def test_native_afd_memory_and_kv_budget_use_custom_pool_specs(tmp_path, shadow_
     assert memory["kv_budget_bytes_per_a_gpu"] < 64 * (1 << 30)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("mode,afd_roles", COMBINATIONS)
 def test_four_combinations_compile_into_role_local_descriptors(mode, afd_roles):
     source = CorePredictionConfig.model_validate(prediction(mode, afd_roles))
@@ -258,6 +260,7 @@ def test_recommendation_fixed_ep_preserves_feasible_topologies_with_larger_budge
     ]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("mode,afd_roles", COMBINATIONS)
 def test_search_sampler_saved_prediction_and_replay_agree(mode, afd_roles):
     source = CoreRecommendationConfig.model_validate(recommendation(mode, afd_roles))
@@ -283,6 +286,7 @@ def test_search_sampler_saved_prediction_and_replay_agree(mode, afd_roles):
     assert sample["used_gpus"] == suggestion.parallel_config.total_gpus
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("afd_role,ordinary_role", [("prefill", "decode"), ("decode", "prefill")])
 @pytest.mark.parametrize("scale", ["linear", "log"])
 def test_mixed_afd_memory_fraction_range_reaches_samples_and_saved_prediction(afd_role, ordinary_role, scale):
@@ -321,6 +325,7 @@ def test_mixed_afd_memory_fraction_range_reaches_samples_and_saved_prediction(af
     assert worker.kv_cache.capacity.memory_fraction == sample[name]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("mode,afd_roles", COMBINATIONS)
 def test_native_replay_completes_exact_work_and_accounts_for_all_pools(mode, afd_roles):
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(prediction(mode, afd_roles)))
@@ -346,6 +351,7 @@ def test_native_replay_completes_exact_work_and_accounts_for_all_pools(mode, afd
         assert report.metrics["decode_gpus_per_worker"] == (16 if "decode" in afd_roles else 1)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("timing_mode", ["full_prompt", "destination_missing"])
 def test_double_afd_kv_transfer_is_applied_once_and_deterministic(timing_mode):
     raw = prediction()
@@ -419,6 +425,7 @@ def test_search_fails_when_budget_cannot_fit_two_afd_pairs():
         enumerate_branches(recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw)))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("modes", [["aggregated", "disaggregated"], ["disaggregated", "aggregated"]])
 @pytest.mark.parametrize("budget,ep", [(8, None), (16, None), (16, 3)])
 def test_infeasible_afd_mode_keeps_viable_ordinary_candidates(modes, budget, ep):
@@ -451,6 +458,7 @@ def test_all_afd_modes_infeasible_still_raise():
         enumerate_branches(smart)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("failure", ["invalid_tp", "candidate_limit", "pinned_companion"])
 def test_afd_configuration_errors_remain_fatal_with_a_viable_ordinary_mode(failure):
     raw = recommendation(afd_roles=("decode",) if failure == "pinned_companion" else ("prefill", "decode"))
@@ -522,6 +530,7 @@ def test_afd_controls_require_default_timing_in_ordinary_roles(afd_role, ordinar
         CorePredictionConfig.model_validate(raw)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("mode,afd_roles", COMBINATIONS)
 def test_kernel_mtp_and_quantization_identity_survives_search_and_reload(mode, afd_roles):
     raw = recommendation(mode, afd_roles)
@@ -562,6 +571,7 @@ def test_kernel_mtp_and_quantization_identity_survives_search_and_reload(mode, a
         assert rank["aic_nextn_accept_rates"]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("role", ["prefill", "decode"])
 def test_memory_failure_in_either_afd_role_prevents_replay(role):
     raw = prediction()
@@ -594,6 +604,7 @@ def test_search_candidate_uses_dynamic_pricing_before_execution():
     )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_memory_diagnostics_cover_each_role_and_can_qualify_the_artifact():
     from aisim.afd_artifacts import build_afd_qualification
 
@@ -642,6 +653,7 @@ def test_afd_native_config_has_one_source_for_rank_invariants():
     assert not duplicates.intersection(timing)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_afd_communication_precision_changes_native_sol_prediction():
     # At SOL, fp8 halves the transfer payload relative to half. Pool compute
     # geometry and workload are identical, so the complete serial pass shrinks.
@@ -657,6 +669,7 @@ def test_afd_communication_precision_changes_native_sol_prediction():
     assert durations["fp8"] < durations["half"]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_afd_topology_drives_both_timing_and_gpu_accounting():
     import json
 
@@ -690,6 +703,7 @@ def test_native_afd_backend_is_validated_before_model_loading():
         _runtime.run_replay_json(json.dumps(wire))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 @pytest.mark.parametrize("context_length", [None, 146, 2048])
 @pytest.mark.parametrize("legacy", [False, True])
@@ -727,6 +741,7 @@ def test_native_afd_memory_reserves_each_phase_without_promoting_derived_context
             assert memory[phase]["attention"]["components_gib_per_gpu"]["kvcache"] == expected_gib
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
 @pytest.mark.parametrize("output_tokens", [3, 8])
 @pytest.mark.parametrize("at_limit", [False, True])
@@ -762,6 +777,7 @@ def test_native_afd_context_boundaries_preserve_requested_output(role, output_to
     assert record["output_length"] == output_tokens
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("afd_roles", [("prefill",), ("prefill", "decode")])
 def test_native_afd_prefill_context_does_not_reserve_the_decode_output(afd_roles):
     raw = prediction("disaggregated", afd_roles)
@@ -789,6 +805,7 @@ def test_native_afd_prefill_context_does_not_reserve_the_decode_output(afd_roles
     assert memory["attention"]["components_gib_per_gpu"]["kvcache"] == 12 * 32 * kv_bytes_per_token / (1 << 30)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_afd_undeclared_window_still_limits_runtime_prompt_length():
     import json
 
@@ -998,6 +1015,7 @@ def test_prefill_memory_rejects_oom_for_synthetic_and_trace(tmp_path, trace):
         EngineReplayRunnerFactory().create(0).run(spec)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("trace", [False, True])
 def test_prefill_chunk_bounds_buffers_without_shortening_kv_window(tmp_path, trace):
     import json
@@ -1058,6 +1076,7 @@ def test_saved_replay_rejects_unsupported_topology_schema_before_model_lookup(ve
         runner.close()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_current_saved_json_replays_with_identical_semantics_despite_environment(monkeypatch):
     import json
 
@@ -1110,6 +1129,7 @@ def test_afd_roles_reject_main_decode_radix_cache(mode, afd_roles):
         type(smart).model_validate(payload)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_afd_prefill_ordinary_decode_rejects_radix_cache_from_direct_sample():
     smart = recommendation_to_sweeper(
         CoreRecommendationConfig.model_validate(recommendation("disaggregated", ("prefill",)))
@@ -1194,6 +1214,7 @@ def test_raw_afd_block_units_reject_before_any_memory_query(monkeypatch, blocks,
         _runtime.run_replay_json(json.dumps(execution))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("mode,roles", COMBINATIONS)
 def test_available_memory_diagnostics_preserve_native_fit_status(mode, roles):
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(prediction(mode, roles)))
@@ -1205,6 +1226,7 @@ def test_available_memory_diagnostics_preserve_native_fit_status(mode, roles):
         assert native["memory_diagnostics"][role]["status"] == "available"
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_prefill_pool_budget_accepts_the_reported_two_a_four_f_geometry():
     raw = prediction("aggregated", ("aggregated",))
     raw["engine"]["context_length"] = 4226
@@ -1218,6 +1240,7 @@ def test_prefill_pool_budget_accepts_the_reported_two_a_four_f_geometry():
     assert report.metrics["total_output_tokens"] == 128
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("batched_tokens", [None, 1, 32768])
 @pytest.mark.parametrize("chunk_size", [None, 4096])
 def test_long_prefill_memory_uses_sglang_limits_for_fit_and_kv_budget(monkeypatch, batched_tokens, chunk_size):
@@ -1263,6 +1286,7 @@ def test_long_prefill_memory_uses_sglang_limits_for_fit_and_kv_budget(monkeypatc
     assert fit["a_activation_gb"] == budget["a_activation_gb"]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_unit_block_auto_capacity_preserves_controlled_64_token_admission(monkeypatch):
     import json
 
@@ -1285,6 +1309,7 @@ def test_unit_block_auto_capacity_preserves_controlled_64_token_admission(monkey
     assert admissions[0] == 0 < admissions[1]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("field", ["parallel_custom_configs_by_mode", "parallel_independent_by_mode"])
 def test_sdk_keeps_supported_ordinary_companion_search_domains(field):
     from aisim.sweeper.config import SmartSearchConfig
@@ -1307,6 +1332,7 @@ def test_sdk_keeps_supported_ordinary_companion_search_domains(field):
     assert {parallel.prefill.shape.tp for branch in branches for parallel in branch.parallel_configs} == {2}
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(("mode", "afd_roles"), COMBINATIONS)
 def test_common_afd_runtime_fields_survive_prediction_and_execution(mode, afd_roles):
     raw = prediction(mode, afd_roles)
@@ -1492,6 +1518,7 @@ def test_afd_role_kv_precision_override_is_used_for_pd_transfer():
     )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("dp_size", [2, 8])
 def test_native_afd_rejects_outer_dp(dp_size):
     import json

@@ -487,6 +487,7 @@ def _qwen35_nvfp4_v2_static_phase(monkeypatch, *, prefill, batch_size, nextn=0):
     return {op["name"]: op for op in ops}
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_qwen35_nvfp4_v2_engine_prices_each_lane_from_the_packaged_tables(monkeypatch):
     prefill = _qwen35_nvfp4_v2_static_phase(monkeypatch, prefill=True, batch_size=1)
     decode = _qwen35_nvfp4_v2_static_phase(monkeypatch, prefill=False, batch_size=8)
@@ -516,6 +517,7 @@ def test_qwen35_nvfp4_v2_engine_prices_each_lane_from_the_packaged_tables(monkey
         assert decode[name]["source"] == "mixed", name
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_qwen35_nvfp4_v2_engine_scales_each_decode_op_by_the_mtp_factor(monkeypatch):
     # The engine multiplies the decode batch by (nextn + 1), so nextn=1 at batch 4 and nextn=0 at batch 8 query
     # every decode op at the same shape. The nextn=1 estimate then differs only by the (nextn + L) / L decode

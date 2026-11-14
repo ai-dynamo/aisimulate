@@ -981,6 +981,7 @@ class TestCanonicalVisionTiming:
             )
         )
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     def test_tp_shards_the_tower_while_dp_gathers_its_output(self):
         shape = [{"sequences": 1, "patch_tokens": 784, "transformer_tokens": 784, "output_tokens": 196, "images": 4}]
         tp_ops = self._estimator(2, "tp").vision_operations(shape)
@@ -995,6 +996,7 @@ class TestCanonicalVisionTiming:
         assert sum(latency for _, latency, *_ in tp_ops) > 0.0
         assert self._estimator(2, "tp").diagnostics()["provenance"]["config"]["encoder_parallel"] == "tp"
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     def test_language_only_models_compile_no_tower(self):
         from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 

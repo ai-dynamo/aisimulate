@@ -56,6 +56,13 @@ _MSA_MODULE_OPS = ["msa_context_module", "msa_generation_module"]
 _ATTENTION_OPS = ["attention_context", "attention_generation"]
 
 SKIPS: list[dict] = [
+    # SGLang shards DeepSeek-V4 attention by its published parallel context only
+    # (MQALayer reads get_parallel().attn_tp_size; srt/models/deepseek_v4.py), which a
+    # single-process collector cannot publish, so collect_dsv4_attn refuses every TP>1
+    # row before building the model (_refuse_tp_emulation): the whole TP>1 block fails.
+    # Earlier tables timed the TP=1 module under the TP>1 label. Delete this entry when
+    # the collector times one rank of a TP>1 module.
+    {"backend": "sglang", "op": _DSV4_ATTENTION_OPS, "tp_size": lambda tp: int(tp) > 1},
     # The sparse-attention (DSA) modules and the DeepSeek-V4 and GLM-5 sparse
     # kernels (DeepGEMM fp8_mqa_logits, FlashMLA sparse, JIT top-k) need Hopper
     # (SM90) or newer.
@@ -71,20 +78,65 @@ SKIPS: list[dict] = [
     # TRT-LLM runs it on SM90 only.
     {"dtype": "w4a16_mxfp4", "sm": [80, 86]},
     # FP4 tensor cores, which NVFP4 and MXFP8 x MXFP4 need, start at Blackwell (SM100).
+    # Below it vLLM serves NVFP4 checkpoints weight-only (Marlin W4A16; Humming on
+    # SM90, kernels/linear/nvfp4/humming.py), which is not an NVFP4 measurement.
     {"dtype": ["nvfp4", "w4a8_mxfp4_mxfp8"], "sm": [80, 86, 89, 90]},
-    # SGLang: the collector times fp8_block GEMMs through DeepGEMM, which has no
-    # SM89 or SM120 kernel, so every case would fail. Serving runs them on
-    # Triton (SM89) and CUTLASS (SM120).
-    {"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89, 120]},
     # SGLang: the MoE collector has no per-tensor fp8 path, so every case would
     # fail. Serving runs ModelOpt FP8 checkpoints through ModelOptFp8MoEMethod.
     {"backend": "sglang", "op": "moe", "dtype": "fp8", "sm": [89, 90, 100, 103, 120]},
     # SGLang: a MoE case runs on the runner serving picks, pinned per quant mode
     # and SM in cases/base_ops/moe.yaml (moe_sglang.backends). int4_wo has no pin
-    # on SM80/86 and w4a8_mxfp4_mxfp8 none on SM120, so these cases would time a
-    # guessed runner.
+    # on SM80/86, so these cases would time a guessed runner.
     {"backend": "sglang", "op": "moe", "dtype": "int4_wo", "sm": [80, 86]},
-    {"backend": "sglang", "op": "moe", "dtype": "w4a8_mxfp4_mxfp8", "sm": [120]},
+    # SGLang serves GPT-OSS MXFP4 on SM120 on flashinfer_mxfp4
+    # (arg_groups/model_overrides/gpt_oss.py:69-74), whose SM120 leaf quantizes
+    # activations to MXFP8 (layers/quantization/mxfp4.py:426-427,
+    # moe_runner/flashinfer_cutlass.py:541-548): the w4a8_mxfp4_mxfp8 cases. A
+    # W4A16 case would time a mode serving does not run.
+    {
+        "backend": "sglang",
+        "op": "moe",
+        "dtype": "w4a16_mxfp4",
+        "sm": [120],
+        "model_name": ["openai/gpt-oss-20b", "openai/gpt-oss-120b"],
+    },
+    # SGLang serves GPT-OSS MXFP4 on SM100/103 on flashinfer_mxfp4 at every EP
+    # (model_overrides/gpt_oss.py:64-75) at the default precision, which quantizes
+    # activations to MXFP8 on the trtllm-gen leaf (arg_groups/fields/exec_.py:892-897,
+    # moe_runner/flashinfer_trtllm.py:1145-1166); the B200 serving probe of
+    # gpt-oss-120b ran bmm_*_MxE2m1MxE4m3 GEMMs (2026-11-08). A W4A16 case would time
+    # a mode serving does not run; the w4a8_mxfp4_mxfp8 cases are serving's.
+    {
+        "backend": "sglang",
+        "op": "moe",
+        "dtype": "w4a16_mxfp4",
+        "sm": [100, 103],
+        "model_name": ["openai/gpt-oss-20b", "openai/gpt-oss-120b"],
+    },
+    # SGLang serves Kimi-K3 on SM120 with BF16 activations: its flashinfer_mxfp4
+    # default is SM100/103/107 only (model_overrides/kimi_k3.py:172-190), and auto
+    # resolves Mxfp4MoEMethod to the Triton runner on upcast BF16 experts
+    # (mxfp4.py:1443-1450, 1115-1133). An MXFP8-activation case would time a mode
+    # serving does not run.
+    {
+        "backend": "sglang",
+        "op": "moe",
+        "dtype": "w4a8_mxfp4_mxfp8",
+        "sm": [120],
+        "model_name": "moonshotai/Kimi-K3",
+    },
+    # SGLang serves Kimi-K3 on SM100/103 on flashinfer_mxfp4 (kimi_k3.py:172-190)
+    # at the default precision, which quantizes activations to MXFP8 on the
+    # trtllm-gen leaf (arg_groups/fields/exec_.py:892-897,
+    # moe_runner/flashinfer_trtllm.py:1145-1166): the w4a8_mxfp4_mxfp8 cases. A
+    # W4A16 case (BF16 activations) would time a mode serving does not run.
+    {
+        "backend": "sglang",
+        "op": "moe",
+        "dtype": "w4a16_mxfp4",
+        "sm": [100, 103],
+        "model_name": "moonshotai/Kimi-K3",
+    },
     # TRT-LLM has no MoE implementation for int4_wo (W4A16) on any SM: building
     # the layer rejects every case.
     {"backend": "trtllm", "op": "moe", "dtype": "int4_wo", "sm": [80, 86, 89, 90, 100, 103, 120]},
@@ -93,10 +145,44 @@ SKIPS: list[dict] = [
     # building the layer rejects every case.
     {"backend": "trtllm", "op": "moe", "dtype": "fp8_block", "sm": [89]},
     {"backend": "trtllm", "op": "moe", "dtype": "w4a16_mxfp4", "sm": [89, 120]},
+    # TRT-LLM cannot serve Llama 4 fp8_block MoE on SM100/103: AUTO resolves
+    # FP8_BLOCK_SCALES to TRTLLM there (ModelConfig.resolve_moe_backend,
+    # _torch/model_config.py), resolution picks TrtllmTrtllmGenFp8BlockScalesImpl
+    # (MoEProblem carries no apply_router_weight_on_input), and create_moe_backend
+    # rejects Llama4MoE's apply_router_weight_on_input=True (moe/fused_moe/create_moe.py;
+    # TRTLLM_GEN_CAPABILITIES, trtllm_gen/identity.py). CUTLASS has no SM100 fp8_block
+    # leaf; only an explicit DEEPGEMM backend serves it. Every case fails at construction.
+    {
+        "backend": "trtllm",
+        "op": "moe",
+        "sm": [100, 103],
+        "dtype": "fp8_block",
+        "model_name": ["meta-llama/Llama-4-Scout-17B-16E-Instruct", "meta-llama/Llama-4-Maverick-17B-128E-Instruct"],
+    },
     # vLLM never splits routed experts by TP and EP together: with EP on it
     # turns the whole TP x DP world into EP, so a case with tp > 1 and ep > 1
     # would time that EP layout under the wrong key.
     {"backend": "vllm", "op": "moe", "parallel": "tp_ep", "sm": [80, 86, 89, 90, 100, 103, 120]},
+    # vLLM serves Llama 4 MoE on SM100/103 on FlashInfer TRT-LLM monolithic kernels
+    # that route from logits (oracle/unquantized.py _get_priority_backends;
+    # experts/trtllm_bf16_moe.py TrtLlmBf16ExpertsMonolithic and trtllm_nvfp4_moe.py
+    # TrtLlmNvFp4ExpertsMonolithic, RoutingMethodType.Llama4). Below 4 tokens FlashInfer
+    # routes Llama 4 in routingIndicesWarpKernel (trtllm_fused_moe_routing_llama4.cu),
+    # which with EP > 1 reserves GEMM tiles for non-local experts but writes
+    # permuted_idx_to_token_idx for local experts only, so FC1 gathers stale token ids.
+    # The illegal memory access at 1 or 2 tokens poisons the CUDA context and ends the
+    # case: almost every EP > 1 Llama 4 case of these dtypes kept only its 1-token row.
+    # Serving runs the same kernel at 1-3 tokens. TP-only cases have no non-local
+    # experts and fp8_block routes in vLLM (top-k ids), so neither is affected. Delete
+    # when the pinned FlashInfer's warp kernel initializes the non-local tiles' rows.
+    {
+        "backend": "vllm",
+        "op": "moe",
+        "sm": [100, 103],
+        "dtype": ["bfloat16", "nvfp4"],
+        "parallel": "ep",
+        "model_name": ["meta-llama/Llama-4-Scout-17B-16E-Instruct", "meta-llama/Llama-4-Maverick-17B-128E-Instruct"],
+    },
     # vLLM serves MXFP4 MoE on SM120 without MXFP8 activations (that backend
     # runs only on explicit request), so these cases would time a path serving
     # does not take.
@@ -162,6 +248,14 @@ SKIPS: list[dict] = [
     # the KV cache is FP8 (mFP8ContextMLA in thop/attentionOp.cpp); its FP8-KV rows
     # record that, so an FP8-compute case has no kernel of its own to time.
     {"backend": "trtllm", "op": "mla_context_module", "compute_dtype": "fp8"},
+    # TRT-LLM cannot run NVFP4 MLA modules on SM120: MLA._resolve_qa_fused_scale
+    # (_torch/attention/mla.py) folds q_b_proj's static NVFP4 input quantization
+    # into q_a_layernorm without the SM check RMSNorm applies when it is built
+    # (_torch/modules/rms_norm.py, SM 100-119 only), and the fused kernel then
+    # asserts "residualRmsNormFp4Quant requires SM 10.x" (kernels/
+    # rmsNormFp4QuantKernels.cu) in every forward, serving's included. Every case
+    # fails after a full module build.
+    {"backend": "trtllm", "op": ["mla_context_module", "mla_generation_module"], "gemm_type": "nvfp4", "sm": [120]},
     # vLLM: FP8-KV MLA modules on SM89 were not collected before, and this keeps
     # that coverage. Triton MLA would serve them there (its FP8 KV cache needs
     # SM89+, vllm/v1/attention/backends/mla/triton_mla.py).
@@ -222,19 +316,23 @@ SKIPS: list[dict] = [
         "sm": [80, 86, 89, 90],
         "model_path": ["nvidia/GLM-5.2-NVFP4", "nvidia/GLM-5-NVFP4"],
     },
-    # TRT-LLM's MiniMax-M3 sparse attention takes a BF16 KV cache only
-    # (run_msa_module), so every FP8-KV case would fail.
+    # The TRT-LLM MSA collector builds a BF16 KV cache only (run_msa_module), so
+    # every FP8-KV case would fail. TRT-LLM serves FP8 and NVFP4 KV on the MSA
+    # backend on SM100/103 (modeling_minimaxm3.py main_kv_is_fp8/main_kv_is_nvfp4),
+    # so this is a collector gap.
     {"backend": "trtllm", "op": _MSA_MODULE_OPS, "kv_cache_dtype": "fp8"},
     # TRT-LLM runs MSA off SM100/103 on its Triton reference (triton_backend.py),
     # a masked dense FP32 attention whose cost grows with isl x (isl + prefix): an
     # isl-32768 prefill takes 18 s per forward on h200, and a longer one runs out of
-    # memory on its index scores. A 16K chunk stays within that up to a 32K prefix,
-    # so these SMs stop there.
+    # memory on its index scores. Its latency is close to linear in the prefix (h200,
+    # isl 4096: 364, 616, 1214 and 2566 ms at prefix 4096, 8192, 16384 and 32768), so
+    # these SMs time a thinned prefix grid up to 16K: the full grid up to 32K cost
+    # 15 GPU-hours on h200 and 46 on l40s, 65% of it on the points left out here.
     {
         "backend": "trtllm",
         "op": "msa_context_module",
         "sm": [80, 86, 89, 90, 120],
-        "prefix_len": lambda prefix_len: prefix_len > 32768,
+        "prefix_len": lambda prefix_len: prefix_len not in (0, 1, 512, 2048, 4096, 8192, 16384),
     },
     # SGLang loads MiniMax-M3 as its BF16 checkpoint, and SGLang quantizes M3
     # projections only to MXFP8, so the collector refuses fp8_block and nvfp4 cases.
@@ -280,13 +378,35 @@ SKIPS: list[dict] = [
         "kv_cache_dtype": "fp8",
         "attn_dtype": "bfloat16",
     },
-    # SGLang: the flashinfer prefill plans BF16 Q against the FP8 KV cache
-    # (flashinfer_backend.py) and has no FP8-compute path, so an FP8-compute row
-    # would time BF16 compute under an fp8 label.
-    {"backend": "sglang", "op": "attention_context", "dispatch": "flashinfer", "attn_dtype": "fp8"},
+    # SGLang: flashinfer, triton and fa4 prefill run BF16 Q against the FP8 KV cache
+    # and have no FP8-compute path (flashinfer_backend.py; triton_backend.py
+    # forward_extend never quantizes Q; flashattention_backend.py
+    # prepare_paged_mha_query skips the Q cast for fa4 prefill), so an
+    # FP8-compute row would time BF16 compute under an fp8 label.
+    {
+        "backend": "sglang",
+        "op": "attention_context",
+        "dispatch": ["flashinfer", "triton", "fa4"],
+        "attn_dtype": "fp8",
+    },
+    # SGLang: fa4 prefill leaves Q in BF16 on an FP8 KV cache
+    # (flashattention_backend.py prepare_paged_mha_query skips the Q cast for fa4
+    # prefill) and the FA4 kernel requires Q and K to share a dtype
+    # (kernels/ops/attention/flash_attn/cute/interface.py _flash_attn_fwd asserts
+    # it), so serving cannot run an FP8-KV prefill on fa4 (MiMo-V2 on SM100/103);
+    # every such case fails (B200 attention smoke: 119 of 119).
+    {"backend": "sglang", "op": "attention_context", "dispatch": "fa4", "kv_cache_dtype": "fp8"},
     # vLLM: the attention collector has no FP8-compute (FP8 FMHA) input, so an
     # FP8-compute row would re-time the FP8-KV case under an fp8 label.
     {"backend": "vllm", "op": "attention_context", "attn_dtype": "fp8"},
+    # TRT-LLM off the SM100 family cannot run head_dim 512 attention: every
+    # non-MLA AttentionOp checks mmha_supported(head_size) when it is initialized
+    # (cpp/tensorrt_llm/common/attentionOp.cpp AttentionOp::initialize, "Head size
+    # %d is not supported by MMHA"), so serving refuses these layers too, and the
+    # uncaught C++ exception kills the collector worker at every case (h200
+    # attention_context shard: 1,122 cases, 1,122 worker restarts). SM100/103
+    # run them (b200 attention shards: no failures).
+    {"backend": "trtllm", "op": _ATTENTION_OPS, "sm": [80, 86, 89, 90, 120], "head_dim": 512},
     # TRT-LLM on SM90: FP8-KV decode with 96 query heads over 4 KV heads aborts
     # the worker (launch failure, then SIGABRT) at every head_dim, batch and KV
     # length (h200 attention_generation shard: 512 cases, none passing).
@@ -325,9 +445,51 @@ SKIPS: list[dict] = [
     {"backend": "trtllm", "model": "MiMoV2FlashForCausalLM"},
     # TRT-LLM cannot serve Muse Glimmer: it registers no model class for it.
     {"backend": "trtllm", "model": "MuseGlimmerForConditionalGeneration"},
-    # TRT-LLM cannot serve GLM-5.3-Flash: it registers no model class for it,
-    # and its mHC collector drives only DeepSeek-V4's module API.
-    {"backend": "trtllm", "model": "Glm5NextForConditionalGeneration"},
+    # TRT-LLM cannot serve GLM-5.3-Flash on the release kda is pinned to: it
+    # registers no model class for it. The release gemm and moe are pinned to
+    # registers it (_torch/models/modeling_glm5_next.py:400,
+    # modeling_glm5_next_vision.py:995) and the MoE collector builds its layer
+    # (Glm5NextMoE), so neither is listed; drop kda when its pin moves to a
+    # release with the class.
+    {"backend": "trtllm", "op": "kda", "model": "Glm5NextForConditionalGeneration"},
+    # TRT-LLM's mHC collector drives only DeepSeek-V4's sites and its rows carry
+    # no architecture: GLM-5.3-Flash pre/post cases would be timed as DeepSeek-V4
+    # rows, and fused_post_pre / expand / contract fail as a block. Serving runs
+    # them through the same mHC module (modeling_glm5_next.py
+    # Glm5NextModel._forward_single_phase_fused_hc, glm5_next_expand_streams,
+    # glm5_next_hyper_head).
+    {"backend": "trtllm", "op": "mhc_module", "model": "Glm5NextForConditionalGeneration"},
+    # TRT-LLM registers no Step3p7FlashForCausalLM (the Step3p7 text model
+    # registers as "Step3p5ForCausalLM", _torch/models/modeling_step3p7.py:1557),
+    # so serving cannot load it; the MoE collector refuses the architecture.
+    {"backend": "trtllm", "op": "moe", "model": "Step3p7FlashForCausalLM"},
+    # TRT-LLM loads every MXFP4 checkpoint as W4A8_MXFP4_MXFP8 on SM100 and newer
+    # unless the MoE backend is TRITON (ModelConfig.get_mxfp4_quant_algo,
+    # _torch/model_config.py:730-741); AUTO resolves GPT-OSS and Kimi-K3 to TRTLLM
+    # there (Kimi-K3's TRTLLM-Gen SiTu also takes only NVFP4 or W4A8_MXFP4_MXFP8,
+    # KimiK3MoERuntime._check_trtllm_situ_quant, modeling_kimi_linear.py). The B200
+    # serving probe of gpt-oss-120b ran bmm_*_MxE2m1MxE4m3 GEMMs (2026-11-08). A W4A16
+    # row would time a mode serving does not run.
+    {"backend": "trtllm", "op": "moe", "dtype": "w4a16_mxfp4", "sm": [100, 103]},
+    # TRT-LLM serves fp8_block MoE on SM120 through run_triton_fp8_block_scale_moe,
+    # whose moe_align_block_size launches _moe_prefix_kernel with NUM_EXPERTS = the
+    # rank's expert count as a tl.arange length, which Triton requires to be a power
+    # of two (_torch/moe/fused_moe/fused_moe_triton_fp8_block_scale.py:37-60, 95-160).
+    # These models' local expert counts are not a power of two at any EP (288, 160 and
+    # 384 experts), so every case fails at compile ("arange's range must be a power of
+    # 2", GLM-5.3-Flash on RTX PRO, smoke 2026-11-08) and serving cannot run them.
+    {
+        "backend": "trtllm",
+        "op": "moe",
+        "sm": [120],
+        "moe_type": "fp8_block",
+        "model_name": [
+            "zai-org/GLM-5.3-Flash",
+            "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+            "moonshotai/Kimi-K2-Instruct",
+            "sgl-project/DeepSeek-V4-Pro-FP8",
+        ],
+    },
 ]
 
 _RUN_KEYS = frozenset(("backend", "op", "sm"))

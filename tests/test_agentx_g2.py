@@ -342,6 +342,7 @@ def test_agentic_g3_rejection_matches_without_requiring_g2(backend, with_g2) -> 
         _runtime.run_replay_json(json.dumps(payload))
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_agentic_canonical_mtp_executes_with_local_g2() -> None:
     config = _config("agentx-g2-local.yaml")
     engine = config["engine"]

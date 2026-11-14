@@ -133,11 +133,22 @@ The base grid in `base_ops/attention_*.yaml` is generic full attention at
 head_dim 128; every other head_dim and window comes from a model profile, and
 full runs deduplicate the base and model shapes. A profile also carries the
 model's attention properties: `v_head_dim`, `has_attention_sink`, and SGLang's
-`sglang_runtime_window_size`, `sglang_attention_chunk_size`, `sglang_scaling`
-and `sglang_backends` (the backend serving runs on each SM). Each backend's
-rows take what its run function supports. Layers with different properties
-(a sliding-window layer with its own runtime window) get their own row. A
-targeted run with an explicit profile uses only that model profile.
+`sglang_runtime_window_size`, `sglang_attention_chunk_size` and
+`sglang_scaling`. Each backend's rows take what its run function supports.
+Layers with different properties (a sliding-window layer with its own runtime
+window) get their own row. A targeted run with an explicit profile uses only
+that model profile.
+
+A profile declares no attention backend. SGLang's backend per architecture and
+SM is `SGLANG_ATTENTION_BACKENDS` in `collector/case_generator.py`, each entry
+citing the SGLang override that makes the choice; the plan reads it for the
+dispatch and the SGLang worker checks it against what serving resolves on the
+device, through the architecture's own model when SGLang registers an override
+for it and through a model without one otherwise. vLLM rows of a model-planned
+shape name the `[architecture, model]` of each profile that plans it; the vLLM
+worker builds a model's own config, and selects under it, only for an
+architecture vLLM has a config hook for, and runs every other row on the
+generic config.
 
 ## Base Op Files
 

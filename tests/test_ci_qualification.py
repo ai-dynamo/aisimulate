@@ -8,11 +8,18 @@ import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
-from scripts.prediction_regression.check_prediction_numerics import check_results, resolve_baseline, validate_cases
+from scripts.prediction_regression.check_prediction_numerics import (
+    UNLISTED_VERSIONS_ENV,
+    check_results,
+    collect,
+    resolve_baseline,
+    validate_cases,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_SHA = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())["baseline_source_sha"]
@@ -44,6 +51,39 @@ def test_missing_duplicate_and_skipped_sentinels_fail(case):
     assert check_results([case], [])
     assert check_results([case], [row, row])
     assert check_results([case], [{**row, "status": "SKIP"}])
+
+
+@pytest.mark.parametrize("ambient", [None, "0"])
+def test_sentinel_queries_read_frozen_collections_without_leaking_the_opt_in(monkeypatch, case, ambient):
+    # The manifest pins collections outside the queryable slots: compilation
+    # and the query both run under the raw-coordinate opt-in, and the caller's
+    # setting is back afterwards.
+    seen = []
+
+    class Engine:
+        @classmethod
+        def compile(cls, **arguments):
+            seen.append((arguments, os.environ.get(UNLISTED_VERSIONS_ENV)))
+            return cls()
+
+        def predict_prefill_latency(self, **arguments):
+            seen.append((arguments, os.environ.get(UNLISTED_VERSIONS_ENV)))
+            return 10.0
+
+    sdk = types.ModuleType("aisim_core.sdk")
+    sdk.EngineHandle = Engine
+    monkeypatch.setitem(sys.modules, "aisim_core", types.ModuleType("aisim_core"))
+    monkeypatch.setitem(sys.modules, "aisim_core.sdk", sdk)
+    if ambient is None:
+        monkeypatch.delenv(UNLISTED_VERSIONS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(UNLISTED_VERSIONS_ENV, ambient)
+    compile_arguments = {"backend": "vllm", "backend_version": "0.24.0"}
+    query = {**case, "compile": compile_arguments, "arguments": {"bs": 1, "isl": 1024, "prefix": 0}}
+
+    assert collect([query]) == [{"id": case["id"], "status": "PASS", "latency_ms": 10.0}]
+    assert seen == [(compile_arguments, "1"), (query["arguments"], "1")]
+    assert os.environ.get(UNLISTED_VERSIONS_ENV) == ambient
 
 
 @pytest.mark.parametrize(

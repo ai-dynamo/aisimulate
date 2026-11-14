@@ -101,7 +101,13 @@ pub type SparseGrid = BTreeMap<u32, BTreeMap<(u32, u32), f64>>;
 #[derive(Debug, Default, PartialEq)]
 pub struct DsaSparseTables {
     pub mqa: SparseGrid,
+    /// Top-k kernel latency on the representative score distribution
+    /// (`score_mode` other than `flat`). Required by the CP composition.
     pub topk_last: SparseGrid,
+    /// Top-k kernel latency on degenerate (all-tie) scores (`score_mode ==
+    /// "flat"`). Empty for a release whose top-k table carries no `flat`
+    /// rows; the CP composition then takes its per-card top-k term from
+    /// `topk_last` (see `load_sparse_parquet` for the multi-source rule).
     pub topk_flat: SparseGrid,
     /// Optional (not used by the CP delta; DSV3.2 only collects mqa + topk).
     pub dsa_attn: SparseGrid,
@@ -351,21 +357,15 @@ impl DsaTable {
             |_| SparseKind::Mqa,
             &mut tables,
         )?;
-        // topk: split by `score_mode` — "flat" -> topk_flat, else topk_last
-        // (Python: `"topk_flat" if str(r.get("score_mode","")) == "flat" else "topk_last"`).
+        // topk: split by `score_mode` — "flat" -> topk_flat, else topk_last.
+        // A table without `flat` rows is valid and leaves `topk_flat` empty.
         load_sparse_parquet(
             &self.source_resolver.sources_for(
                 &format!("{file_prefix}_topk_module_perf.parquet"),
                 &self.data_root,
             )?,
             num_heads,
-            |score_mode| {
-                if score_mode == Some("flat") {
-                    SparseKind::TopkFlat
-                } else {
-                    SparseKind::TopkLast
-                }
-            },
+            topk_kind,
             &mut tables,
         )?;
         // dsa_attn: optional, not used by the CP delta.
@@ -1313,6 +1313,17 @@ enum SparseKind {
     DsaAttn,
 }
 
+/// Destination grid for one top-k file row: `score_mode == "flat"` goes to
+/// `topk_flat`; every other value, and a file without the column, goes to
+/// `topk_last`.
+fn topk_kind(score_mode: Option<&str>) -> SparseKind {
+    if score_mode == Some("flat") {
+        SparseKind::TopkFlat
+    } else {
+        SparseKind::TopkLast
+    }
+}
+
 /// Load one CP sparse sub-kernel parquet into `tables`. Mirrors Python
 /// `_load_glm5_sparse`'s per-file body:
 /// - missing file => no-op (grid stays empty; fail-loud happens at the
@@ -1323,13 +1334,22 @@ enum SparseKind {
 ///   coordinates (pandas `iterrows` overwrite); across shared-layer sources
 ///   the earlier (higher-priority) source wins, like every other multi-source
 ///   loader here (Python reads primary-only, which the default single-source
-///   resolution reproduces exactly).
+///   resolution reproduces exactly);
+/// - `flat` top-k rows are kept or dropped for the table as a whole. The
+///   highest-priority source that carries top-k rows for `num_heads`
+///   decides: if it has `flat` rows, every source's `flat` rows merge as
+///   before; if it has none, `flat` rows from lower-priority sources are
+///   dropped, so an earlier release's `flat` rows cannot turn a release
+///   collected without them back into a `flat` table. `top_last` rows still
+///   fill from every source.
 fn load_sparse_parquet(
     sources: &[PerfSource],
     num_heads: u32,
     kind_of: impl Fn(Option<&str>) -> SparseKind,
     tables: &mut DsaSparseTables,
 ) -> Result<(), AicError> {
+    // `None` until a source with top-k rows is seen.
+    let mut keep_flat: Option<bool> = None;
     for source in sources {
         let path = source.path();
         if !path.exists() {
@@ -1366,8 +1386,16 @@ fn load_sparse_parquet(
                 row.f64(latency_col)?,
             );
         }
+        let has_kind = |kind: u8| source_values.keys().any(|key| key.0 == kind);
+        let has_flat = has_kind(SparseKind::TopkFlat as u8);
+        if keep_flat.is_none() && (has_flat || has_kind(SparseKind::TopkLast as u8)) {
+            keep_flat = Some(has_flat);
+        }
         // Phase 2: merge with first-source-wins (earlier source outranks).
         for ((kind, bs, isl, step), latency) in source_values {
+            if kind == SparseKind::TopkFlat as u8 && keep_flat == Some(false) {
+                continue;
+            }
             let grid = match kind {
                 k if k == SparseKind::Mqa as u8 => &mut tables.mqa,
                 k if k == SparseKind::TopkLast as u8 => &mut tables.topk_last,
@@ -1996,6 +2024,122 @@ mod tests {
         );
         assert_eq!(sparse.topk_flat, grid(&[(1, 2048, 0, 100.0)]));
         assert!(sparse.dsa_attn.is_empty());
+    }
+
+    /// A top-k table with only `top_last` rows loads: `topk_flat` stays
+    /// empty (the CP composition then uses `topk_last` per card) and the
+    /// `top_last` rows are served unchanged.
+    #[test]
+    fn cp_sparse_loader_accepts_topk_table_without_flat_rows() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        write_sparse_parquet(
+            &tmp.path().join("glm5_mqa_logits_module_perf.parquet"),
+            false,
+            &[(64, 1, 2048, 0, 25.0, ""), (64, 1, 16384, 0, 1600.0, "")],
+        );
+        write_sparse_parquet(
+            &tmp.path().join("glm5_topk_module_perf.parquet"),
+            true,
+            &[
+                (64, 1, 16384, 0, 800.0, "top_last"),
+                (64, 1, 2048, 0, 190.0, "top_last"),
+            ],
+        );
+        let table = DsaTable::new(tmp.path().to_path_buf());
+        let sparse = table
+            .load_cp_sparse("GlmMoeDsaForCausalLM", 64)
+            .expect("a top-k table without flat rows must load");
+        assert_eq!(
+            sparse.mqa,
+            grid(&[(1, 2048, 0, 25.0), (1, 16384, 0, 1600.0)])
+        );
+        assert_eq!(
+            sparse.topk_last,
+            grid(&[(1, 16384, 0, 800.0), (1, 2048, 0, 190.0)])
+        );
+        assert!(sparse.topk_flat.is_empty());
+    }
+
+    /// Across sources, the highest-priority source that carries top-k rows
+    /// for the queried head count decides whether `flat` rows are kept.
+    #[test]
+    fn cp_sparse_flat_rows_follow_highest_priority_topk_source() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let write = |name: &str, rows: &[(i64, i64, i64, i64, f64, &str)]| {
+            let path = tmp.path().join(name);
+            write_sparse_parquet(&path, true, rows);
+            PerfSource(path, None)
+        };
+        // A release collected without flat rows.
+        let no_flat = write(
+            "no_flat.parquet",
+            &[
+                (64, 1, 16384, 0, 800.0, "top_last"),
+                (64, 1, 2048, 0, 190.0, "top_last"),
+            ],
+        );
+        // An earlier release with both score modes.
+        let both = write(
+            "both.parquet",
+            &[
+                (64, 1, 2048, 0, 170.0, "top_last"),
+                (64, 1, 4096, 0, 333.0, "top_last"),
+                (64, 1, 2048, 0, 100.0, "flat"),
+            ],
+        );
+        // Flat rows for only one shape.
+        let partial_flat = write(
+            "partial_flat.parquet",
+            &[
+                (64, 1, 2048, 0, 190.0, "top_last"),
+                (64, 1, 4096, 0, 120.0, "flat"),
+            ],
+        );
+        // Top-k rows for another head count only.
+        let other_heads = write("other_heads.parquet", &[(32, 1, 2048, 0, 55.0, "top_last")]);
+        let load = |sources: &[&PerfSource]| {
+            let sources: Vec<PerfSource> = sources.iter().map(|s| (*s).clone()).collect();
+            let mut tables = DsaSparseTables::default();
+            load_sparse_parquet(&sources, 64, topk_kind, &mut tables).expect("sources must load");
+            tables
+        };
+
+        // The no-flat release outranks the earlier one: its flat row is
+        // dropped, its top_last rows still fill the missing shape.
+        let tables = load(&[&no_flat, &both]);
+        assert!(tables.topk_flat.is_empty());
+        assert_eq!(
+            tables.topk_last,
+            grid(&[
+                (1, 16384, 0, 800.0),
+                (1, 2048, 0, 190.0),
+                (1, 4096, 0, 333.0)
+            ])
+        );
+
+        // The earlier release outranks: flat rows are kept as before.
+        let tables = load(&[&both, &no_flat]);
+        assert_eq!(tables.topk_flat, grid(&[(1, 2048, 0, 100.0)]));
+        assert_eq!(
+            tables.topk_last,
+            grid(&[
+                (1, 2048, 0, 170.0),
+                (1, 4096, 0, 333.0),
+                (1, 16384, 0, 800.0)
+            ])
+        );
+
+        // Flat rows for some shapes only: still a flat table, and lower
+        // sources' flat rows merge in.
+        let tables = load(&[&partial_flat, &both]);
+        assert_eq!(
+            tables.topk_flat,
+            grid(&[(1, 4096, 0, 120.0), (1, 2048, 0, 100.0)])
+        );
+
+        // A source with no top-k rows for this head count does not decide.
+        let tables = load(&[&other_heads, &both]);
+        assert_eq!(tables.topk_flat, grid(&[(1, 2048, 0, 100.0)]));
     }
 
     /// Write one synthetic DSA module parquet with the collector's column set

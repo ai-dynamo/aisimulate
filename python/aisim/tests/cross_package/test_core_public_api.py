@@ -647,6 +647,7 @@ def test_context_attention_kernel_stub_matches_native_contract(namespace: str) -
     assert ast.unparse(method.returns) == "list[tuple[str, float, float, str]]"
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.unit
 def test_static_phase_diagnostics_stub_matches_native_contract() -> None:
     root = importlib.resources.files("aisim_core")
@@ -686,6 +687,7 @@ def test_static_phase_diagnostics_stub_matches_native_contract() -> None:
     assert json.loads(result) == []
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.unit
 def test_canonical_context_attention_keeps_included_rope_and_kv_write_inside_table_timing(tmp_path) -> None:
     # One layer matches issue #551's exact H200 BF16 attention row. Other

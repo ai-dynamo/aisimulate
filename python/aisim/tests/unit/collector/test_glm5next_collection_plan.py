@@ -108,10 +108,8 @@ def test_pure_tp_moe_shards_are_planned(monkeypatch, backend, model_path):
 
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
     cases = [c for c in plan("moe", backend, 100).cases if c.model_name == model_path]
-    if backend == "trtllm":
-        # collector/skips.py: TRT-LLM cannot serve GLM-5.3-Flash.
-        assert cases == []
-        return
+    # TRT-LLM's MoE collector builds the GLM-5.3-Flash layer (Glm5NextMoE), so
+    # collector/skips.py no longer leaves its moe cases out.
     assert {1, 2, 4, 8} <= {c.tp for c in cases if c.ep == 1}
 
 

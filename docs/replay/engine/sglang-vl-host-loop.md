@@ -30,7 +30,7 @@ engine:
   model: Qwen/Qwen3-VL-8B-Instruct
   hardware: h200_sxm
   backend: sglang
-  backend_version: 0.5.14
+  backend_version: current
   workers:
     aggregated:
       parallelism: {replicas: 1, tensor: 1}

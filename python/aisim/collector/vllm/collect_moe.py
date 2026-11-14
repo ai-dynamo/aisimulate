@@ -4,168 +4,70 @@
 """vLLM production-path MoE collector.
 
 Shared MoE cases come from YAML. Every quantization mode is built through
-``FusedMoE`` so vLLM owns routing, TP/EP sharding, weight post-processing, and
-backend selection exactly as it does for model execution.
-
-Runtime: the stock vLLM release the manifest pins for the moe family (a
-temporary preview build must not own a family default). K3 SITU cases
-collect on stock via the owner-approved
-situ-as-silu Marlin approximation: serving truth for the
-ct-mxfp4+situ checkpoint is MarlinExperts W4A16 on every SM (the preview
-build's CUTLASS activation whitelist rejects SITU), so the collector
-forces the same Marlin selection on stock, runs the elementwise epilogue
-as silu (<~3% of the op), and marks the rows' kernel_source with
-`_situ_as_silu`. On the preview build itself the betas pass through
-natively. Re-verify at every version bump: when upstream wires SITU into
-a quantized-activation kernel (the preview already carries an unwired
-trtllm-gen SITU mapping), the serving kernel class changes and this
-approximation must be retired.
+``FusedMoEFactory`` so vLLM owns routing, TP/EP sharding, weight
+post-processing, and backend selection exactly as it does for model execution.
+The router gate GEMM, shared experts and latent projections are separate ops
+and are not part of these rows.
 """
 
-# Verified against the vLLM v0.24.0 and v0.27.1 tags (source clones).
-# Compatible unchanged for the bf16/fp8_block/nvfp4 target lanes -- and their
-# shared construction path, which every lane (including fp8/w4a16_mxfp4/
-# w4a8_mxfp4_mxfp8/int4_wo) goes through: FusedMoE's full constructor kwarg
-# list (every kwarg this collector passes still exists with the same
-# meaning; 0.27.1 only adds new optional/defaulted params); FusedMoE's
-# post-construction shape (.routed_experts, .moe_config.{tp_size,ep_size},
-# .router.routing_method_type, .quant_method -- traced through
-# layer.py/moe_runner.py/fused_moe_router.py at both versions); the
-# backend-selection attribute probe below (unquantized_backend/fp8_backend/
-# nvfp4_backend/mxfp4_backend/wna16_backend) -- still plain instance
-# attributes directly on the constructed quant_method object at 0.27.1, NOT
-# refactored into a singleton/registry the way sglang's MOE_RUNNER_BACKEND
-# moved to RuntimeContext/Flags between 0.5.14 and 0.5.17; .moe_kernel /
-# FallbackExperts._select_experts_impl (FallbackExperts' file is
-# byte-identical between the two tags); VllmConfig/set_current_vllm_config
-# (vllm.config was already a package at 0.24.0, with these two names
-# re-exported at both versions) and the bare SimpleNamespace shape for
-# vllm_config.model_config / .scheduler_config.max_num_batched_tokens /
-# .parallel_config.enable_expert_parallel; Fp8Config/CompressedTensorsConfig
-# constructors and CompressedTensorsConfig.from_config's nvfp4-pack-quantized
-# parsing path (from_config's body was read in full at both versions and is
-# textually identical -- the only diff in the whole file is new INT8/INT4
-# "Humming" weight-only schemes and an XPU branch, neither touching the
-# nvfp4 path). ModelOptFp8Config/Mxfp4Config/DeepseekV4FP8Config
-# constructors and vllm.models.deepseek_v4.quant_config's module path
-# (fp8/w4a16_mxfp4/w4a8_mxfp4_mxfp8 lanes) and Llama4MoE.custom_routing_
-# function / gemma4_fused_routing_kernel_triton (custom-routing lanes) and
-# CutlassExpertsMxfp4._supports_current_device (K3 situ-as-silu monkeypatch)
-# were checked at existence/shape depth only (lighter than the target-lane
-# trace above, per the plan's guard-or-verify allowance for non-target
-# lanes) -- no relocation or incompatibility found, so no fail-closed guard
-# is added for them.
-#
-# ONE incompatible surface found and fixed below:
-# vllm.model_executor.layers.fused_moe.layer.FusedMoE -- already a bare
-# module-level FACTORY FUNCTION (not a class) at 0.24.0, explicitly flagged
-# `# TODO: rename this` immediately above its def (layer.py:102-103)
-# -- 0.27.1 completed that rename to FusedMoEFactory (layer.py:99,
-# TODO comment removed; fused_moe/__init__.py exports FusedMoEFactory, not
-# FusedMoE, at 0.27.1 -- no back-compat alias exists at either the module or
-# package level). Cosmetic rename only: the returned object (a MoERunner)
-# and every kwarg this collector passes are unaffected -- fixed below with a
-# version-conditional import mirroring collect_gemm.py's (sglang round)
-# established try/except-import pattern.
-# B200 0.25.0 runtime qualification against installed dd10e03f9 (job
-# 1968047). Existing framework construction/dispatch is unchanged. Invalid
-# model/quant shapes continue to raise and remain recorded failures; this is
-# API compatibility, not a claim that every Cartesian shape is supported.
-# 0.30.0 source audit:
-# the collector default (framework_manifest.yaml; the 2026-10 campaign
-# tables) and the baseline of the 0.31.0 audit below, which admits the
-# GLM-5.3-Flash model-pinned run. 0.28.0/0.29.0 stay admitted from the
-# 0.27.1 -> 0.30.0 upgrade path.
-# FusedMoEFactory (layer.py:88-131, :99-140): every kwarg
-# passed here is unchanged; 0.30.0 only adds defaulted params. swiglu_limit
-# exists at both (:108 / :119), so other models keep passing None.
-# Runner shape unchanged: routed_experts/router/moe_config (moe_runner.py:
-# 265-272), quant_method (routed_experts.py:123), moe_kernel.fused_experts
-# (modular_kernel.py:1666), fp8_backend (fp8.py:551), nvfp4_backend
-# (modelopt.py:843, compressed_tensors_moe_w4a4_nvfp4.py:59),
-# init_workspace_manager (v1/worker/workspace.py:248), forward_context.py:
-# 186/269, fallback.py:127 (file unchanged).
-# GLM-5.3-Flash (glm5_next_text) serving path, models/glm5next/nvidia/
-# model.py:151-248: grouped topk with n_group=topk_group=1, sigmoid, fp32
-# e_score_correction_bias (:187-190), fp32 router logits
-# (deepseek_v2.py:135-145), swiglu_limit (:208,:247),
-# apply_routed_scale_to_output=False (default; not passed at :345-350).
-# routing_method=DeepSeekV3 (fused_moe/config.py:153); the kernel folds the
-# 2.5 routed scale into the top-k weights (layer.py:301,394,423).
-# SM103 fp8_block: Fp8MoEMethod (fp8.py:217,497-556) -> FLASHINFER_TRTLLM /
-# TrtLlmFp8ExpertsMonolithic (oracle/fp8.py:81-96,140-146); 0.30.0 adds a
-# swiglu gate that admits block-fp8+SiLU (trtllm_fp8_moe.py:84-106); the
-# clamp becomes gemm1_clamp_limit (fp8.py:811, oracle/fp8.py:640-719).
-# SM103 nvfp4: the checkpoint's quant_method "modelopt" resolves to
-# modelopt_fp4 (config/model.py:1271-1310, modelopt.py:757-764) ->
-# ModelOptNvFp4FusedMoE (modelopt.py:820-851); swiglu_limit filters the
-# backend list (oracle/nvfp4.py:207-221) -> FLASHINFER_TRTLLM /
-# TrtLlmNvFp4ExpertsMonolithic (trtllm_nvfp4_moe.py:486-508, clamp
-# :90-105,:175-181). Serving logs of both GLM checkpoints on this runtime
-# report "Using FLASHINFER_TRTLLM" for Fp8 and NvFp4 MoE.
-# Known non-parity: the gate GEMM and shared expert are separate ops.
-# (FlashInfer lanes are timed on the autotuned tactic like serving; see
-# helper.flashinfer_autotuned.)
-# 0.31.0 audit (source-only: tag v0.31.0 == db9527a4 vs v0.30.0
-# ced6857a; no releases in between). The moe family runs on 0.31.0
-# (framework_manifest.yaml family pin), so this file targets
-# exactly 0.31.0. One release per file; earlier code is `git log -- <this file>` away.
-# GLM-5.3-Flash now runs STOCK 0.31.0
-# (no overlay). Construction surface unchanged: FusedMoEFactory
-# (layer.py:88-141) keeps every kwarg passed here (swiglu_limit :108,
-# activation_situ_beta :111, router_logits_dtype :125,
-# apply_routed_scale_to_output :131) and only adds defaulted skip_padding
-# (:140; DeepEP-v2 padding rows only, not passed by GLM). Runner/attribute
-# probes: moe_runner.py:265-272, routed_experts.py:145 (quant_method),
-# modular_kernel.py:1657 (fused_experts), fp8.py:518 (fp8_backend),
-# modelopt.py:843 and compressed_tensors_moe_w4a4_nvfp4.py:59
-# (nvfp4_backend), v1/worker/workspace.py:307 (init_workspace_manager, new
-# params defaulted), forward_context.py:195/278 (moe_layer_index /
-# set_forward_context, new params defaulted), fallback.py:126 (docstring-only
-# diff). Fp8Config's default is_checkpoint_fp8_serialized flipped to True and
-# online fp8 now raises (fp8.py:96-112); every lane here passes True.
-# GLM-5.3-Flash (glm5_next_text) serving path moved to
-# models/glm5next/common/model.py; Glm5NextMoE (:151-248) is byte-identical
-# to 0.30.0 nvidia/model.py:151-248: use_grouped_topk=True with
-# n_group=topk_group=1, sigmoid, fp32 e_score_correction_bias (:187-190),
-# fp32 router logits (180 -> deepseek_v2.py:135-145, unchanged),
-# swiglu_limit (:208,:247), renormalize=config.moe_renormalize (norm_topk_prob,
-# transformers_utils/configs/glm5_next.py:91, rename-only diff), and
-# apply_routed_scale_to_output left False (not passed at :346-350).
-# routing_method=DeepSeekV3 (fused_moe/config.py:153-154; 0.31.0 drops the
-# routed_scaling_factor argument, which only affected the ungrouped
-# MiniMax2 branch); the 2.5 routed scale is folded into the top-k weights
-# (layer.py:308,403,432).
-# SM103 fp8_block: Fp8Config -> Fp8MoEMethod (fp8.py:205,464-523). Block
-# shape now goes through resolve_fp8_moe_weight_block_shape
-# (oracle/fp8.py:348-388): with moe_backend "auto" (serving and this
-# collector) it reduces to the 0.30.0 refine path; the new pad-to-block path
-# needs an explicit moe_backend. Priority list (oracle/fp8.py:84-100) puts
-# FLASHINFER_TRTLLM first on CUDA SM10x (AITER is ROCm-only) ->
-# TrtLlmFp8ExpertsMonolithic (oracle/fp8.py:143-152); the swiglu gate
-# admitting block-fp8+SiLU and the 2048-expert cap are unchanged
-# (trtllm_fp8_moe.py:86-112); routing list incl. DeepSeekV3 at
-# trtllm_fp8_moe.py:399-420; clamp -> gemm1_clamp_limit (fp8.py:777,
-# oracle/fp8.py:738-817). The monolithic kernel invocation is unchanged;
-# only the modular class gained deferred finalize (unused: only
-# deepseek_v41/kimi_k3 call defer_moe_finalize).
-# SM103 nvfp4: quant_method "modelopt" resolves to modelopt_fp4
-# (config/model.py:1336-1418 == 0.30.0 :1258-1340; modelopt.py:756-763) ->
-# ModelOptNvFp4FusedMoE (modelopt.py:819-851, activation key still
-# kNvfp4Dynamic); swiglu_limit filters the backend list
-# (oracle/nvfp4.py:205-219) -> FLASHINFER_TRTLLM /
-# TrtLlmNvFp4ExpertsMonolithic (routing list trtllm_nvfp4_moe.py:498-520).
-# Clamp: trtllm_nvfp4_moe.py:89-104,:177-184 -- 0.31.0 folds the per-expert
-# clamp/beta from an unfolded copy so a weight reload does not refold; the
-# first-load value is identical. Expected labels at 0.31.0 SM103 (TP shard
-# 128-aligned): vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic and
-# vllm_modeloptnvfp4fusedmoe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic;
-# the row's kernel_source records whatever actually ran. FlashInfer moved
-# 0.6.18.post1 -> 0.7.0.post1 underneath an unchanged vLLM call site.
-# K3 SiTU: FusedMoEFactory exposes activation_situ_beta on stock 0.30.0 and
-# 0.31.0, so the probe below passes the betas natively there; the
-# situ-as-silu approximation applies only to older stock builds.
-__compat__ = "vllm==0.31.0"
+# Audited against vLLM v0.32.0 (from v0.31.0); line numbers below are at that
+# tag. Earlier audits are git history.
+# Construction: FusedMoEFactory (fused_moe/layer.py:88-141) keeps every kwarg
+#   passed here; v0.32.0 only adds the defaulted shared_expert_prefix. New in
+#   v0.32.0, RoutedExperts rejects a non-gated activation whose ckpt_names still
+#   name an up projection (routed_experts.py:118-124), so Nemotron-H's relu2
+#   layer passes ckpt_names=("up_proj", "down_proj", None) as serving does
+#   (model_executor/models/nemotron_h.py:238). Probed attributes:
+#   routed_experts/router/moe_config (runner/moe_runner.py:265-272),
+#   quant_method (routed_experts.py:159), moe_kernel.fused_experts
+#   (modular_kernel.py:1664), FallbackExperts._select_experts_impl
+#   (experts/fallback.py:126), init_workspace_manager (v1/worker/workspace.py:
+#   307, new param defaulted), moe_layer_index / set_forward_context
+#   (forward_context.py:195, :278). Backend attributes: unquantized_backend
+#   (unquantized_fused_moe_method.py:54), fp8_backend (fp8.py:518,
+#   modelopt.py:497), nvfp4_backend (modelopt.py:870,
+#   compressed_tensors_moe_w4a4_nvfp4.py:60), mxfp4_backend (mxfp4.py:158,
+#   :576), wna16_backend (compressed_tensors_moe_wna16.py:102).
+# Kernel selection is the framework's own oracle with moe_backend "auto". What
+#   v0.32.0 changes underneath an unchanged call site:
+#   - prioritize_humming (quantization/utils/humming/priority.py:11,26-45) moves
+#     Humming directly ahead of Marlin on SM90 only. int4_wo on SM90 therefore
+#     leaves MarlinExperts for a Humming experts class (oracle/int_wna16.py:
+#     126-143, :72-83). No other SM90 lane reaches an oracle's Marlin entry;
+#     Kimi-K3's compressed-tensors method binds MarlinExperts directly.
+#   - TrtLlmBf16ExpertsMonolithic adds the MiniMax2 routing method (sigmoid,
+#     bias, ungrouped; experts/trtllm_bf16_moe.py:246-259): bf16 Step-3.7-Flash
+#     can move to the monolithic kernel on SM100/SM103. MiniMax-M3 bf16 runs
+#     swigluoai, which demotes FlashInfer (oracle/unquantized.py:88-94).
+#   - gpt-oss mxfp4: OAI Triton now runs on SM12x but is ordered after Marlin
+#     there (oracle/mxfp4.py:389-422, experts/gpt_oss_triton_kernels_moe.py:
+#     41-53), so SM120 stays on Marlin; SM90 Triton, SM100/SM103 FlashInfer
+#     TRT-LLM BF16 as before.
+#   - Kimi-K3 compressed-tensors mxfp4: CompressedTensorsW4A4Mxfp4MoEMethod
+#     picks CutlassExpertsMxfp4 (W4A4) wherever the CUDA quant helper exists, SM
+#     100-119 (compressed_tensors_moe_w4a4_mxfp4.py:51-78,
+#     csrc/quantization/fp4/mxfp4_experts_quant.cu:383-389), and MarlinExperts
+#     elsewhere. Both run SiTU through apply_moe_activation
+#     (fused_moe/activation.py:123-157), and CUTLASS fp4/mxfp4 experts now
+#     accept EP through an expert-map remap (experts/cutlass_moe.py:1057-1067).
+#   - DeepGEMM fp8_block experts use the psum layout on SM90/SM100
+#     (experts/deep_gemm_moe.py:361-373) and DeepGEMM moves e1f418c2 ->
+#     1e1842a8 (cmake/external_projects/deepgemm.cmake:37), which replaces
+#     the SM120 device layer. FlashInfer 0.7.0.post1 is unchanged;
+#     nvidia-cutlass-dsl 4.7.1 -> 4.8.0 and humming-kernels 0.1.16 -> 0.1.17
+#     (requirements/cuda.txt).
+#   The fp8, fp8_block, nvfp4 and DeepSeek-V4 mxfp4 x mxfp8 priority lists are
+#   otherwise unchanged (oracle/fp8.py:77-143, oracle/nvfp4.py:191-213,
+#   oracle/mxfp4.py:425-449,742-813). kernel_source records whatever ran.
+# Timed closure: routing (router; GroupedTopk.forward_cuda is forward_native,
+#   fused_moe/router/grouped_topk_router.py:210-218), activation quant through
+#   direct _C ops (fused_moe/utils.py:323-345, quantization/utils/fp8_utils.py:
+#   703-716), permute, experts, finalize and the routed output scale: the
+#   per-forward work of MoERunner. Weight re-layout and scale swizzles run in
+#   process_weights_after_loading, outside timing. The MoE path calls no
+#   QuantFP8 custom op, so the VllmConfig quant_config / +quant_fp8 setting
+#   (config/vllm.py:1733-1748) does not change what these rows time.
+__compat__ = "vllm==0.32.0"
 
 import contextlib
 import json
@@ -176,9 +78,13 @@ from types import SimpleNamespace
 import torch
 from collector.case_generator import get_moe_quantization_module_config
 from collector.helper import (
+    FIRST_POINT_WARMUP_SECONDS,
+    MOE_WEIGHT_MATRIX_SUFFIXES,
     balanced_logits,
     benchmark_with_power,
+    fill_dense_weight_,
     flashinfer_autotuned,
+    flashinfer_tuning_bucket,
     get_sm_version,
     log_perf,
     power_law_logits_v3,
@@ -233,7 +139,7 @@ def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
 
 
 def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
-    """Resolve the FusedMoE arguments used by vLLM 0.24 model code."""
+    """Resolve the FusedMoEFactory arguments the model's vLLM code passes."""
     model_config = _load_model_moe_config(model_name)
     model_type = str(model_config.get("model_type", ""))
     activation = str(
@@ -248,14 +154,14 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         "kimi_k2",
         # Kimi-K3 (kimi_linear): config declares use_grouped_topk=true with
         # one expert group (num_expert_group=1, topk_group=1, noaux_tc), and
-        # the kimi-k3 branch model honors the flag directly
-        # (models/kimi_k3/nvidia/model.py:411-413 @ 0.1.dev19262).
+        # KimiMoE passes the flag through (models/kimi_k3/nvidia/model.py:
+        # 727-729).
         "kimi_linear",
         "mimo_v2_flash",
         "glm_moe_dsa",
         # GLM-5.3-Flash: Glm5NextMoE hard-codes use_grouped_topk=True with
         # num_expert_group=config.n_group (1) and topk_group
-        # (models/glm5next/common/model.py:225-248).
+        # (models/glm5next/common/model.py:297-299).
         "glm5_next_text",
         "nemotron_h",
     }
@@ -264,18 +170,18 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         or model_config.get("topk_group") is not None
         or model_config.get("topk_method") == "noaux_tc"
     )
-    # DeepSeek V4 declares topk_method=noaux_tc but routes UNGROUPED in vLLM
-    # 0.24: its FusedMoE gets no expert grouping — only the noaux_tc
+    # DeepSeek V4 declares topk_method=noaux_tc but routes UNGROUPED: its
+    # FusedMoEFactory call passes no expert grouping, only the noaux_tc
     # e_score_correction_bias with sqrtsoftplus scoring and float32 router
-    # logits (models/deepseek_v4/nvidia/model.py:652-669, 557-561).
-    # The bias/scoring fields below already carry that. Both V4 model_types
-    # share that model code: "deepseek_ref" (the sgl-project FP8 requants)
-    # and "deepseek_v4" (the native expert_dtype=fp4 checkpoints).
+    # logits (models/deepseek_v4/nvidia/model.py:873-896). The bias/scoring
+    # fields below already carry that. Both V4 model_types share that model
+    # code: "deepseek_ref" (the sgl-project FP8 requants) and "deepseek_v4"
+    # (the native expert_dtype=fp4 checkpoints).
     ungrouped_noaux_tc = model_type in ("deepseek_ref", "deepseek_v4")
     if declares_grouped_routing and not use_grouped_topk and not ungrouped_noaux_tc:
         raise ValueError(
             f"vLLM MoE model {model_name!r} (model_type={model_type!r}) declares grouped/noaux_tc "
-            "routing fields but is not a recognized grouped-topk model type; verify how vLLM 0.24 "
+            "routing fields but is not a recognized grouped-topk model type; verify how vLLM "
             "routes this model and extend the mapping instead of silently benchmarking non-grouped routing"
         )
     # Some upstream configs spell the routing contract differently (Step3p5/3p7
@@ -299,12 +205,22 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         declared_routed_scale = model_config.get("moe_router_scaling_factor")
 
     scoring_func = str(model_config.get("scoring_func") or "softmax")
+    renormalize = bool(model_config.get("norm_topk_prob", True))
+    min_moe_intermediate_per_partition = None
     if model_type == "nemotron_h":
         scoring_func = "sigmoid"
+    elif model_type == "kimi_linear":
+        # KimiMoE routes with config.moe_router_activation_func (sigmoid for
+        # Kimi-K3; the config has no scoring_func) and renormalizes with
+        # config.moe_renormalize (models/kimi_k3/nvidia/model.py:725,731).
+        scoring_func = str(model_config["moe_router_activation_func"])
+        renormalize = bool(model_config.get("moe_renormalize", True))
+        # Pure-TP KimiMoE pads each rank's expert intermediate up to this floor
+        # (models/kimi_k3/nvidia/model.py:595-604, getattr default 256).
+        min_moe_intermediate_per_partition = int(model_config.get("min_moe_intermediate_per_partition") or 256)
 
     custom_routing = None
     apply_router_weight_on_input = False
-    renormalize = bool(model_config.get("norm_topk_prob", True))
     if model_type == "llama4_text":
         custom_routing = "llama4"
         apply_router_weight_on_input = True
@@ -322,7 +238,7 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
     if use_grouped_topk:
         # DeepSeek-family configs spell the group count `n_group`; Kimi-K3
         # (kimi_linear) spells it `num_expert_group`, which is the attribute
-        # the branch model reads (models/kimi_k3/nvidia/model.py:412).
+        # KimiMoE reads (models/kimi_k3/nvidia/model.py:728).
         raw_n_group = model_config.get("n_group", model_config.get("num_expert_group"))
         missing_fields = [
             field
@@ -349,18 +265,18 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         "renormalize": renormalize,
         "scoring_func": scoring_func,
         "activation": activation,
-        # SiTU (Kimi-K3) is parameterized: FusedMoE requires the betas when
-        # activation == "situ" (the TRTLLM experts assert beta > 0; the
-        # marlin epilogue reads both). Sourced from the packaged config.
+        # SiTU (Kimi-K3) is parameterized: FusedMoEFactory takes the betas
+        # (fused_moe/layer.py:111-112) and KimiMoE passes the config values
+        # (models/kimi_k3/nvidia/model.py:605-611,723-724).
         "activation_situ_beta": (model_config.get("activation_situ_beta") if activation == "situ" else None),
         "activation_situ_linear_beta": (
             model_config.get("activation_situ_linear_beta") if activation == "situ" else None
         ),
         "routed_scaling_factor": float(declared_routed_scale if declared_routed_scale is not None else 1.0),
         # Glm5NextMoE also passes config.swiglu_limit to FusedMoEFactory
-        # (models/glm5next/common/model.py:208,247); on SM10x it
-        # filters the NVFP4 backends (oracle/nvfp4.py:205-219) and gates the
-        # TRT-LLM FP8 experts (trtllm_fp8_moe.py:86-112).
+        # (models/glm5next/common/model.py:266,314); on SM10x it filters the
+        # NVFP4 backends (oracle/nvfp4.py:215-230) and gates the TRT-LLM FP8
+        # experts (trtllm_fp8_moe.py:86-112).
         "swiglu_limit": (
             model_config.get("swiglu_limit")
             if model_type in ("deepseek_v4", "deepseek_ref", "glm5_next_text")
@@ -375,7 +291,83 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         "custom_routing": custom_routing,
         "apply_router_weight_on_input": apply_router_weight_on_input,
         "has_bias": bool(module_config.get("has_bias", False)),
+        "min_moe_intermediate_per_partition": min_moe_intermediate_per_partition,
     }
+
+
+def _moe_intermediate_size(inter_size: int, moe_tp_size: int, moe_ep_size: int, min_per_partition: int | None) -> int:
+    """The intermediate size the model passes to FusedMoEFactory for this layout.
+
+    Kimi-K3 pads a pure-TP shard below ``min_per_partition`` to that floor
+    (models/kimi_k3/nvidia/model.py:595-604); every other model passes its
+    config value unchanged.
+    """
+    if min_per_partition is None or moe_tp_size <= 1 or moe_ep_size > 1:
+        return inter_size
+    if inter_size // moe_tp_size < min_per_partition:
+        return min_per_partition * moe_tp_size
+    return inter_size
+
+
+# FlashInfer's MoE ops map a runtime token count to a tuned bucket no larger than
+# the tune_max_num_tokens their caller hands them (helper.flashinfer_tuning_bucket),
+# so any m at or above it runs that bucket's tactic. What each experts class hands
+# FlashInfer at v0.32.0:
+# - nothing, so FlashInfer's default 8192 (flashinfer 0.7.0.post1 fused_moe/core.py:
+#   1290 cutlass_fused_moe, :4916 trtllm_bf16_routed_moe): FlashInferExperts
+#   (experts/flashinfer_cutlass_moe.py:365-389), TrtLlmBf16ExpertsModular
+#   (experts/trtllm_bf16_moe.py:209-229); TrtLlmMxint4ExpertsMonolithic passes
+#   8192 itself (quantization/utils/flashinfer_mxint4_moe.py:267);
+# - fi_moe_largest_bucket(moe_config) = max(max_num_tokens * dp_size, 8192)
+#   (fused_moe/utils.py:557-572): TrtLlmBf16ExpertsMonolithic (trtllm_bf16_moe.py:
+#   303), TrtLlmFp8ExpertsModular / Monolithic (trtllm_fp8_moe.py:332, 516, 575),
+#   TrtLlmMxfp4ExpertsMonolithic / Modular (trtllm_mxfp4_moe.py:268, 402),
+#   TrtLlmNvFp4ExpertsMonolithic (trtllm_nvfp4_moe.py:583);
+# - that bound capped at its own launch chunk: TrtLlmNvFp4ExpertsModular
+#   (trtllm_nvfp4_moe.py:385-387);
+# - no cap: FlashInferCuteDSLExperts, whose runner maps with
+#   map_to_hybrid_bucket_uncapped (flashinfer fused_moe/cute_dsl/tuner.py:545-556).
+_FLASHINFER_DEFAULT_TUNE_MAX_NUM_TOKENS = 8192
+_FI_DEFAULT_TUNE_MAX_EXPERTS = frozenset(
+    {"FlashInferExperts", "TrtLlmBf16ExpertsModular", "TrtLlmMxint4ExpertsMonolithic"}
+)
+_FI_LARGEST_BUCKET_EXPERTS = frozenset(
+    {
+        "TrtLlmBf16ExpertsMonolithic",
+        "TrtLlmFp8ExpertsModular",
+        "TrtLlmFp8ExpertsMonolithic",
+        "TrtLlmMxfp4ExpertsMonolithic",
+        "TrtLlmMxfp4ExpertsModular",
+        "TrtLlmNvFp4ExpertsMonolithic",
+    }
+)
+_FI_UNCAPPED_EXPERTS = frozenset({"FlashInferCuteDSLExperts"})
+
+
+def _flashinfer_moe_tune_max_num_tokens(leaf_experts) -> int | None:
+    """The tune_max_num_tokens ``leaf_experts`` hands its FlashInfer MoE op.
+
+    ``None`` for an experts class whose FlashInfer op maps uncapped and for
+    kernels FlashInfer's tuner does not own (Triton, Marlin, Humming, DeepGEMM,
+    vLLM CUTLASS). A FlashInfer or TRT-LLM-gen experts class not listed above
+    raises: its bound was never traced.
+    """
+    name = type(leaf_experts).__name__
+    if name in _FI_DEFAULT_TUNE_MAX_EXPERTS:
+        return _FLASHINFER_DEFAULT_TUNE_MAX_NUM_TOKENS
+    if name in _FI_LARGEST_BUCKET_EXPERTS or name == "TrtLlmNvFp4ExpertsModular":
+        from vllm.model_executor.layers.fused_moe.utils import fi_moe_largest_bucket
+
+        largest = fi_moe_largest_bucket(leaf_experts.moe_config)
+        if name == "TrtLlmNvFp4ExpertsModular":
+            return min(largest, leaf_experts._get_chunk_size())
+        return largest
+    if name.startswith(("FlashInfer", "TrtLlm")) and name not in _FI_UNCAPPED_EXPERTS:
+        raise RuntimeError(
+            f"vLLM MoE experts {name} run a FlashInfer op whose tune_max_num_tokens the collector has not "
+            "traced; add it to collector/vllm/collect_moe.py before timing it"
+        )
+    return None
 
 
 def get_moe_test_cases():
@@ -398,29 +390,21 @@ def run_moe_torch(
     perf_filename,
     device="cuda:0",
 ):
-    """Benchmark the vLLM 0.24.0 model-execution MoE path."""
+    """Benchmark the vLLM model-execution MoE path."""
+    from collector.vllm.utils import setup_distributed
     from vllm.config import VllmConfig, set_current_vllm_config
     from vllm.forward_context import get_forward_context, set_forward_context
+    from vllm.model_executor.layers.fused_moe.activation import MoEActivation
     from vllm.model_executor.layers.fused_moe.experts.fallback import FallbackExperts
-
-    # vLLM 0.27.1 renamed the module-level FusedMoE factory function to
-    # FusedMoEFactory (layer.py:99, completing the "# TODO: rename this"
-    # left above its 0.24.0 def at layer.py:102-103); no back-compat alias
-    # exists at either the module or package level. The returned object and
-    # every kwarg this collector passes are unaffected -- see the __compat__
-    # comment above. Try the new (>=0.27.1) name first since vllm's own
-    # fused_moe/__init__.py now exports FusedMoEFactory, not FusedMoE.
-    try:
-        from vllm.model_executor.layers.fused_moe.layer import FusedMoEFactory as FusedMoE
-    except ImportError:
-        from vllm.model_executor.layers.fused_moe.layer import FusedMoE
-    from collector.vllm.utils import setup_distributed
+    from vllm.model_executor.layers.fused_moe.layer import FusedMoEFactory
     from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import (
         CompressedTensorsConfig,
     )
     from vllm.model_executor.layers.quantization.fp8 import Fp8Config
     from vllm.model_executor.layers.quantization.modelopt import ModelOptFp8Config
     from vllm.model_executor.layers.quantization.mxfp4 import Mxfp4Config
+    from vllm.platforms import current_platform
+    from vllm.utils.flashinfer import has_flashinfer
     from vllm.v1.worker.workspace import init_workspace_manager
 
     if moe_tp_size > 1 and moe_ep_size > 1:
@@ -456,6 +440,8 @@ def run_moe_torch(
     if runtime_config["custom_routing"] == "llama4":
         from vllm.model_executor.models.llama4 import Llama4MoE
 
+        # Llama4MoE passes this routing with apply_router_weight_on_input and
+        # renormalize=False (model_executor/models/llama4.py:75,137-140).
         custom_routing_function = Llama4MoE.custom_routing_function
     elif runtime_config["custom_routing"] == "gemma4":
         from vllm.model_executor.models.gemma4 import gemma4_fused_routing_kernel_triton
@@ -473,13 +459,12 @@ def run_moe_torch(
         # Per-tensor "fp8" rows are anchored on ModelOpt static checkpoints
         # (e.g. Nemotron Ultra FP8). Serving loads those via
         # ModelOptFp8MoEMethod: static/static quant keys
-        # (vllm/model_executor/layers/quantization/modelopt.py:749-771)
-        # and non-gated-aware weight sizing (w13_num_shards = 2 if
-        # is_act_and_mul else 1, modelopt.py:812). Fp8Config/Fp8MoEMethod
-        # would diverge on both: activation_scheme="dynamic" resolves
-        # kFp8DynamicTensorSym and selects a different backend than serving
-        # (fp8.py:514-533), and its create_weights hardcodes gated 2x w13
-        # (fp8.py:580) which breaks non-gated models like Nemotron.
+        # (quantization/modelopt.py:477,497-501) and non-gated-aware weight
+        # sizing (w13_num_shards = 2 if is_act_and_mul else 1, modelopt.py:523).
+        # Fp8Config/Fp8MoEMethod would diverge on both: activation_scheme
+        # "dynamic" resolves kFp8DynamicTensorSym and selects a different
+        # backend than serving (fp8.py:464,518), and its create_weights sizes a
+        # gated 2x w13, which breaks non-gated models like Nemotron.
         quant_config = ModelOptFp8Config(
             quant_method="FP8",
             is_checkpoint_fp8_serialized=True,
@@ -501,30 +486,23 @@ def run_moe_torch(
             checkpoint_qc.get("format", "")
         )
         if is_ct_mxfp4:
-            # Kimi-K3-style compressed-tensors mxfp4-pack checkpoints: vLLM
-            # resolves this descriptor to CompressedTensorsW4A4Mxfp4MoEMethod
-            # (compressed_tensors_moe.py:66-71 @0.1.dev19262). Its CUTLASS
-            # W4A4 path rejects the SITU activation
-            # (CutlassExpertsMxfp4._supports_activation, cutlass_moe.py:
-            # 321-327 — SILU/GELU/GELU_TANH/SWIGLUOAI only), so the method
-            # falls back to weight-only MarlinExperts, which supports SITU
-            # (compressed_tensors_moe_w4a4_mxfp4.py:58-71) — the w4a16
-            # identity this lane persists. Constructing the checkpoint's own
-            # config (instead of the OCP Mxfp4Config) lets that selection run
-            # exactly as serving; OCP mxfp4 checkpoints (gpt-oss family) keep
-            # the Mxfp4Config path below.
+            # Kimi-K3-style compressed-tensors mxfp4-pack checkpoints (weights
+            # only, input_activations null): vLLM resolves the descriptor to
+            # CompressedTensorsW4A4Mxfp4MoEMethod (compressed_tensors_moe.py:
+            # 76-81), which runs CutlassExpertsMxfp4 on SM100-SM119 and
+            # MarlinExperts elsewhere (compressed_tensors_moe_w4a4_mxfp4.py:
+            # 51-78). Constructing the checkpoint's own config (instead of the
+            # OCP Mxfp4Config) lets that selection run exactly as serving; OCP
+            # mxfp4 checkpoints (gpt-oss family) keep the Mxfp4Config path below.
             quant_config = CompressedTensorsConfig.from_config(checkpoint_qc)
         else:
             # OCP "mxfp4" checkpoints of model_type gpt_oss are OVERRIDDEN by
             # vLLM to the gpt_oss_mxfp4 method (GptOssMxfp4Config.
-            # override_quantization_method, quantization/mxfp4.py:119-136).
-            # Its GptOssMxfp4MoEMethod selects through the gpt-oss
-            # priority list (fused_moe/oracle/mxfp4.py:584-602) — TRITON
-            # matmul_ogs on SM90, as the gpt-oss-120b serving probe shows —
-            # while the generic Mxfp4Config resolves to Mxfp4MoEMethod -> MARLIN
-            # (path_diff moe_mxfp4 vs gpt-oss-120b diverged on exactly this).
-            # Mirror the framework's own override here
-            # (GptOssMxfp4Config, quantization/mxfp4.py:110).
+            # override_quantization_method, quantization/mxfp4.py:116-150).
+            # Its GptOssMxfp4MoEMethod selects through the gpt-oss priority
+            # list (fused_moe/oracle/mxfp4.py:389-422, mxfp4.py:158), while
+            # the generic Mxfp4Config resolves to Mxfp4MoEMethod's list
+            # (oracle/mxfp4.py:425-449). Mirror the framework's own override.
             model_cfg = _load_model_moe_config(model_name)
             quant_config = Mxfp4Config()
             if (
@@ -537,8 +515,8 @@ def run_moe_torch(
     elif moe_type == "w4a8_mxfp4_mxfp8":
         # Native DeepSeek-V4 (expert_dtype=fp4) serving path: vLLM overrides
         # the checkpoint's fp8 quant_method to DeepseekV4FP8Config
-        # (models/deepseek_v4/quant_config.py:120-132), which returns
-        # Mxfp4MoEMethod for the routed experts (quant_config.py:142-152);
+        # (models/deepseek_v4/quant_config.py:140-157), which returns
+        # Mxfp4MoEMethod for the routed experts (quant_config.py:178-199);
         # backend selection then runs select_deepseek_v4_mxfp4_moe_backend
         # exactly as in serving. Constructor args mirror the checkpoints'
         # quantization_config (fp8-serialized, dynamic, 128x128 blocks).
@@ -558,7 +536,7 @@ def run_moe_torch(
         )
     elif moe_type == "nvfp4" and _uses_modelopt_nvfp4_checkpoint(model_name):
         # Serving loads this checkpoint with ModelOptNvFp4Config
-        # (ModelOptNvFp4FusedMoE, modelopt.py:819-851). It shares the
+        # (ModelOptNvFp4FusedMoE, modelopt.py:836-870). It shares the
         # CT method's backend selector and kernel builder, but constructing
         # the checkpoint's own config keeps the method identity exact.
         from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4Config
@@ -639,62 +617,23 @@ def run_moe_torch(
     # one physical rank, but requested logical sizes determine local weights
     # and the rank-0 expert map exactly as in a multi-rank model.
     logical_parallel_size = moe_ep_size if moe_ep_size > 1 else moe_tp_size
+    moe_intermediate_size = _moe_intermediate_size(
+        inter_size, moe_tp_size, moe_ep_size, runtime_config["min_moe_intermediate_per_partition"]
+    )
 
-    # SITU activation (Kimi-K3) exists only on the kimi-k3 preview build
-    # (stock v0.24.0 has no situ path — upstream v0.24.0 activation.py).
-    # Probe the constructor instead of predicting: on the preview build,
-    # pass the betas through. On stock, apply the owner-approved
-    # approximation: serving truth for (ct-mxfp4, situ) is
-    # MarlinExperts weight-only W4A16 — the preview rejects SITU in its
-    # CUTLASS activation whitelist and falls to Marlin
-    # (compressed_tensors_moe_w4a4_mxfp4.py:58-71 @0.1.dev19262). Stock's
-    # device-only gate would instead send this checkpoint to CUTLASS W4A4
-    # on Blackwell (cutlass_moe.py:693-699) — a kernel K3 serving
-    # never runs — so the CUTLASS gate is forced off to reproduce the
-    # serving selection, and the epilogue runs as silu (silu_and_mul vs
-    # situ_and_mul is an elementwise tail, <~3% of the op). The
-    # approximation is recorded in kernel_source (`_situ_as_silu` suffix)
-    # and hard-checked below: it is only valid if Marlin actually ran.
-    situ_kwargs = {}
-    situ_marlin_approx = False
-    if runtime_config["activation"] == "situ":
-        from inspect import signature as _sig
+    # A non-gated activation has no up projection to load: RoutedExperts
+    # rejects an up name next to it (routed_experts.py:118-124), and
+    # Nemotron-H passes these names (model_executor/models/nemotron_h.py:238).
+    ckpt_names = {}
+    if not MoEActivation.from_str(runtime_config["activation"]).is_gated:
+        ckpt_names = {"ckpt_names": ("up_proj", "down_proj", None)}
 
-        if "activation_situ_beta" in _sig(FusedMoE.__init__).parameters:
-            situ_kwargs = {
-                "activation_situ_beta": runtime_config["activation_situ_beta"],
-                "activation_situ_linear_beta": runtime_config["activation_situ_linear_beta"],
-            }
-        else:
-            runtime_config["activation"] = "silu"
-            situ_marlin_approx = True
-
-    @contextlib.contextmanager
-    def _serving_truth_marlin_selection():
-        """Force the Marlin selection K3 serving makes for situ checkpoints.
-
-        On Hopper this is a no-op (stock's device gate already excludes
-        CUTLASS mxfp4 below SM100)."""
-        if not situ_marlin_approx:
-            yield
-            return
-        from vllm.model_executor.layers.fused_moe.experts.cutlass_moe import (
-            CutlassExpertsMxfp4,
-        )
-
-        orig = CutlassExpertsMxfp4.__dict__["_supports_current_device"]
-        CutlassExpertsMxfp4._supports_current_device = staticmethod(lambda: False)
-        try:
-            yield
-        finally:
-            CutlassExpertsMxfp4._supports_current_device = orig
-
-    with set_current_vllm_config(vllm_config), _serving_truth_marlin_selection():
-        moe_module = FusedMoE(
+    with set_current_vllm_config(vllm_config):
+        moe_module = FusedMoEFactory(
             num_experts=num_experts,
             top_k=topk,
             hidden_size=hidden_size,
-            intermediate_size=inter_size,
+            intermediate_size=moe_intermediate_size,
             params_dtype=torch.bfloat16,
             renormalize=runtime_config["renormalize"],
             use_grouped_topk=runtime_config["use_grouped_topk"],
@@ -709,25 +648,35 @@ def run_moe_torch(
             scoring_func=runtime_config["scoring_func"],
             routed_scaling_factor=runtime_config["routed_scaling_factor"],
             swiglu_limit=runtime_config["swiglu_limit"],
+            activation_situ_beta=runtime_config["activation_situ_beta"],
+            activation_situ_linear_beta=runtime_config["activation_situ_linear_beta"],
             e_score_correction_bias=e_score_correction_bias,
             apply_router_weight_on_input=runtime_config["apply_router_weight_on_input"],
             has_bias=runtime_config["has_bias"],
             activation=runtime_config["activation"],
             router_logits_dtype=router_logits_dtype,
             apply_routed_scale_to_output=runtime_config["apply_routed_scale_to_output"],
-            **situ_kwargs,
+            **ckpt_names,
         )
+        if moe_intermediate_size != inter_size:
+            # KimiMoE records the unpadded shard after construction
+            # (models/kimi_k3/nvidia/model.py:744-757).
+            moe_module.moe_config.intermediate_size_per_partition_unpadded = inter_size // moe_tp_size
         moe_module.to(device)
         moe_module.eval()
         moe_module.requires_grad_(False)
 
         # Populate the checkpoint-native tensors created by the selected
         # quantization method, then let that method convert them to the exact
-        # runtime layout and construct the production kernel.
+        # runtime layout and construct the production kernel. Expert weight
+        # matrices get dense, checkpoint-like bits (helper.fill_dense_weight_ says
+        # why and how); the other tensors keep values every layout accepts.
         routed_experts = moe_module.routed_experts
         with torch.no_grad():
             for name, parameter in routed_experts.named_parameters(recurse=False):
-                if parameter.dtype == torch.uint8:
+                if "scale" not in name and name.endswith(MOE_WEIGHT_MATRIX_SUFFIXES):
+                    fill_dense_weight_(parameter.data)
+                elif parameter.dtype == torch.uint8:
                     if "scale" in name:
                         parameter.fill_(127)
                     else:
@@ -740,32 +689,7 @@ def run_moe_torch(
                     parameter.zero_()
 
         quant_method = routed_experts.quant_method
-        # API-compat shim for stock v0.24.0 Marlin weight prep under EP:
-        # prepare_moe_fp4_layer_for_marlin sizes its repack loop and shape
-        # assert from moe_config.num_experts (GLOBAL), while create_weights
-        # shards the expert dimension locally (marlin_utils_fp4.py:460-481
-        # e=moe_config.num_experts vs w13 created with the local
-        # count). The preview build preps EP-local weights fine (972 EP
-        # rows collected there). Present the local count during weight prep
-        # only, then restore the global count — routing needs it. Metadata
-        # presentation only; the invoked kernels are unchanged.
-        _mc = getattr(routed_experts, "moe_config", None)
-        _local_e = getattr(routed_experts, "num_experts", None)
-        _swap = situ_marlin_approx and _mc is not None and _local_e is not None and _mc.num_experts != _local_e
-        if _swap:
-            _global_e = _mc.num_experts
-            try:
-                _mc.num_experts = _local_e
-            except AttributeError:
-                object.__setattr__(_mc, "num_experts", _local_e)
-        try:
-            quant_method.process_weights_after_loading(routed_experts)
-        finally:
-            if _swap:
-                try:
-                    _mc.num_experts = _global_e
-                except AttributeError:
-                    object.__setattr__(_mc, "num_experts", _global_e)
+        quant_method.process_weights_after_loading(routed_experts)
 
         selected_backend = None
         for backend_attr in (
@@ -779,6 +703,15 @@ def run_moe_torch(
                 selected_backend = getattr(quant_method, backend_attr)
                 break
         backend_name = getattr(selected_backend, "value", str(selected_backend))
+        if getattr(quant_method, "use_cutlass_mxfp4", False):
+            # CompressedTensorsW4A4Mxfp4MoEMethod binds CutlassExpertsMxfp4
+            # directly and leaves mxfp4_backend at its MARLIN default
+            # (compressed_tensors_moe_w4a4_mxfp4.py:54,61,67-69). Label the
+            # oracle backend of that experts class (oracle/mxfp4.py:143,
+            # 235-240) so the row does not claim Marlin.
+            from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import Mxfp4MoeBackend
+
+            backend_name = Mxfp4MoeBackend.CUTLASS_MXFP4_MXFP4.value
         moe_kernel = getattr(quant_method, "moe_kernel", None)
         experts_impl = getattr(moe_kernel, "fused_experts", None)
         wrapper_name = type(experts_impl).__name__ if experts_impl is not None else "direct"
@@ -790,12 +723,30 @@ def run_moe_torch(
             f"ep={moe_module.moe_config.ep_size}",
             f"routing={moe_module.router.routing_method_type}",
             f"activation={runtime_config['activation']}",
+            f"intermediate={moe_intermediate_size}",
         )
 
         method_name = type(quant_method).__name__.removesuffix("Method")
 
+        # FlashInfer kernels run on the tactic serving's warmup tunes. vLLM
+        # autotunes on SM90 and newer when FlashInfer is installed
+        # (model_executor/warmup/kernel_warmup.py:261-268;
+        # enable_flashinfer_autotune is on from O1, config/vllm.py:265-328,
+        # default O2 :427), skipping only fp4_gemm under the cute-dsl NVFP4
+        # linear kernel (:295-311), which no MoE op uses. It profiles the hybrid
+        # bucket list up to max_num_batched_tokens with round_up=True
+        # (:334-374). After warmup no override is active, so every FlashInfer
+        # MoE op maps a runtime count up to the next bucket of its own list,
+        # clamped to the tune_max_num_tokens its experts class passes
+        # (_flashinfer_moe_tune_max_num_tokens): a token count off that list runs
+        # the tactic of the next bucket up, and one past the clamp the tactic of
+        # the clamp; tune at that bucket. Kernels the FlashInfer tuner does not
+        # own (Triton, Marlin, Humming, DeepGEMM, vLLM CUTLASS) are unaffected.
+        serving_autotunes = has_flashinfer() and current_platform.has_device_capability(90)
+        max_tuned_tokens = vllm_config.scheduler_config.max_num_batched_tokens
+
         # Performance testing for each token count.
-        for num_tokens in num_tokens_lists:
+        for point, num_tokens in enumerate(num_tokens_lists):
             print("num_tokens", num_tokens)
             print("topk", topk)
             hidden_states = torch.randn([num_tokens, hidden_size], dtype=torch.bfloat16, device=device)
@@ -813,17 +764,6 @@ def run_moe_torch(
             print(f"vLLM MoE experts: wrapper={wrapper_name} leaf={experts_name}")
             source = f"vllm_{method_name}_{backend_name}_{experts_name}".lower()
             source = source.replace(" ", "_").replace("-", "_")
-            if situ_marlin_approx:
-                # The situ->silu approximation is only valid on the Marlin
-                # path serving actually selects; anything else is wrong data.
-                if "marlin" not in experts_name.lower():
-                    raise RuntimeError(
-                        f"situ-as-silu approximation requires MarlinExperts "
-                        f"(serving truth for ct-mxfp4+situ), but the runtime "
-                        f"selected {experts_name} despite the forced CUTLASS "
-                        f"gate — refusing to record mislabeled rows."
-                    )
-                source += "_situ_as_silu"
 
             num_iter = 5 if distributed == "power_law" else 1
             logits_dtype = router_logits_dtype or torch.bfloat16
@@ -856,17 +796,29 @@ def run_moe_torch(
                     forward_context.moe_layer_index = 0
                     moe_module(hidden_states, router_logits)
 
-            # FlashInfer-backed experts (trtllm-gen nvfp4/mxfp4, cutlass, cutedsl) are
-            # timed on the autotuned tactic like serving; see helper.flashinfer_autotuned.
+            tune_tokens = (
+                flashinfer_tuning_bucket(
+                    num_tokens,
+                    max_tuned_tokens,
+                    tune_max_num_tokens=_flashinfer_moe_tune_max_num_tokens(leaf_experts),
+                )
+                if serving_autotunes
+                else None
+            )
+            if tune_tokens is not None:
+                autotuned = flashinfer_autotuned(tune_tokens, run_single_iteration, label=source)
+            else:
+                autotuned = contextlib.nullcontext()
             with (
                 set_forward_context({}, vllm_config),
-                flashinfer_autotuned(num_tokens, run_single_iteration, label=source),
+                autotuned,
                 benchmark_with_power(
                     device=device,
                     kernel_func=run_single_iteration,
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
+                    min_warmup_seconds=FIRST_POINT_WARMUP_SECONDS if point == 0 else 0.0,
                 ) as results,
             ):
                 pass

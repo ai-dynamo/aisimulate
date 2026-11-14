@@ -5,7 +5,7 @@
 
 import importlib
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 
 
@@ -119,6 +119,31 @@ def required_swa_kv_alloc_tokens(
     return batch_size * (rounded_tail + rounded_total - rounded_past)
 
 
+# The floor of the request slots SGLang derives when max_running_requests is unset:
+# max(min(int(token_capacity / context_len * 512), 4096), 2048)
+# (KVCacheConfigurator.resolve_max_num_reqs, srt/mem_cache/kv_cache_configurator.py:3119-3132 at v0.5.23).
+SGLANG_MIN_REQUEST_SLOTS = 2048
+
+
+def request_slots(batch_sizes: Iterable[int]) -> int:
+    """ServerArgs.max_running_requests for a module runner that times these batch sizes.
+
+    Unset, SGLang derives the slots from the KV pool's token capacity (the formula
+    above) and allocates req_to_token as (slots + 1) x (context_len + 4) int32
+    (ReqToTokenPool, srt/mem_cache/memory_pool.py:388-408; _build_default_req_pool,
+    kv_cache_configurator.py:1755-1777) outside the KV byte budget: only the
+    1 - mem_fraction_static slack covers it (_profile_available_bytes, :2990-3060).
+    A module dummy keeps two of the model's layers, so its pool holds many times the
+    tokens serving's does and the estimate lands on 4096. For a 1M-token context that
+    is 16 GiB, more than the slack of an 80 GB device, and a pool SGLang clamps to its
+    profiled capacity then overcommits the device. The floor is what a server of the
+    full model resolves wherever it holds at most four context windows of KV, and it
+    is not below any decode CUDA-graph batch size (serving_memory_defaults), so the
+    graph buckets stay SGLang's (memory_hook.py:182-188).
+    """
+    return max([SGLANG_MIN_REQUEST_SLOTS, *batch_sizes])
+
+
 def sglang_dsa_mqa_logits_chunking_supported() -> bool:
     """Return whether the imported SGLang DSA/NSA indexer chunks MQA logits."""
     candidates = (
@@ -184,6 +209,45 @@ def dsa_indexer_prefill_shape_is_supported(batch_size: int, seq_len: int) -> boo
 def required_prefill_extend_tokens(batch_size: int, seq_len: int) -> int:
     """Return the number of fresh prefill tokens in a collector case."""
     return batch_size * seq_len
+
+
+def serving_memory_defaults(tp_size: int) -> tuple[int, int]:
+    """(chunked_prefill_size, decode CUDA-graph max_bs) SGLang derives from GPU memory.
+
+    The defaults of a server launched without either flag: the memory table of
+    _handle_gpu_memory_settings (srt/arg_groups/memory_hook.py:89-180 at
+    v0.5.23; MiB from get_device_memory_capacity, srt/utils/common.py:990-1017).
+    ``tp_size`` is the server's tensor-parallel world, which moves the decode
+    batch size on GPUs below 160 GiB. The max_running_requests cap (:182-188)
+    does not apply: a default server leaves that limit unset.
+    """
+    from sglang.srt.utils.common import get_device_memory_capacity
+
+    gpu_mem = get_device_memory_capacity()
+    if gpu_mem is None:
+        return 4096, 160
+    if gpu_mem < 20 * 1024:
+        return 2048, 8
+    if gpu_mem < 35 * 1024:
+        return 4096, 48 if tp_size < 4 else 160
+    if gpu_mem < 60 * 1024:
+        return 4096, 32 if tp_size < 4 else 160
+    if gpu_mem < 160 * 1024:
+        return 8192, 256 if tp_size < 4 else 512
+    return 16384, 512
+
+
+def decode_autotune_max_tokens(tp_size: int) -> int:
+    """The token count of the one dummy forward SGLang's default warm-up autotunes in.
+
+    Warm-up runs a decode-shaped dummy forward at the decode CUDA-graph max
+    batch size under FlashInfer's autotuner (base_runner.py:279-285,
+    decode_cuda_graph_runner.py:704-716, flashinfer_autotune.py:354-362); the
+    extend-shaped pass at the prefill ceiling is opt-in
+    (SGLANG_FLASHINFER_AUTOTUNE_EXTEND, srt/environ.py:1282;
+    flashinfer_autotune.py:412-443).
+    """
+    return serving_memory_defaults(tp_size)[1]
 
 
 def runtime_chunk_size(model_runner) -> int:

@@ -16,7 +16,7 @@ engine:
   model: Qwen/Qwen3-30B-A3B
   hardware: h200_sxm
   backend: sglang
-  backend_version: 0.5.14
+  backend_version: current
   context_length: 2048
   workers:
     aggregated:

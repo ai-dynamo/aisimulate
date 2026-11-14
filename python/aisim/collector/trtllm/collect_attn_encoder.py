@@ -3,47 +3,43 @@
 
 """TensorRT-LLM encoder (non-causal) attention collector for multimodal / omni-modal models.
 
-Builds a single TRT-LLM torch-flow attention layer running in encoder mode:
+Builds a single TRT-LLM torch-flow attention layer running in encoder mode, as the
+vision towers serve it (Qwen2.5-VL / Qwen3-VL vision attention: create_attention with
+pos_embd_params=None and rope_fusion=False, models/modeling_qwen2vl.py:1486-1503; forward
+with the fused QKV, attention_mask=FULL and attention_window_size=None, :1607-1637; the
+backend is model_config.attn_backend, TRTLLM by default, and Gemma 4 / Mistral force TRTLLM
+for their towers, models/modeling_gemma4mm.py:1196, models/modeling_mistral.py:842-846):
 
 - ``kv_cache_manager=None``                        -> single-pass, no KV cache
 - ``attention_mask=PredefinedAttentionMask.FULL``  -> non-causal (padding mask)
 - ``pos_embd_params=None``                         -> RoPE applied outside FMHA
 
-Quant: bf16 only. TRT-LLM upstream does not support fp8 on the encoder path.
+Without a paged KV cache FlashInferTrtllmGenFmha declines every request
+(attention/backends/fmha/flashinfer_trtllm_gen.py:685-686), so on every SM the thop
+attention op runs the context FMHA (FallbackFmha, fmha/fallback.py:291-311), as in serving.
+Serving's metadata differs in two fields that do not change the kernel: it fixes
+max_seq_len at the encoder token budget and passes precomputed cu_q/cu_kv_seqlens
+(prepare_encoder_attn_metadata, models/modeling_multimodal_encoder.py:48-128); here
+max_seq_len is the segment length and the op builds the offsets in the same
+buildDecoderInfo launch. Either window covers the whole segment, so no sliding-window
+kernel is selected.
+
+Quant: bf16 only (EncoderAttentionCase.dtype in collector/op_plans.py).
 """
 
-__compat__ = "trtllm==1.3.0rc29"
-
-import os
+__compat__ = "trtllm==1.4.0rc2"
 
 import tensorrt_llm
 import torch
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
-
-# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
-# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
-# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
-# 'API-compat shims may only change HOW the same kernel is constructed').
-try:
-    from tensorrt_llm._torch.attention.backends import TrtllmAttentionMetadata
-except ModuleNotFoundError:  # < rc29 layout
-    from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
-try:
-    from tensorrt_llm._torch.attention.backends.interface import (
-        AttentionRuntimeFeatures,
-        PredefinedAttentionMask,
-    )
-except ModuleNotFoundError:  # < rc29 layout
-    from tensorrt_llm._torch.attention_backend.interface import (
-        AttentionRuntimeFeatures,
-        PredefinedAttentionMask,
-    )
-try:
-    from tensorrt_llm._torch.attention.backends.utils import create_attention
-except ModuleNotFoundError:  # < rc29 layout
-    from tensorrt_llm._torch.attention_backend.utils import create_attention
+from tensorrt_llm._torch.attention.backends import TrtllmAttentionMetadata
+from tensorrt_llm._torch.attention.backends.interface import (
+    AttentionRuntimeFeatures,
+    PredefinedAttentionMask,
+)
+from tensorrt_llm._torch.attention.backends.utils import create_attention
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
@@ -65,8 +61,6 @@ def run_encoder_attention_torch(
     device = torch.device(device)
     torch.set_default_device(device)
     torch.cuda.set_device(device)
-
-    os.environ["TRTLLM_ENABLE_XQA_JIT"] = "0"
 
     quant_config = QuantConfig(quant_algo=None, kv_cache_quant_algo=None, group_size=128)
 

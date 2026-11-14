@@ -429,6 +429,7 @@ def test_native_replay_rejects_malformed_canonical_speculation(speculation, entr
             materialize_engine_launch_config("vllm", "0.24.0", {}, deployment.agg_engine_args, "aggregated")
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("accept_rates", [None, "", "  ", "1,0.5"])
 @pytest.mark.parametrize("explicit_depth", [False, True])
 def test_native_canonical_speculation_requires_authored_acceptance(accept_rates, explicit_depth):
@@ -487,6 +488,7 @@ def test_runner_canonical_mtp_g2_rejects_unsupported_cache_compositions(field, v
         )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize(
     "backend,speculation",
     [
@@ -531,6 +533,7 @@ def test_public_runner_rejects_generic_trtllm_in_both_representations(location):
     assert runtime.execution_spec is None
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_native_canonical_speculation_rejects_trtllm_without_restricting_legacy():
     from aisim import _runtime
 
@@ -3213,16 +3216,19 @@ def test_workload_driver_rejects_length_sampler_before_native_execution(source_t
 
 
 @pytest.mark.parametrize("layout", ["flat", "null_flat", "canonical", "canonical_none", "canonical_fallback", "nested"])
-@pytest.mark.parametrize("version", ["", "next", "literal_next"])
+@pytest.mark.parametrize("version", ["", "alias", "literal"])
 def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, tmp_path, layout, version):
     from aisim import _runtime
     from aisim_core.sdk import perf_database
 
     slots = perf_database.get_version_slots("h200_sxm", "vllm")
-    expected = slots["next" if version == "literal_next" else version or "current"]
-    if version == "literal_next":
-        version = expected
-    assert slots["next"] != slots["current"]
+    # A slot other than current, so capacity falling back to the default
+    # version is visible: next while the fleet has a development version,
+    # otherwise previous (next then resolves to current).
+    other = "next" if slots["next"] != slots["current"] else "previous"
+    assert slots[other] != slots["current"]
+    expected = slots[other] if version else slots["current"]
+    version = {"": "", "alias": other, "literal": expected}[version]
     phase = "python"
     consumed_versions = {"python": [], "native": []}
     get_database = perf_database.get_database

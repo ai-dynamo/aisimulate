@@ -538,6 +538,7 @@ def test_aggregated_profile_validates_phase_inputs(aggregated_profile, change, p
         RustForwardPassPerfModel.best_available(config)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("role", ["prefill", "decode", "aggregated"])
 def test_external_inputs_preserve_builtin_predictions(tmp_path, monkeypatch, role):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")

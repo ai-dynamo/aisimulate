@@ -19,7 +19,7 @@ import pytest
 from aisim.sdk import common
 from aisim.sdk.perf_database import get_database
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("raw_data_coordinates")]
 
 
 class _CapturingEngineHandle:

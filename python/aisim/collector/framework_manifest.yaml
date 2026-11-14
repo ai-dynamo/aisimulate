@@ -26,6 +26,26 @@ frameworks:
       images:
         default: "lmsysorg/sglang:v0.5.21@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
         cu130: "lmsysorg/sglang:v0.5.21-cu130@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
+    # Op-by-op move to 0.5.23 (2026-11): a family moves here once its gates align
+    # and its source check is done; the default follows the last one. Both tags
+    # resolve to one multi-arch index digest.
+    families:
+      linear_attention: &sglang_0523_runtime
+        version: "0.5.23"
+        images:
+          default: "lmsysorg/sglang:v0.5.23@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f"
+          cu130: "lmsysorg/sglang:v0.5.23-cu130@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f"
+      kda: *sglang_0523_runtime
+      gemm: *sglang_0523_runtime
+      quantize: *sglang_0523_runtime
+      moe: *sglang_0523_runtime
+      attention: *sglang_0523_runtime
+      encoder_attention: *sglang_0523_runtime
+      mla: *sglang_0523_runtime
+      mla_bmm: *sglang_0523_runtime
+      sparse_attention: *sglang_0523_runtime
+      msa: *sglang_0523_runtime
+      mhc: *sglang_0523_runtime
     # Model-scoped collector runtime pins: when the resolved run model_path
     # exactly equals one of these keys, the pin overrides BOTH the family
     # pins above and the framework default for every op in the run — the
@@ -83,29 +103,51 @@ frameworks:
       version: "1.3.0rc29"
       images:
         default: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29@sha256:124da3f10b73afbf4242f5c68fb04b48736c61fbe662e715202371fd7f046f43"
+    # Op-by-op move to 1.4.0rc2 (2026-11): a family moves here once its gates
+    # align and its source check is done; the default follows the last one.
+    families:
+      linear_attention: &trtllm_140rc2_runtime
+        version: "1.4.0rc2"
+        images:
+          default: "nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc2@sha256:93a3eaf1fa574813d608a7147735134bcfbd06d18d1aa98e8ee0d5da09e51e3a"
+      gemm: *trtllm_140rc2_runtime
+      quantize: *trtllm_140rc2_runtime
+      moe: *trtllm_140rc2_runtime
+      attention: *trtllm_140rc2_runtime
+      encoder_attention: *trtllm_140rc2_runtime
+      mla: *trtllm_140rc2_runtime
+      mla_bmm: *trtllm_140rc2_runtime
+      sparse_attention: *trtllm_140rc2_runtime
+      msa: *trtllm_140rc2_runtime
+      mhc: *trtllm_140rc2_runtime
   vllm:
     source_repo: "https://github.com/vllm-project/vllm.git"
     default:
       version: "0.30.0"
       images:
         default: "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
-    # gemm / moe / kda / mhc move to vLLM 0.31.0:
-    # GLM-5.3-Flash collects these families on 0.31.0, and each collector file
-    # targets exactly one release, so the families upgrade instead of carrying
-    # 0.30.0 and 0.31.0 side by side. A family pin moves the family for every
-    # model. The 0.30.0 tables stay under their version key; the 0.30.0
-    # collectors are `git log` away. Same stock image as the GLM-5.3-Flash
-    # model pin below (multi-arch index; amd64 a4a4c043..., arm64 3f7dd5b7...).
+    # A family pin moves the family for every model; each collector file targets
+    # exactly one release. The 0.30.0 and 0.31.0 tables stay under their version
+    # keys; their collectors are `git log` away.
     families:
-      gemm: &vllm_0310_runtime
-        version: "0.31.0"
-        source_commit: "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+      # Op-by-op move to vLLM 0.32.0 (2026-11): a family moves here once its
+      # gates align and its source check is done; the default follows the last one.
+      kda: &vllm_0320_runtime
+        version: "0.32.0"
+        source_commit: "5df63a7203cdb9328d824a27b682e77c7b9928be"
         images:
-          default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
-      moe: *vllm_0310_runtime
-      kda: *vllm_0310_runtime
-      mhc: *vllm_0310_runtime
-      attention: *vllm_0310_runtime
+          default: "vllm/vllm-openai:v0.32.0@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34"
+      linear_attention: *vllm_0320_runtime
+      gemm: *vllm_0320_runtime
+      quantize: *vllm_0320_runtime
+      moe: *vllm_0320_runtime
+      attention: *vllm_0320_runtime
+      encoder_attention: *vllm_0320_runtime
+      mla: *vllm_0320_runtime
+      mla_bmm: *vllm_0320_runtime
+      sparse_attention: *vllm_0320_runtime
+      msa: *vllm_0320_runtime
+      mhc: *vllm_0320_runtime
     # kda family pin RETIRED: the family ran on the
     # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
     # pricing did not match 0.27's packed-decode serving path.
@@ -118,7 +160,10 @@ frameworks:
       # default per the pin-consolidation rule: pins BELOW the
       # target version upgrade with it; the kda preview pin (an odd dev-build
       # pin) was revisited at the 0.30.0 move and retired, see above.
-      # moe: the 0.31.0 family pin above is a stock release.
+      # moe: on 0.32.0 with the families above. Kimi-K3 SiTU runs natively
+      # (collect_moe passes the betas; SM100/SM103 serve CutlassExpertsMxfp4,
+      # other SMs MarlinExperts). Rows labeled *_situ_as_silu (0.24.0-0.31.0
+      # tables) timed silu on a forced Marlin path.
       # History: NO family pin (owner decision, reverting a
       # family-wide preview pin — a temporary preview build must
       # not own a family default; a family pin here hijacks image selection
@@ -158,25 +203,12 @@ frameworks:
     # their declared runtime.
     models:
       # GLM-5.3-Flash (Glm5NextForConditionalGeneration) standalone per-op
-      # collection runs on the stock official v0.31.0 release (no overlay),
-      # tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6. v0.31.0 moves
-      # the GLM layers from vllm/models/glm5next/nvidia/ to
-      # vllm/models/glm5next/common/ and the KPool indexer from
-      # model_executor/layers/sparse_attn_indexer_kpool.py to
-      # models/glm5next/nvidia/sparse_indexer.py; it also carries the KPool
-      # tail slot-mapping fix (v1/kv_cache_interface.py:1036-1038). Docker Hub reported the
-      # multi-arch index digest below for v0.31.0; its
-      # linux/arm64 child (also tag v0.31.0-aarch64; the GB300 platform
-      # image, imported for collection as 3f7dd5b7...2b971.sqsh) is
-      # sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971
-      # and the linux/amd64 child is
-      # sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b.
-      "zai-org/GLM-5.3-Flash": &glm53flash_vllm_runtime
-        version: "0.31.0"
-        source_commit: "db9527a46873454610df6dbedf79a36d6bf1a7f6"
-        images:
-          default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
-      "nvidia/GLM-5.3-Flash-NVFP4": *glm53flash_vllm_runtime
+      # collection runs on the stock release every GLM op is collected with
+      # (pin consolidation: the 0.31.0 model pin moved with its families).
+      # vLLM 0.32.0 serves it from vllm/models/glm5next/common/ with the
+      # transformers Glm5NextConfig; the 0.31.0 tables stay under their key.
+      "zai-org/GLM-5.3-Flash": *vllm_0320_runtime
+      "nvidia/GLM-5.3-Flash-NVFP4": *vllm_0320_runtime
   vllm_xpu:
     base_framework: vllm
     data_backend: vllm

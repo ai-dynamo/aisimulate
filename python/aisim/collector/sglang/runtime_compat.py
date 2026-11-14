@@ -40,6 +40,7 @@ def init_runtime_config(
     from sglang.srt.layers.moe import initialize_moe_config
     from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
     from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
+    from sglang.srt.layers.quantization.unquant import initialize_bf16_gemm_config
 
     if inspect.signature(initialize_moe_config).parameters:  # <= 0.5.20: seeded from ServerArgs directly
         initialize_moe_config(server_args)
@@ -68,6 +69,11 @@ def init_runtime_config(
     initialize_moe_config()
     initialize_fp8_gemm_config()
     initialize_fp4_gemm_config()
+    # The scheduler initializes the BF16 GEMM backend with the others (managers/scheduler.py:1011-1013,
+    # benchmark/one_batch.py:121-127 @v0.5.23). Left unset, get_bf16_gemm_backend() stays AUTO and
+    # UnquantizedLinearMethod.apply runs cuBLAS F.linear where serving's SM100/103 default routes BF16
+    # linears through the CuTe DSL TGV / split-K kernels (layers/quantization/unquant.py:298-375, 572-614).
+    initialize_bf16_gemm_config()
     from sglang.srt.distributed import bootstrap
 
     if nccl_port is None or model_config is None:
@@ -122,36 +128,6 @@ def ensure_offline_runtime_published(**server_args_fields) -> bool:
     publish(ServerArgs(model_path="dummy", **server_args_fields), role="scheduler", ranks=SpawnRanks(world_rank=0))
     _OFFLINE_PUBLISHED = True
     return True
-
-
-def attach_kv_index_translator(mock_runner) -> None:
-    """sglang>=0.5.21 attention backends take ``model_runner.kv_index_translator``
-    (flashattention_backend.py:205; built by ModelRunner.init_kv_index_translator at
-    model_runner.py:860-868 from req_to_token / allocator / pool / page_size / device).
-    Build the real one when the mock runner carries those objects; otherwise a
-    non-translating stand-in (the backends only consult ``is_translating`` on the
-    non-DCP, non-hybrid paths these kernel collectors exercise). No-op on older sglang.
-    """
-    try:
-        from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
-    except ImportError:
-        return
-    try:
-        mock_runner.kv_index_translator = KVIndexTranslator(
-            req_to_token=mock_runner.req_to_token_pool.req_to_token,
-            token_to_kv_pool_allocator=mock_runner.token_to_kv_pool_allocator,
-            token_to_kv_pool=mock_runner.token_to_kv_pool,
-            page_size=getattr(mock_runner, "page_size", None) or getattr(mock_runner.server_args, "page_size", 1) or 1,
-            device=str(mock_runner.device),
-        )
-    except Exception as exc:
-        from types import SimpleNamespace
-
-        print(
-            f"[sglang-compat] KVIndexTranslator not constructible on the mock runner ({type(exc).__name__}: {exc}); "
-            "using a non-translating stand-in"
-        )
-        mock_runner.kv_index_translator = SimpleNamespace(is_translating=False, reads_are_translated=False)
 
 
 def resolved_arg(server_args, name: str, default=None):

@@ -56,6 +56,7 @@ def test_registry_basenames_are_known_perf_data_filenames() -> None:
     assert not unknown, f"registry basenames not in PerfDataFilename: {sorted(unknown)}"
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_every_registry_attribute_dispatches_on_a_pinned_database() -> None:
     """Fetch each exported attribute against the h200 pin: a registry entry
     the Rust dispatch does not accept raises "unknown table-view attribute"

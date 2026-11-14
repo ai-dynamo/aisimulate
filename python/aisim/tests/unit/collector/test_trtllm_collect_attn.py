@@ -28,8 +28,11 @@ def test_every_row_runs_on_the_default_trtllm_backend(op, monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     rows = plan(op, "trtllm", 90).rows
     assert {row[9] for row in rows} == {"TRTLLM"}
-    # Gemma 4's head_dim 512 global layers run there too, as serving runs them.
-    assert any(row[4] == 512 for row in rows)
+    # Gemma 4's head_dim 512 global layers run only on the SM100 family, where
+    # FlashInfer's trtllm-gen FMHA takes them. Elsewhere serving falls back to
+    # AttentionOp, which rejects the head size when it is initialized (skips.py).
+    assert not any(row[4] == 512 for row in rows)
+    assert any(row[4] == 512 for row in plan(op, "trtllm", 100).rows)
 
 
 def test_the_run_function_builds_only_the_trtllm_backend():
@@ -52,11 +55,11 @@ def test_dense_attention_uses_full_kv_cache():
 
 
 def test_out_scale_mirrors_serving_use_quantize_output():
-    # out_scale mirrors serving's Attention._use_quantize_output(): only a
-    # quantized model supplies o_proj.inv_input_scale. Passing a scale is not
-    # inert -- the backend allocates fp8 attention output whenever out_scale is
-    # present -- so it is given exactly for the fp8-model context case
-    # (use_fp8_context_fmha) and fp8-KV generation, with no SM condition.
+    # out_scale mirrors serving's Attention._use_quantize_output(): only a model
+    # with fp8 weights supplies o_proj.inv_input_scale. The fp8-model case is the
+    # context use_fp8_context_fmha case; the fp8_kv_cache cases of both phases are
+    # an unquantized model with an fp8 KV cache (out_scale None, bf16 output, the
+    # deployment the serving gates probe). No SM condition.
     guards = [
         node
         for node in ast.walk(_run_function())
@@ -68,7 +71,7 @@ def test_out_scale_mirrors_serving_use_quantize_output():
     ]
     assert len(guards) == 1, "expected exactly one conditional out_scale assignment"
     test_names = {n.id for n in ast.walk(guards[0].test) if isinstance(n, ast.Name)}
-    assert test_names == {"use_fp8_context_fmha", "use_fp8_kv_cache", "is_context_phase"}
+    assert test_names == {"use_fp8_context_fmha"}
     assert not any(
         isinstance(n, ast.Call) and getattr(n.func, "id", None) == "get_sm_version" for n in ast.walk(guards[0])
     ), "out_scale must not be SM-conditioned"

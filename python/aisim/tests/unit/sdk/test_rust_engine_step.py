@@ -1429,6 +1429,7 @@ def _supported_fpm_validation_config() -> dict[str, object]:
     return config
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
     """Issue #1522: the exact deployed MoE key must estimate successfully."""
@@ -1498,6 +1499,7 @@ def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
     assert estimate_ms is not None and estimate_ms > 0.0
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 def test_forward_pass_perf_model_native_default_directional_bounds_end_to_end() -> None:
     """End-to-end native forward-pass model with default bounds over a real fixture.
@@ -1672,6 +1674,7 @@ def test_malformed_performance_yaml_remains_a_perf_database_failure(tmp_path: Pa
     assert "perf database error" in diagnostics["last_warning"]
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 def test_best_available_validates_regression_weights_only_after_fallback() -> None:
     """Regression-only knobs and worker semantics apply only if native AIC is unavailable."""
@@ -1706,6 +1709,7 @@ def test_best_available_validates_regression_weights_only_after_fallback() -> No
         )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.integration
 def test_native_constructors_ignore_all_nonfinite_regression_weights() -> None:
     """Nonfinite regression-only knobs must not block either successful Native path."""
@@ -2050,6 +2054,7 @@ def test_large_ep_opspec_key_sets_match_the_rust_structs():
     assert fields["is_gated"] is True and fields["enable_eplb"] is True
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_large_ep_op_graph_compiles_natively(caplog):
     """Large-EP communication and measured expert compute compile natively.
 
@@ -2435,6 +2440,7 @@ def test_python_step_fallback_telemetry_counts_and_warns_once(caplog) -> None:
         res._python_step_fallback_reset()
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_default_config_wideep_mla_spec_survives_the_real_bincode_decode():
     """A DEFAULT `ModelConfig` must produce a spec Rust can decode.
 

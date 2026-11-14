@@ -285,6 +285,23 @@ def _crash_errors(errors):
     return [e for e in errors if e.get("error_type") in ("WorkerSignalCrash", "WorkerAbnormalExit")]
 
 
+class TestWorkerTorchThreads:
+    """Workers time host-side work on one torch intra-op thread, as vLLM and SGLang serve."""
+
+    def test_one_intra_op_thread(self):
+        torch_mod = MagicMock()
+        _collect_mod._use_one_torch_thread(torch_mod)
+        torch_mod.set_num_threads.assert_called_once_with(1)
+
+    def test_every_run_path_sets_it_after_binding_the_device(self):
+        import inspect
+
+        for func in (_collect_mod.worker, _collect_mod.parallel_run):
+            source = inspect.getsource(func)
+            assert source.count("_use_one_torch_thread(torch_mod)") == 1
+            assert source.index("set_device(device)") < source.index("_use_one_torch_thread(torch_mod)")
+
+
 class TestCudaFatalExceptionDetection:
     def test_torch_accelerator_error_is_fatal(self):
         torch_mod = MagicMock()

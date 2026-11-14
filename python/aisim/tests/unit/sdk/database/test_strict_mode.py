@@ -664,6 +664,7 @@ def test_non_strict_warns_on_unreadable_version_dir(systems_root: Path, caplog: 
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_real_tree_smoke_strict_on() -> None:
     databases_cache.clear()
     try:

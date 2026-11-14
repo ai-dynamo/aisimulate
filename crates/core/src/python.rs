@@ -10100,6 +10100,16 @@ mod tests {
         let mut config = aic_config();
         config.model = "Qwen/Qwen3-0.6B".into();
         if power {
+            // The B200 TensorRT-LLM 1.3.0rc20 tables are the only shipped ones that carry
+            // power. That collection is outside the query slots, so the SDK reads it as a
+            // raw data coordinate. The opt-in is set on the embedded interpreter, whose
+            // `os.environ` no longer follows the process environment once it has started.
+            Python::with_gil(|py| {
+                py.import("os")
+                    .and_then(|os| os.getattr("environ"))
+                    .and_then(|environ| environ.set_item("AIC_ALLOW_UNLISTED_VERSIONS", "1"))
+            })
+            .unwrap();
             config.system = "b200_sxm".into();
             config.backend = "trtllm".into();
             config.backend_version = Some("1.3.0rc20".into());

@@ -35,6 +35,13 @@ AISIM_CLI = [sys.executable, "-m", "aisim"]
 
 import afd_parity
 
+
+@pytest.fixture(autouse=True)
+def _raw_data_coordinates(monkeypatch):
+    """The AFD parity configs pin SGLang 0.5.14, a raw data coordinate outside the queryable slots."""
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+
+
 E2E_CASES = (
     "qwen3-30b-a3b-h200-sglang-pure-both",
     "qwen3-30b-a3b-h200-sglang-pure-both-saturated",

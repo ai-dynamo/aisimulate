@@ -14,8 +14,9 @@ from aisim.sdk.models import get_model
 from aisim_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 # Both public-model tests disable the shared layer, so every table they touch must exist
-# under the queried version itself. The 2026-10 campaign (vLLM 0.30.0 = current) collected
-# no comm tables, so pin the last version whose own tree is complete (0.24.0 = previous).
+# under the queried version itself. The 2026-10 and 2026-11 campaigns (vLLM 0.30.0 and
+# 0.32.0, the previous and current slots) collected no comm tables, so pin the last version
+# whose own tree is complete: 0.24.0, a raw data coordinate outside the slots.
 _SELF_CONTAINED_VERSION = "0.24.0"
 
 pytestmark = pytest.mark.unit
@@ -55,6 +56,7 @@ def test_trtllm_without_a_qualified_skip_producer_retains_all_full():
     assert model.extra_params["dsa_full_layer_fraction"] == 1.0
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_public_model_preserves_equivalent_regex_projection_exclusions(tmp_path):
     raw = json.loads((Path(aisim_core.__file__).parent / "model_configs/zai-org--GLM-5.2-FP8_config.json").read_text())
     latencies = []
@@ -107,6 +109,7 @@ def test_public_model_preserves_equivalent_regex_projection_exclusions(tmp_path)
     assert latencies[0] == pytest.approx(latencies[1])
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("skip_kv,skip_heads", [(None, 8), ("bfloat16", 8), ("fp8", 8), ("bfloat16", 16)])
 def test_public_model_uses_only_matching_vllm_reuse_measurements(tmp_path, skip_kv, skip_heads):
     """Independent ledger: 21 * 10 + 57 * 2 = 324 ms; all-full = 780 ms.

@@ -11,6 +11,7 @@ The broad old/new modeling report remains advisory for numerical drift.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -18,6 +19,8 @@ import os
 import re
 import subprocess
 from pathlib import Path
+
+UNLISTED_VERSIONS_ENV = "AIC_ALLOW_UNLISTED_VERSIONS"
 
 
 def resolve_baseline(manifest: dict, *, fetch: bool = False, repository_root: Path | None = None) -> str:
@@ -95,22 +98,43 @@ def check_results(cases: list[dict], rows: list[dict]) -> list[str]:
     return failures
 
 
+@contextlib.contextmanager
+def _frozen_data_coordinates():
+    """Admit the manifest's pinned collections for the sentinel queries only.
+
+    The sentinels pin the collections their reviewed values were taken on.
+    Those versions leave the queryable slots when a newer full collection is
+    promoted, and stay readable as raw data coordinates through this opt-in,
+    so a promotion changes neither the expected values nor the baseline commit.
+    """
+    previous = os.environ.get(UNLISTED_VERSIONS_ENV)
+    os.environ[UNLISTED_VERSIONS_ENV] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(UNLISTED_VERSIONS_ENV, None)
+        else:
+            os.environ[UNLISTED_VERSIONS_ENV] = previous
+
+
 def collect(cases: list[dict]) -> list[dict]:
     from aisim_core.sdk import EngineHandle
 
     engines = {}
     rows = []
-    for case in cases:
-        try:
-            key = json.dumps(case["compile"], sort_keys=True)
-            if key not in engines:
-                engines[key] = EngineHandle.compile(**case["compile"])
-            value = getattr(engines[key], case["method"])(**case["arguments"])
-            if not math.isfinite(value):
-                raise ValueError(f"nonfinite native latency: {value}")
-            rows.append({"id": case["id"], "status": "PASS", "latency_ms": value})
-        except Exception as error:
-            rows.append({"id": case["id"], "status": "ERROR", "error": f"{type(error).__name__}: {error}"})
+    with _frozen_data_coordinates():
+        for case in cases:
+            try:
+                key = json.dumps(case["compile"], sort_keys=True)
+                if key not in engines:
+                    engines[key] = EngineHandle.compile(**case["compile"])
+                value = getattr(engines[key], case["method"])(**case["arguments"])
+                if not math.isfinite(value):
+                    raise ValueError(f"nonfinite native latency: {value}")
+                rows.append({"id": case["id"], "status": "PASS", "latency_ms": value})
+            except Exception as error:
+                rows.append({"id": case["id"], "status": "ERROR", "error": f"{type(error).__name__}: {error}"})
     return rows
 
 

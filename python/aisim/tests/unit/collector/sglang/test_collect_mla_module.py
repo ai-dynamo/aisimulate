@@ -720,6 +720,14 @@ class TestFailClosedOrchestration:
             run([[2, 8192, 0]])
         assert "load" not in timed
 
+    def test_runner_request_slots_do_not_follow_the_pool_token_capacity(self, monkeypatch):
+        # SGLang would derive 4096 slots from this row's 33.6M-token pool, and for GLM-5.2's
+        # 1M-token context allocate a 16 GiB req_to_token table next to it.
+        run, timed = self._dsa_runner(monkeypatch)
+        run([[1024, 32768, 0], [32, 1048575, 0]], is_prefill=False)
+        assert timed["load"]["max_total_tokens"] > 33_554_432
+        assert timed["load"]["max_running_requests"] == 2048
+
     def test_dsa_run_takes_its_points_from_the_plan_row(self, monkeypatch):
         run, _timed = self._dsa_runner(monkeypatch)
         with pytest.raises(RuntimeError, match=r"DSA module context has no points"):

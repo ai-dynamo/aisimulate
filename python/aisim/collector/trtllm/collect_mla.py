@@ -1,14 +1,38 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""TensorRT-LLM MLA collector for the current attention APIs.
+"""TensorRT-LLM MLA attention collector (mla_context, mla_generation).
 
-Uses the newer TRT-LLM attention backend and MLAParams interfaces to benchmark
-context/generation MLA kernels. The module adapts shared MLA cases to current
-metadata objects, request/cache helpers, and backend-specific timing paths.
+Times the attention calls of serving's MLA module (_torch/attention/mla.py) on the
+backends serving builds for them with create_attention (MLA.__init__, mla.py:599-652).
+The context row times MLA.mha.forward of forward_context_default (mla.py:1196-1207);
+the generation row times MLA.mqa.mla_rope_generation plus MLA.mqa.forward of
+forward_absorption_generation (mla.py:1691-1704, 1764-1782). The absorption BMMs
+around them are collect_mla_bmm's rows.
+
+Inside TrtllmAttention.forward the FMHA manager picks the kernel library per request
+exactly as in serving (attention/backends/trtllm.py:2562-2585; library order
+fmha/registry.py:42-56):
+- context, every SM: the thop attention op. FlashInfer TRTLLM-Gen declines MLA
+  context (fmha/flashinfer_trtllm_gen.py:682-683) and the CuTe DSL library is
+  generation-only. With an FP8 KV cache the op quantizes Q/K/V to FP8 itself on
+  SM90/100/103/107/120 (thop/attentionOp.cpp:1466-1470).
+- generation, SM100/103: CuteDslMlaFmha for a BF16 KV cache at 6, 12, 16 or 96 local
+  heads, and for an FP8 KV cache at the (local heads, batch) of its measured table
+  (fmha/cute_dsl_mla.py:382-437). FlashInfer TRTLLM-Gen declines DeepSeek dimensions
+  on 32-token pages and 64 < heads < 128 (flashinfer_trtllm_gen.py:378-386, 539-556),
+  so every other case runs the thop op's trtllm-gen MLA kernels
+  (common/attentionOp.h:623, common/attentionOp.cpp:3193-3229).
+- generation, SM90: FlashMLA on 64-token pages (thop/attentionOp.cpp:1474,
+  thop/dsv3RopeOp.cpp:204).
+- generation, SM120: the op's XQA MLA kernel (common/attentionOp.cpp:3192).
+The CuTe DSL decode is an AutoTuner op (custom_ops/cute_dsl_custom_ops.py:12901-12913),
+but it has one tactic per batch bucket, the one default_tactic returns on a cache
+miss (:12165-12178, 12301-12304, 12474-12495), so serving's warmup tuning pass would
+not change what these rows time.
 """
 
-__compat__ = "trtllm==1.3.0rc29"
+__compat__ = "trtllm==1.4.0rc2"
 
 import math
 from dataclasses import dataclass
@@ -17,53 +41,31 @@ import tensorrt_llm
 import torch
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
-
-# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
-# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
-# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
-# 'API-compat shims may only change HOW the same kernel is constructed').
-try:
-    from tensorrt_llm._torch.attention.backends.interface import (
-        AttentionInputType,
-        MLAParams,
-        PositionalEmbeddingParams,
-        RopeParams,
-    )
-except ModuleNotFoundError:  # < rc29 layout
-    from tensorrt_llm._torch.attention_backend.interface import (
-        AttentionInputType,
-        MLAParams,
-        PositionalEmbeddingParams,
-        RopeParams,
-    )
-try:
-    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
-except ModuleNotFoundError:  # < rc29 layout
-    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+from tensorrt_llm._torch.attention.backends.interface import (
+    AttentionInputType,
+    PositionalEmbeddingParams,
+    RopeParams,
+)
+from tensorrt_llm._torch.attention.backends.utils import create_attention
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
-from tensorrt_llm.bindings.executor import KvCacheConfig
 from tensorrt_llm.functional import PositionEmbeddingType
+from tensorrt_llm.llmapi import KvCacheConfig
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
 from tensorrt_llm.quantization.mode import QuantAlgo
 
 
 def _mla_tokens_per_block() -> int:
-    # SM90 serving runs DeepSeek-dim MLA (headDimQk=576) through FlashMLA and
-    # forces tokens_per_block=64: model_config.enable_flash_mla requires
-    # head_dim==576 on SM90 (tensorrt_llm/_torch/model_config.py),
-    # py_executor_creator.py then overrides tokens_per_block to 64, and the
-    # attention op enables FlashMLA only for SM90 && tokens_per_block==64
-    # (cpp/tensorrt_llm/thop/attentionOp.cpp:1235). With 32 the op
-    # falls back to the generation FMHA runner, which 1.3.0rc20 no longer
-    # supports for FP8 KV cache on SM90 ("Deepseek should be supported by fmha
-    # in generation part", cpp/tensorrt_llm/common/attentionOp.cpp:3091).
-    #
-    # TRT-LLM PR #10261 (>=1.3.0rc0) dropped numTokensPerPage=64 trtllm-gen MLA
-    # cubins for DeepSeek-V3 dims (headDimQk=576, headDimV=512) on Blackwell;
-    # only P32 remains there.
-    return 64 if get_sm_version() == 90 else 32
+    """KV page serving uses for DeepSeek-dim MLA (kv_lora_rank + rope = 576) on this SM.
+
+    SM90 serving enables FlashMLA for it (ModelConfig.enable_flash_mla,
+    _torch/model_config.py:466-475) and forces 64-token pages
+    (pyexecutor/py_executor_creator.py:859-873); the attention op runs FlashMLA only
+    on that page (thop/attentionOp.cpp:1474). Every other SM keeps TRT-LLM's
+    KvCacheConfig default (llmapi/llm_args.py:5040-5041), 32.
+    """
+    return 64 if get_sm_version() == 90 else int(KvCacheConfig().tokens_per_block)
 
 
 def get_context_mla_test_cases():
@@ -148,9 +150,10 @@ def run_mla(
     if get_sm_version() < 90:
         raise ValueError("FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)")
     num_generation_steps = 0 if is_context_phase else 1
-    # Synthetic table capacity, not a checkpoint context-limit override. rc29
-    # c76f4a856: attention/backends/interface.py:717,783 separates table length
-    # from YaRN scaling; trtllm.py:285,1910 grows it to the cache-manager limit.
+    # Synthetic table capacity, not a checkpoint context-limit override: the RoPE
+    # table length (RopeParams.max_positions, attention/backends/interface.py:817) is
+    # separate from the YaRN original length (:844-847), and the backend grows the
+    # table to the cache's max_seq_len anyway (attention/backends/trtllm.py:2135, 2877).
     scenario = Scenario(
         max_position_embeddings=max(
             Scenario.max_position_embeddings, input_len + (num_generation_steps + 1) * output_len
@@ -179,7 +182,6 @@ def run_mla(
         model_type=scenario.model_type,
     )
     kv_cache_tokens_per_block = tokens_per_block
-    # device = torch.device('cuda')
     dtype = scenario.dtype
 
     assert num_heads % tp_size == 0, "num_heads != N * tp_size"
@@ -241,24 +243,16 @@ def _run_attn_for_backend(
     max_num_contexts = len(context_sequence_lengths)
 
     torch.cuda.set_device(device)
-    attention_cls = get_attention_backend(backend_name)
     qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
 
-    # Setup attention module and metadata
+    # DeepseekV3Attention's positional embedding (models/modeling_deepseekv3.py:786-790).
     pos_embd_params = PositionalEmbeddingParams(
         type=PositionEmbeddingType.yarn,
         rope=RopeParams.from_config(rope_config),
         is_neox=False,
     )
-    mla_params = MLAParams(
-        q_lora_rank=q_lora_rank,
-        kv_lora_rank=kv_lora_rank,
-        qk_rope_head_dim=qk_rope_head_dim,
-        qk_nope_head_dim=qk_nope_head_dim,
-        v_head_dim=v_head_dim,
-        predicted_tokens_per_seq=1,
-    )
 
+    # MLA.__init__ folds the YaRN mscale into q_scaling (mla.py:552-559).
     def yarn_get_mscale(scale=1, mscale=1):
         if scale <= 1:
             return 1.0
@@ -273,30 +267,49 @@ def _run_attn_for_backend(
     if kv_cache_dtype == tensorrt_llm.bindings.DataType.FP8:
         quant_config = QuantConfig(kv_cache_quant_algo=QuantAlgo.FP8.value)
 
+    mla_kwargs = dict(
+        pos_embd_params=pos_embd_params,
+        quant_config=quant_config,
+        q_scaling=q_scaling,
+        is_mla_enable=True,
+        q_lora_rank=q_lora_rank,
+        kv_lora_rank=kv_lora_rank,
+        qk_nope_head_dim=qk_nope_head_dim,
+        qk_rope_head_dim=qk_rope_head_dim,
+        predicted_tokens_per_seq=1,
+    )
     if is_context_phase:
-        attn_mla = attention_cls(
-            layer_idx=0,
-            num_heads=num_heads,
+        # MLA.mha (mla.py:633-652).
+        attn_mla = create_attention(
+            backend_name,
+            0,
+            num_heads,
             head_dim=qk_head_dim,
             num_kv_heads=num_kv_heads,
-            quant_config=quant_config,
-            q_scaling=q_scaling,
-            pos_embd_params=pos_embd_params,
-            mla_params=mla_params,
+            v_head_dim=v_head_dim,
+            **mla_kwargs,
         )
     else:
-        attn_mla = attention_cls(
-            layer_idx=0,
-            num_heads=num_heads,
+        # MLA.mqa (mla.py:599-623): one latent KV head of kv_lora_rank + rope, whose
+        # value is the latent itself.
+        attn_mla = create_attention(
+            backend_name,
+            0,
+            num_heads,
             head_dim=kv_lora_rank + qk_rope_head_dim,
             num_kv_heads=1,
-            quant_config=quant_config,
-            q_scaling=q_scaling,
-            pos_embd_params=pos_embd_params,
-            mla_params=mla_params,
+            v_head_dim=kv_lora_rank,
+            hidden_size=rope_config.hidden_size,
+            dtype=dtype,
+            rope_append=True,
+            **mla_kwargs,
         )
-    # NOTE: set up metadata, refer to tensorrt_llm/_torch/pyexecutor/model_engine.py
-    # all layers share the same metadata
+    # A row must time the backend it is labeled with: verify the constructed class.
+    if type(attn_mla).__name__ != "TrtllmAttention":
+        raise RuntimeError(
+            f"create_attention resolved {type(attn_mla).__name__} for backend {backend_name} (expected TrtllmAttention)"
+        )
+
     mapping = Mapping(world_size=world_size, tp_size=tp_size, rank=0)
     max_tokens = (
         (
@@ -309,6 +322,17 @@ def _run_attn_for_backend(
         * kv_cache_tokens_per_block
         * max_num_contexts
     )
+    # Serving builds the MLA cache as SELFKONLY, one head of kv_lora_rank + rope
+    # (pyexecutor/_util.py:3575-3607).
+    # Deviation (every SM): serving's KvCacheConfig.use_kv_cache_manager_v2 defaults to True
+    # (llmapi/llm_args.py:5057-5064), so MLA models get KVCacheManagerV2
+    # (get_kv_cache_manager_cls, pyexecutor/_util.py:123-128, 448); this builds the V1
+    # KVCacheManager, whose impl.add_token grows a generation request below. The timed
+    # kernels read the cache only through the block offsets, pool pointers and page size
+    # that prepare() copies from either manager (attention/backends/trtllm.py:1082-1114),
+    # and the CuTe DSL decode addresses both pool layouts (fmha/cute_dsl_mla.py:600-626),
+    # so the rows are expected to match. Retire by building KVCacheManagerV2 after an A/B
+    # on one system per SM generation.
     kv_cache_manager = KVCacheManager(
         KvCacheConfig(
             max_tokens=max_tokens,
@@ -325,37 +349,44 @@ def _run_attn_for_backend(
         dtype=kv_cache_dtype,
     )
 
-    # TRT-LLM 1.3.0rc20 removed the per-request ``impl.add_sequence`` binding
-    # (serving batches registrations through ``add_sequence_batch`` in
-    # tensorrt_llm/_torch/pyexecutor/resource_manager.py::prepare_resources).
-    # Register context sequences through the framework's own
-    # ``add_dummy_requests`` warmup path, like the sibling attention collectors.
-    kv_cache_manager.add_dummy_requests(
-        list(range(len(context_sequence_lengths))),
-        token_nums=list(context_sequence_lengths),
-    )
+    # Register the context sequences through the framework's add_dummy_requests
+    # warmup path, like the sibling attention collectors. It returns None when the
+    # pool cannot hold them, which would leave the block table unset.
+    if (
+        kv_cache_manager.add_dummy_requests(
+            list(range(len(context_sequence_lengths))),
+            token_nums=list(context_sequence_lengths),
+        )
+        is None
+    ):
+        kv_cache_manager.shutdown()
+        raise RuntimeError("FIXME(kernel-limit): does not fit: the KV cache pool cannot hold the case's requests")
 
-    attn_metadata = attention_cls.Metadata(
-        seq_lens=torch.tensor(context_sequence_lengths, dtype=torch.int),
-        request_ids=list(range(len(context_sequence_lengths))),
-        max_num_requests=len(context_sequence_lengths),
-        num_contexts=len(context_sequence_lengths),
-        prompt_lens=context_sequence_lengths,
-        max_num_tokens=max(context_sequence_lengths),
-        kv_cache_manager=kv_cache_manager,
-        kv_cache_params=KVCacheParams(
-            use_cache=True,
-            num_cached_tokens_per_seq=[0 for _ in context_sequence_lengths],
-        ),
-        mapping=mapping,
-    )
-    attn_metadata.prepare()
-
-    if not is_context_phase:
+    # Serving enables FlashMLA metadata for DeepSeek-dim MLA on SM90 in both phases
+    # (build_attention_metadata, pyexecutor/engine/metadata.py:86; ModelConfig.enable_flash_mla,
+    # _torch/model_config.py:466-475).
+    enable_flash_mla = get_sm_version() == 90
+    if is_context_phase:
+        attn_metadata = attn_mla.Metadata(
+            seq_lens=torch.tensor(context_sequence_lengths, dtype=torch.int),
+            request_ids=list(range(len(context_sequence_lengths))),
+            max_num_requests=len(context_sequence_lengths),
+            num_contexts=len(context_sequence_lengths),
+            prompt_lens=context_sequence_lengths,
+            max_num_tokens=max(context_sequence_lengths),
+            kv_cache_manager=kv_cache_manager,
+            kv_cache_params=KVCacheParams(
+                use_cache=True,
+                num_cached_tokens_per_seq=[0 for _ in context_sequence_lengths],
+            ),
+            mapping=mapping,
+            enable_flash_mla=enable_flash_mla,
+        )
+    else:
         for req_id in range(len(context_sequence_lengths)):
             for _ in range(generation_seq_len_q):
                 kv_cache_manager.impl.add_token(req_id)
-        attn_metadata = attention_cls.Metadata(
+        attn_metadata = attn_mla.Metadata(
             seq_lens=torch.tensor([generation_seq_len_q] * len(context_sequence_lengths), dtype=torch.int),
             request_ids=list(range(len(context_sequence_lengths))),
             max_num_requests=len(context_sequence_lengths),
@@ -368,9 +399,9 @@ def _run_attn_for_backend(
                 num_cached_tokens_per_seq=list(context_sequence_lengths),
             ),
             mapping=mapping,
-            enable_flash_mla=torch.cuda.get_device_capability() == (9, 0),
+            enable_flash_mla=enable_flash_mla,
         )
-        attn_metadata.prepare()
+    attn_metadata.prepare()
 
     if is_context_phase:
         # Packed context token count; case grids use uniform context lengths,
@@ -394,6 +425,9 @@ def _run_attn_for_backend(
             device=device,
         )
 
+        # forward_context_default's V is the v half of a [tokens, H * (nope + v)] buffer
+        # on every path (mla.py:1168-1171, 1179-1183), and its K a [tokens, H * qk_head_dim]
+        # buffer (:1151).
         ctx_kv = torch.randn(
             [
                 total_ctx_tokens,
@@ -402,7 +436,6 @@ def _run_attn_for_backend(
             dtype=dtype,
             device=device,
         )
-        # ctx_v.stride(0) == num_kv_heads * (qk_nope_head_dim + v_head_dim)
         ctx_k_nope, ctx_v = ctx_kv.split([num_kv_heads * qk_nope_head_dim, num_kv_heads * v_head_dim], dim=-1)
         ctx_k_nope = ctx_k_nope.view(-1, num_kv_heads, qk_nope_head_dim)
         ctx_k = torch.cat(
@@ -449,11 +482,10 @@ def _run_attn_for_backend(
             device=device,
         )
 
-        q_pe = torch.randn(
-            [num_tokens, num_heads, qk_rope_head_dim],
-            dtype=dtype,
-            device=device,
-        )
+        # q_pe is the rope slice of the q_b_proj output (mla.py:1606-1608); the rope
+        # kernel reads it through its strides.
+        q = torch.randn([num_tokens, num_heads * qk_head_dim], dtype=dtype, device=device)
+        _q_nope, q_pe = q.view([-1, num_heads, qk_head_dim]).split([qk_nope_head_dim, qk_rope_head_dim], dim=-1)
 
         latent_cache = torch.cat([compressed_kv, k_pe], dim=-1)
 
@@ -462,16 +494,14 @@ def _run_attn_for_backend(
         cu_kv_seqlens = torch.empty(num_seqs + 1, dtype=torch.int32, device=device)
         fmha_scheduler_counter = torch.empty(1, dtype=torch.uint32, device=device)
 
-        # Validate the backend quant state instead of defaulting to BF16 on a
-        # missing attribute: rc20 exposes TrtllmAttention.has_fp8_kv_cache
-        # (derived from QuantMode.has_fp8_kv_cache()). A silent False default
-        # would set up the BF16 scale/buffer path under an fp8-KV label —
-        # mislabeled rows, worse than a crash. Probe-and-raise per
-        # layer_permissions.md.
+        # Serving allocates the FP8 scale and quantized-Q buffers when the MQA backend
+        # has an FP8 KV cache (forward_absorption_generation, mla.py:1631-1646), read from
+        # TrtllmAttention.update_quant_config (attention/backends/trtllm.py:1836-1839).
+        # A missing attribute or a state that disagrees with the requested KV dtype would
+        # set up the other path under this row's label, so both raise.
         if not hasattr(attn_mla, "has_fp8_kv_cache"):
             raise RuntimeError(
-                "TrtllmAttention.has_fp8_kv_cache missing (rc20 API drift); "
-                "refusing to default the MLA generation quant path to BF16"
+                "TrtllmAttention.has_fp8_kv_cache missing; refusing to default the MLA generation quant path to BF16"
             )
         has_fp8_kv_cache = attn_mla.has_fp8_kv_cache
         expected_fp8_kv = kv_cache_dtype == tensorrt_llm.bindings.DataType.FP8
@@ -586,12 +616,11 @@ def _run_attn_for_backend(
     log_perf(
         item_list=[
             {
-                # TRT-LLM quantizes context Q/K/V internally for FP8 KV on
-                # SM90/100/103/120. The BF16 Python inputs do not describe
-                # the FMHA compute precision (attentionOp.cpp:1228-1231 at
-                # c25c23f71786bad54d192893d696ce8043426eca / v1.3.0rc20).
+                # The attention op quantizes context Q/K/V to FP8 itself for an FP8 KV
+                # cache on these SMs (thop/attentionOp.cpp:1466-1470); the BF16 Python
+                # inputs do not describe the FMHA compute precision.
                 "mla_dtype": (
-                    dtype_str if is_context_phase and get_sm_version() in (90, 100, 103, 120) else "bfloat16"
+                    dtype_str if is_context_phase and get_sm_version() in (90, 100, 103, 107, 120) else "bfloat16"
                 ),
                 "kv_cache_dtype": dtype_str,
                 "num_heads": num_heads,

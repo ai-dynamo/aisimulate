@@ -5,24 +5,17 @@
 
 Builds standalone RadixAttention/ForwardBatch mocks for MLA context and
 generation kernels without starting a server. Shared MLA cases come from YAML;
-this file owns SGLang MLA backend choice, paged KV-cache setup, DP-attention
-mocking, runtime dispatch, and perf logging.
+this file owns SGLang MLA backend choice, paged KV-cache setup, runtime
+dispatch, and perf logging. Citations are sglang v0.5.23 unless stated.
 """
 
-# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
-# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+__compat__ = "sglang==0.5.23"
 
-import contextlib
-import inspect
+import gc
 import math
-import os
 import random
 from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 
-import sglang.srt.layers.dp_attention
-import sglang.srt.server_args
 import torch
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
@@ -32,27 +25,19 @@ from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBac
 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 from sglang.srt.layers.attention.trtllm_mla_backend import TRTLLMMLABackend
 from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
 from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool, ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.runtime_context import get_parallel
 
-# The standalone collector has no scheduler to initialize DP state.
-sglang.srt.layers.dp_attention._ATTN_DP_SIZE = 1
-sglang.srt.layers.dp_attention._ATTN_DP_RANK = 0
-sglang.srt.layers.dp_attention._LOCAL_ATTN_DP_SIZE = 1
-sglang.srt.layers.dp_attention._LOCAL_ATTN_DP_RANK = 0
-
-DISABLE_BACKWARD = os.getenv("FLASH_ATTENTION_DISABLE_BACKWARD", "FALSE") == "TRUE"
-
-# Default DeepSeek MLA dims (non-wide): latent=512, rope=64 (query=576, value=512).
+# DeepSeek MLA dims (the only geometry the MLA plan admits, op_plans._MLA_GEOMETRY).
 KV_LORA_RANK = 512
-QK_NOPE_HEAD_DIM = 128  # DeepSeek configs
+QK_NOPE_HEAD_DIM = 128
 QK_ROPE_HEAD_DIM = 64
+V_HEAD_DIM = 128
 # Scaling follows production: 1 / sqrt(qk_nope + qk_rope)
 MLA_SCALING = 1 / math.sqrt(QK_NOPE_HEAD_DIM + QK_ROPE_HEAD_DIM)
-
-# We only cover deepseek v3 in this collector script.
 
 
 def _cuda_version_at_least(major: int, minor: int) -> bool:
@@ -65,9 +50,12 @@ def _cuda_version_at_least(major: int, minor: int) -> bool:
 def _select_default_mla_backend() -> str:
     """The MLA attention backend SGLang serving picks for DeepSeek V3 on this SM.
 
-    trtllm_mla on SM100/103 (the DeepSeek special case), fa3 on Hopper, triton
-    on SM89/120. SM80/86 have no mapping; collector/skips.py leaves them out
-    of the plan.
+    get_default_attn_backend's MLA branch (arg_groups/model_override_base.py:336-351):
+    fa3 on Hopper with CUDA >= 12.3, flashinfer on SM100/103 with CUDA >= 12.8
+    (utils/common.py:292-313, capability major 10), triton elsewhere. The DeepSeek
+    family override replaces SM100's flashinfer with trtllm_mla when no backend is
+    given (arg_groups/model_overrides/deepseek_v2.py:177-188). SM80/86 have no
+    mapping; collector/skips.py leaves them out of the plan.
     """
     sm_version = get_sm_version()
     if sm_version in {100, 103} and _cuda_version_at_least(12, 8):
@@ -79,13 +67,49 @@ def _select_default_mla_backend() -> str:
     raise ValueError(f"No SGLang MLA backend mapping for SM{sm_version}")
 
 
+def _mla_attention_geometry(backend: str, is_context_phase: bool) -> tuple[int, int, bool]:
+    """(qk head dim, v head dim, absorbed) of the attention call serving makes.
+
+    Decode on every backend, and prefill on fa3 / triton, run the absorbed MLA
+    method through ``attn_mqa`` (models/deepseek_v2.py:2183-2192: one 576-wide
+    latent KV head, 512-wide output; forward_mla.py:770-799). Serving's prefill
+    on fa3 and triton is captured by the default breakable prefill CUDA graph
+    (model_executor/cuda_graph_config.py:119-123) for every pass up to
+    min(8192, chunked_prefill_size) tokens (arg_groups/memory_hook.py:233-238),
+    and a captured prefill pins the absorbed method
+    (models/deepseek_common/attention_backend_handler.py:108-113, :233-235).
+
+    Prefill on trtllm_mla is the non-absorbed MHA call: DeepseekV3ForCausalLM on
+    trtllm_mla runs prefill eagerly (arg_groups/cuda_graph_hook.py:279-312, applied
+    at pipeline.py:245), where handle_attention_trtllm_mla picks MHA_CHUNKED_KV for
+    a prefix-free extend (attention_backend_handler.py:171-179) and the model calls
+    ``attn_mha`` (deepseek_v2.py:2206-2215: H KV heads of qk_nope + qk_rope = 192,
+    v_head_dim 128) with save_kv_cache=False (forward_mha.py:383-386).
+
+    Deviation (fa3 / triton prefill above the breakable graph's token buckets):
+    a pass larger than min(8192, chunked_prefill_size) tokens replays eagerly and
+    takes MHA_ONE_SHOT / MHA (attention_backend_handler.py:125-138, :247-251), a
+    192/128 MHA kernel this lane does not time. Serving forms such a pass only with
+    --chunked-prefill-size above 8192 (its default is 4096 on 48 GB and 8192 on
+    80-160 GB devices, memory_hook.py:118-153), so the context rows for
+    batch x isl > 8192 measure the absorbed kernel, which is more expensive than
+    the MHA one there. Retire by timing those cells on the MHA call.
+    """
+    if backend == "trtllm_mla" and is_context_phase:
+        return QK_NOPE_HEAD_DIM + QK_ROPE_HEAD_DIM, V_HEAD_DIM, False
+    if backend in {"trtllm_mla", "fa3", "triton"}:
+        return KV_LORA_RANK + QK_ROPE_HEAD_DIM, KV_LORA_RANK, True
+    raise ValueError(f"No SGLang MLA attention geometry for backend {backend!r}")
+
+
 def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
-    # trtllm_mla_backend quantizes prefill Q/K/V to FP8 when
-    # self.data_type (the KV dtype) is FP8. Decode quantizes Q likewise.
-    # BF16 input tensors therefore do not imply BF16 kernel compute.
-    # Hopper's absorbed MLA has head_dim=576: flashattention_backend.py:
-    # 861-872 excludes it from FP8 Q casting and :1175-1181 casts KV to Q's
-    # BF16 dtype. Triton also uses BF16 compute.
+    # trtllm_mla quantizes the prefill Q/K/V to FP8 when self.data_type (the KV
+    # dtype) is FP8 (trtllm_mla_backend.py:1080-1081), and decode quantizes Q with
+    # the fused RoPE (:1245-1277). BF16 input tensors therefore do not imply BF16
+    # kernel compute. fa3's absorbed MLA has head_dim=576: prepare_paged_mha_query
+    # casts Q to the KV dtype only for head_dim <= 256 (flashattention_backend.py:
+    # 1426-1436), and the absorbed path casts the KV cache to Q's BF16
+    # (:1944, :2350). Triton also computes in BF16.
     if backend == "trtllm_mla" and kv_cache_dtype == torch.float8_e4m3fn:
         return "fp8"
     if backend in {"trtllm_mla", "fa3", "triton"}:
@@ -94,43 +118,33 @@ def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
 
 
 class MockModelConfig:
-    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 (triton_backend.py:255)
+    """The ModelConfig fields the v0.5.23 MLA backends read, at serving's DeepSeek-V3
+    values (configs/model_config.py:1380-1416 for the MLA branch)."""
+
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1692 (triton_backend.py:266)
         return int(self.num_attention_heads)
 
-    def __init__(
-        self,
-        context_len: int = 32768,
-        num_attention_heads: int = 128,
-        kv_lora_rank: int = KV_LORA_RANK,
-        qk_nope_head_dim: int = 128,
-        qk_rope_head_dim: int = 64,
-        v_head_dim: int = 512,
-        scaling: float = 1.0,
-    ):
-        self.is_encoder_decoder = False
-        self.context_len = context_len
+    def __init__(self, num_attention_heads: int, scaling: float):
         self.attention_arch = AttentionArch.MLA
-        self.is_hybrid = False
-        self.attention_chunk_size = None
-        # Provide compatibility with newer sglang versions that expect hybrid-SWA metadata
-        self.is_hybrid_swa = None
-        self.swa_attention_layer_ids = None
-        self.full_attention_layer_ids = None
-        self.swa_v_head_dim = v_head_dim
         self.num_attention_heads = num_attention_heads
-        self.kv_lora_rank = kv_lora_rank
-        self.qk_nope_head_dim = qk_nope_head_dim
-        self.qk_rope_head_dim = qk_rope_head_dim
-        self.head_dim = 256
-        self.v_head_dim = v_head_dim
-        self.hf_text_config = self
-        # sglang>=0.5.21 TritonAttnBackend.__init__ (the sm89 / sm120 MLA default) asks
-        # mambaish_config(model_config) whether this is a hybrid linear-attention arch
-        # (triton_backend.py:287 -> configs/hybrid_arch.py reads hf_config / get_text_config()
-        # / linear_attn_registry_result); an MLA module is none of them. fa3 / trtllm_mla
-        # (sm90 / sm100) never reach that probe, so only the Triton lane needs this.
-        self.linear_attn_registry_result = None
+        self.kv_lora_rank = KV_LORA_RANK
+        self.qk_nope_head_dim = QK_NOPE_HEAD_DIM
+        self.qk_rope_head_dim = QK_ROPE_HEAD_DIM
+        self.v_head_dim = V_HEAD_DIM
+        # triton_backend.py:293-296 compares it with v_head_dim next to a sliding
+        # window only; the MLA model has none.
+        self.swa_v_head_dim = V_HEAD_DIM
+        self.head_dim = 256  # model_config.py:1396
+        self.scaling = scaling
+        self.context_len = 32768
+        self.is_encoder_decoder = False
+        self.is_local_attention_model = False
         self.is_draft_model = False
+        # TritonAttnBackend asks mambaish_config(model_config) (triton_backend.py:298),
+        # which reads model_config.linear_attn_registry_result and hf_config
+        # (configs/hybrid_arch.py:35-36, :145-155) to detect hybrid linear-attention
+        # archs; an MLA module is none of them.
+        self.linear_attn_registry_result = None
 
         class _MockHFConfig:
             architectures = ["DeepseekV3ForCausalLM"]  # noqa: RUF012
@@ -140,51 +154,20 @@ class MockModelConfig:
                 return self
 
         self.hf_config = _MockHFConfig()
-        self.scaling = scaling
-        self.is_local_attention_model = False
+        # flashattention_backend.py:326-328 reads num_attention_heads off it.
+        self.hf_text_config = self
 
-    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1512
+    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1700: MLA has one
         return 1
 
 
-class MockServerArgs:
-    def __init__(self, kv_cache_dtype: torch.dtype, page_size: int):
-        self.enable_lora = False
-        self.enable_deterministic_inference = False
-        self.kv_cache_dtype = "fp8" if kv_cache_dtype == torch.float8_e4m3fn else "bfloat16"
-        self.speculative_eagle_topk = 0
-        self.speculative_num_draft_tokens = 0
-        self.speculative_num_steps = 0
-        self.speculative_attention_mode = "prefill"
-        self.attention_backend = "fa3"
-        self.prefill_attention_backend = "fa3"
-        self.decode_attention_backend = "fa3"
-        self.page_size = page_size
-        self.device = "cuda"
-        self.is_embedding = False
-        self.disable_chunked_prefix_cache = True
-        self.disaggregation_mode = None
-        self.flashinfer_mla_disable_ragged = False
-        self.chunked_prefill_size = -1
-        self.triton_attention_num_kv_splits = 8
-        self.triton_attention_split_tile_size = None
-        # sglang >=0.5.10: FlashAttentionBackend.__init__ reads disable_cuda_graph
-        self.disable_cuda_graph = True
-        # SGLang 0.5.14 TritonAttnBackend.__init__ (the SM120 MLA default)
-        # calls cuda_graph_fully_disabled() -> check_cuda_graph_backend(),
-        # which reads global server_args.cuda_graph_config
-        # (cuda_graph_config.py:142-156) because run_mla installs this mock
-        # as the scheduler-global args. None makes that check return False,
-        # the same answer serving gets with its default (non-DISABLED)
-        # cuda graph config, so allow_bidirectional_attention_in_extend
-        # stays off exactly as in production (triton_backend.py:214-217).
-        # The SM90 fa3 / SM100 trtllm_mla init paths never read this field.
-        self.cuda_graph_config = None
-        self.enable_prefill_cp = False  # sglang 0.5.16 flashattention_backend.py:51
-        self.enable_dp_attention = False  # same site: prefill-CP/DP-attention gate
-
-
 class MockModelRunner:
+    """The ModelRunner fields the v0.5.23 MLA backends read (trtllm_mla_backend.py,
+    flashinfer_mla_backend.py, flashattention_backend.py, triton_backend.py), each
+    set where serving's ModelRunner sets it."""
+
+    # model_runner.py:876-899: logits rows per decode slot, 1 without speculative
+    # decoding (read at triton_backend.py:229,233)
     def decode_num_tokens_per_req(self, *, num_draft_tokens=None) -> int:
         return 1
 
@@ -193,73 +176,33 @@ class MockModelRunner:
         device: torch.device,
         kv_cache_dtype: torch.dtype,
         page_size: int,
-        num_attention_heads: int = 128,
-        scaling: float = 1.0,
+        num_attention_heads: int,
+        scaling: float,
     ):
         self.device = device
         self.gpu_id = device.index if device.index is not None else torch.cuda.current_device()
-        self.tp_size = 1
         self.kv_cache_dtype = kv_cache_dtype
-        # sglang>=0.5.21 backends read the runner's server-arg spelling (model_runner.py:1481)
+        # model_runner.py:1572: the server-args spelling the FA3 backend reads
+        # (flashattention_backend.py:191-192)
         self.kv_cache_dtype_str = "fp8_e4m3" if kv_cache_dtype == torch.float8_e4m3fn else "auto"
-        self.dtype = torch.bfloat16
+        self.dtype = torch.bfloat16  # model_runner.py:1362
         self.page_size = page_size
+        self.model_config = MockModelConfig(num_attention_heads, scaling)
+        # Set once the pools exist (ModelRunner.init_memory_pool / init_kv_index_translator).
         self.req_to_token_pool = None
         self.token_to_kv_pool = None
+        # Serving's MLA allocator is a plain paged allocator; the only reader in these
+        # lanes stores it (triton_backend.py:221), and KVIndexTranslator only asks
+        # whether it is a unified one (kv_index_translator.py:135-140).
         self.token_to_kv_pool_allocator = None
-        self.attn_backend = None
-        self.sliding_window_size = None
-        self.is_hybrid = False
-        self.hybrid_gdn_config = None
-        self.kimi_linear_config = None
-        self.linear_attn_model_spec = None
-        self.model_config = MockModelConfig(num_attention_heads=num_attention_heads, scaling=scaling)
-        # Keep attributes for compatibility across sglang versions (older code ignores them)
-        self.is_hybrid_swa = self.model_config.is_hybrid_swa
-        self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
-        # sglang 0.5.21 TRTLLMMLABackend (the MLA backend sglang picks on SM100, _get_backends) reads
-        # model_runner.max_running_requests (workspace sizing) and model_runner.is_draft_worker;
-        # on Hopper fa3/flashinfer never asked, so the attributes were missing until the first
-        # Blackwell smoke (B200 AttributeError 'MockModelRunner' has no attribute
-        # 'max_running_requests'). 512 = the generator's --max-running-requests default.
+        self.kv_index_translator = None
+        self.sliding_window_size = None  # model_runner.py:1353: DeepSeek V3 has no window
+        # TRTLLMMLABackend sizes its multi-CTA KV counter from it (trtllm_mla_backend.py:
+        # 269-275); 512 = the generator's --max-running-requests default.
         self.max_running_requests = 512
+        # The backends read spec_algorithm only on a draft worker; the collector runs none.
         self.is_draft_worker = False
-        # sglang 0.5.16 reads the parallel geometry from model_runner.ps
-        # (flashattention_backend.py:183,271-274; parallel_state_wrapper.py:6-24)
-        try:
-            from sglang.srt.distributed.parallel_state_wrapper import ParallelState
-
-            self.ps = ParallelState.trivial(gpu_id=0)
-        except ImportError:
-            from types import SimpleNamespace
-
-            self.ps = SimpleNamespace(
-                tp_rank=0,
-                tp_size=1,
-                pp_rank=0,
-                pp_size=1,
-                dp_rank=0,
-                dp_size=1,
-                attn_tp_rank=0,
-                attn_tp_size=1,
-                attn_cp_rank=0,
-                attn_cp_size=1,
-                attn_dp_rank=0,
-                attn_dp_size=1,
-                moe_ep_rank=0,
-                moe_ep_size=1,
-                moe_dp_rank=0,
-                moe_dp_size=1,
-                dcp_size=1,
-                gpu_id=0,
-            )
-        self.server_args = MockServerArgs(kv_cache_dtype, page_size)
-        self.is_draft_worker = False
-        # sglang>=0.5.21 backends ask the runner for logits rows per decode slot
-        # (model_runner.py:796 decode_num_tokens_per_req; triton_backend.py:218,222);
-        # the kernel collectors never run speculative decoding -> 1
-        self.spec_algorithm = None  # read by the 0.5.16 attention backends (draft-worker branches)
-        self.use_mla_backend = True
+        self.spec_algorithm = None
 
 
 def create_req_to_token_pool(
@@ -282,87 +225,7 @@ def create_req_to_token_pool(
     return pool, token_matrix.contiguous()
 
 
-def _extend_seq_lens_cpu(forward_batch):
-    """CPU int32 mirror of the per-request extend lengths of a plain EXTEND batch, else None.
-
-    The values are sglang's own ``forward_batch.extend_seq_lens_cpu`` — the list its
-    trtllm_mla backend already reads for ``max_seq_len`` (trtllm_mla_backend.py:850)
-    — so nothing is reconstructed, only mirrored into a CPU tensor.
-    """
-    if forward_batch.forward_mode != ForwardMode.EXTEND:
-        return None
-    extend_seq_lens = getattr(forward_batch, "extend_seq_lens_cpu", None)
-    if not extend_seq_lens:
-        return None
-    return torch.tensor([int(n) for n in extend_seq_lens], dtype=torch.int32, device="cpu")
-
-
-@contextlib.contextmanager
-def _ragged_prefill_with_cpu_seq_lens(seq_lens_cpu):
-    """Hand flashinfer the CPU length mirrors that keep trtllm_ragged_attention_deepseek capturable.
-
-    flashinfer 0.6.18 (sglang 0.5.21's pin) takes optional ``q_seq_lens_cpu`` /
-    ``kv_seq_lens_cpu`` (prefill.py:4797-4798). Without them the wrapper derives
-    the per-row lengths from the device indptrs with a host sync and refuses to
-    run under CUDA-graph capture ("q_seq_lens_cpu and kv_seq_lens_cpu must be
-    provided during CUDA graph capture", prefill.py:5083-5091); with them it
-    validates the mirrors on the host (prefill.py:5053-5077) and launches the
-    same trtllm-gen kernel with the same device arguments. Older flashinfer
-    builds without the parameters never synchronized here and are left alone.
-    """
-    import flashinfer.prefill as flashinfer_prefill
-
-    original = flashinfer_prefill.trtllm_ragged_attention_deepseek
-    parameters = inspect.signature(original).parameters
-    if "q_seq_lens_cpu" not in parameters or "kv_seq_lens_cpu" not in parameters:
-        yield
-        return
-
-    def _with_cpu_seq_lens(*args, **kwargs):
-        kwargs.setdefault("q_seq_lens_cpu", seq_lens_cpu)
-        kwargs.setdefault("kv_seq_lens_cpu", seq_lens_cpu)
-        return original(*args, **kwargs)
-
-    flashinfer_prefill.trtllm_ragged_attention_deepseek = _with_cpu_seq_lens
-    try:
-        yield
-    finally:
-        flashinfer_prefill.trtllm_ragged_attention_deepseek = original
-
-
-class _GraphCapturableTRTLLMMLABackend(TRTLLMMLABackend):
-    """sglang's trtllm_mla backend with a CUDA-graph-capturable prefill kernel call.
-
-    Serving never graph-captures prefill, so sglang 0.5.21's
-    ``TRTLLMMLABackend._run_prefill_kernel`` (trtllm_mla_backend.py:1098-1141)
-    calls ``flashinfer.prefill.trtllm_ragged_attention_deepseek`` without the
-    CPU length mirrors and flashinfer refuses the capture (see
-    ``_ragged_prefill_with_cpu_seq_lens``). The collector times the kernel under
-    graph replay — eager timing of this lane floors at the Python launch loop
-    (0.13 ms on B200, 0.29 ms on GB200 for every isl <= 1024 cell; data
-    validation) — so the no-prefix prefill call gets the mirrors
-    here. This changes how the kernel is invoked, never which kernel runs: the
-    chunked-prefix calls (their own ``cum_seq_lens_kv``) and every other
-    backend path go through sglang unchanged.
-    """
-
-    _prefill_seq_lens_cpu = None
-
-    def init_forward_metadata(self, forward_batch):
-        super().init_forward_metadata(forward_batch)
-        self._prefill_seq_lens_cpu = _extend_seq_lens_cpu(forward_batch)
-
-    def _run_prefill_kernel(self, *args, **kwargs):
-        seq_lens_cpu = self._prefill_seq_lens_cpu
-        cum_seq_lens_q = kwargs.get("cum_seq_lens_q")
-        cum_seq_lens_kv = kwargs.get("cum_seq_lens_kv")
-        if seq_lens_cpu is None or cum_seq_lens_q is None or cum_seq_lens_kv is not cum_seq_lens_q:
-            return super()._run_prefill_kernel(*args, **kwargs)
-        with _ragged_prefill_with_cpu_seq_lens(seq_lens_cpu):
-            return super()._run_prefill_kernel(*args, **kwargs)
-
-
-def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
+def benchmark_layer(layer, attn_backend, forward_batch, q, k, v, **layer_kwargs):
     # CUDA-graph replay for every lane: a capture failure raises (helper default
     # allow_graph_fail=False) and an eager result is refused below, so a kernel
     # that stops being capturable fails the case instead of shipping its launch
@@ -370,13 +233,8 @@ def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
     device = q.device
 
     def kernel_func():
-        extra_kwargs = dict(kwargs)
-        if q_rope is not None:
-            extra_kwargs["q_rope"] = q_rope
-        if k_rope is not None:
-            extra_kwargs["k_rope"] = k_rope
-        with forward_context(ForwardContext(attn_backend=forward_batch.attn_backend)):
-            layer(q, k, v, forward_batch, **extra_kwargs)
+        with forward_context(ForwardContext(attn_backend=attn_backend)):
+            layer(q, k, v, forward_batch, **layer_kwargs)
 
     with benchmark_with_power(
         device=device,
@@ -429,6 +287,7 @@ def run_mla(
     ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
     torch.cuda.set_device(device)
     torch_device = torch.device(device)
+    device_str = str(torch_device)
     random.seed(0)
     torch.manual_seed(0)
     del world_size, warming_up, test_ite, output_len
@@ -438,15 +297,18 @@ def run_mla(
     local_num_heads = num_heads // tp_size
 
     selected_backend = _select_default_mla_backend()
+    # trtllm_mla forces page_size 64 when unset (arg_groups/overrides.py:1155-1163,
+    # _mla_backend_page_constraints); fa3 and triton keep the default 1.
     expected_page_size = 64 if selected_backend == "trtllm_mla" else 1
     if tokens_per_block != expected_page_size:
         raise ValueError(f"SGLang {selected_backend} requires page_size={expected_page_size}, got {tokens_per_block}")
-    # FIXME(kernel-limit): sglang 0.5.21 trtllm_mla DECODE on Blackwell with 64 < local heads < 128.
-    # flashinfer's trtllm-gen MLA decode refuses that head range (flashinfer mla/_core.py:3948) and
-    # falls back to the cute-dsl runner, but sglang 0.5.21's trtllm_mla_backend passes
-    # multi_ctas_kv_counter_buffer unconditionally on Blackwell -> "multi_ctas_kv_counter_buffer is
-    # only supported when a trtllm-gen runner is selected" (_core.py:4278). Serving hits the same
-    # raise (B200 identity probe: Kimi-K3 bf16 tp1, 96 heads; finding
+    # FIXME(kernel-limit): trtllm_mla DECODE on Blackwell with 64 < local heads < 128.
+    # flashinfer's trtllm-gen MLA decode refuses that head range (flashinfer mla/_core.py:4402
+    # @v0.7.2) and its auto backend falls back to the cute-dsl runner, but sglang's
+    # trtllm_mla_backend passes multi_ctas_kv_counter_buffer on every trtllm-gen call
+    # (trtllm_mla_backend.py:1036-1040) -> "multi_ctas_kv_counter_buffer is only supported
+    # when a trtllm-gen runner is selected" (_core.py:4741-4744 @v0.7.2). Serving hits the
+    # same raise (B200 identity probe: Kimi-K3 bf16 tp1, 96 heads; finding
     # sm100_probe_failures_recheck_2026_10_04 (i)), so the cell is serving-unreachable at this tp;
     # the b200_sxm shard run (GitLab job 469988017) failed exactly the 362 num_heads=96 decode cases
     # (bf16 + fp8 KV) and nothing else. Prefill (mla_context, 96 heads) is unaffected. Fail-closed:
@@ -458,10 +320,10 @@ def run_mla(
         and 64 < local_num_heads < 128
     ):
         raise RuntimeError(
-            "FIXME(kernel-limit): sglang 0.5.21 trtllm_mla decode on SM100/103 does not support "
+            "FIXME(kernel-limit): sglang trtllm_mla decode on SM100/103 does not support "
             f"64 < local_num_heads < 128 (num_heads={num_heads}, tp_size={tp_size} -> {local_num_heads}); "
             "flashinfer trtllm-gen MLA decode rejects the head range and the cute-dsl fallback rejects "
-            "multi_ctas_kv_counter_buffer (mla/_core.py:3948, :4278); serving fails identically (Kimi-K3 tp1)"
+            "multi_ctas_kv_counter_buffer (mla/_core.py:4402, :4741); serving fails identically (Kimi-K3 tp1)"
         )
 
     model_runner = MockModelRunner(
@@ -477,49 +339,9 @@ def run_mla(
         total_len=total_len,
         page_size=tokens_per_block,
         torch_device=torch_device,
-        device_str=str(torch_device),
+        device_str=device_str,
     )
     model_runner.req_to_token_pool = req_to_token_pool
-
-    model_runner.server_args.attention_backend = selected_backend
-    model_runner.server_args.prefill_attention_backend = selected_backend
-    model_runner.server_args.decode_attention_backend = selected_backend
-    # Set global args after potential overrides.
-    try:
-        from sglang.srt.runtime_context import publish as _publish  # noqa: F401
-    except ImportError:
-        sglang.srt.server_args.set_global_server_args_for_scheduler(model_runner.server_args)
-    # >=0.5.20: set_global_server_args_for_scheduler publishes (resolve_once on a real ServerArgs record);
-    # ensure_offline_runtime_published() already installed the process record, the mock drives the backends directly.
-
-    # Define dimensions based on phase
-    kv_lora_rank = KV_LORA_RANK
-    qk_rope_head_dim = QK_ROPE_HEAD_DIM
-    qk_nope_head_dim = QK_NOPE_HEAD_DIM
-
-    if selected_backend == "trtllm_mla":
-        if is_context_phase:
-            # Prefill: Non-absorbed, standard projected heads
-            # q_nope (128) + q_rope (64) = 192
-            v_head_dim = qk_nope_head_dim
-            head_dim_total = qk_nope_head_dim + qk_rope_head_dim
-        else:
-            # Decode: Weight absorbed
-            # latent (512) + rope (64) = 576
-            v_head_dim = kv_lora_rank
-            head_dim_total = kv_lora_rank + qk_rope_head_dim
-    else:
-        v_head_dim = kv_lora_rank
-        head_dim_total = kv_lora_rank + qk_rope_head_dim
-
-    # Keep model_config consistent with chosen dims
-    # Must update config BEFORE creating attn_backend so it picks up the right v_head_dim
-    model_runner.model_config.kv_lora_rank = kv_lora_rank
-    model_runner.model_config.v_head_dim = v_head_dim
-    model_runner.model_config.swa_v_head_dim = v_head_dim
-    model_runner.model_config.qk_nope_head_dim = qk_nope_head_dim
-    model_runner.model_config.qk_rope_head_dim = qk_rope_head_dim
-    model_runner.model_config.scaling = MLA_SCALING
 
     total_tokens = max(1, batch_size * total_len)
     kv_cache_size = max(
@@ -530,189 +352,159 @@ def run_mla(
         size=kv_cache_size,
         page_size=tokens_per_block,
         dtype=kv_cache_dtype,
-        kv_lora_rank=kv_lora_rank,
-        qk_rope_head_dim=qk_rope_head_dim,
+        kv_lora_rank=KV_LORA_RANK,
+        qk_rope_head_dim=QK_ROPE_HEAD_DIM,
         layer_num=1,
-        device=str(torch_device),
+        device=device_str,
         enable_memory_saver=False,
     )
     model_runner.token_to_kv_pool = kv_pool
-    from collector.sglang.runtime_compat import attach_kv_index_translator
+    # ModelRunner.init_kv_index_translator (model_runner.py:950-961): over a static pool
+    # the translator translates nothing, and every backend reads its page tables through it.
+    model_runner.kv_index_translator = KVIndexTranslator(
+        req_to_token=req_to_token_pool.req_to_token,
+        token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
+        token_to_kv_pool=kv_pool,
+        page_size=tokens_per_block,
+        device=device_str,
+        is_draft_worker=model_runner.is_draft_worker,
+    )
 
-    attach_kv_index_translator(model_runner)
-
+    # Each lane builds the backend class serving's factory builds for its name
+    # (layers/attention/attention_registry.py).
     if selected_backend == "trtllm_mla":
-        # TRTLLMMLABackend inherits FlashInferMLAAttnBackend which creates
-        # FlashInferMLAIndicesUpdaterDecode(model_runner, self) — a cyclic reference.
-        # Without explicit GC, previous backends accumulate and corrupt shared workspace state.
-        import gc
-
+        # TRTLLMMLABackend inherits FlashInferMLAAttnBackend, whose indices updaters hold
+        # the backend (FlashInferMLAIndicesUpdaterDecode(model_runner, self)): collect
+        # the previous case's cycle before building another.
         gc.collect()
-        attn_backend = _GraphCapturableTRTLLMMLABackend(model_runner)
+        attn_backend = TRTLLMMLABackend(model_runner)
         kernel_source = "trtllm_mla"
     elif selected_backend == "triton":
         attn_backend = TritonAttnBackend(model_runner)
         kernel_source = "triton"
     else:
-        # Hopper: use FA3-compatible FlashAttention path for MLA.
+        # Deviation (SM90 fa3, FP8 KV cache): the absorbed path casts the layer's whole
+        # KV buffer to BF16 on every call (`get_key_buffer(...).to(q.dtype)`,
+        # flashattention_backend.py:1944 extend, :2350 decode). Serving's buffer is the
+        # full KV pool (max_total_num_tokens); this pool holds only the case's
+        # batch x (isl + 1) tokens, so FP8-KV rows under-measure serving by the cast of
+        # the rest of its pool, a per-layer cost that grows with the serving pool, not
+        # with the case. BF16-KV rows are unaffected (the cast is a no-op). Retire by
+        # sizing the pool like serving, or when SGLang reads the FP8 cache in place.
         attn_backend = FlashAttentionBackend(model_runner)
         kernel_source = "flash_attention"
 
+    qk_head_dim, v_head_dim, absorbed = _mla_attention_geometry(selected_backend, is_context_phase)
     layer = RadixAttention(
         num_heads=local_num_heads,
-        head_dim=head_dim_total,
+        head_dim=qk_head_dim,
         scaling=MLA_SCALING,
-        num_kv_heads=1,
+        num_kv_heads=1 if absorbed else local_num_heads,
         layer_id=0,
         v_head_dim=v_head_dim,
     ).to(torch_device)
 
     req_pool_indices = torch.arange(batch_size, dtype=torch.int32, device=torch_device)
-    q_rope_arg = None
-    k_rope_arg = None
-
+    # Serving's out_cache_loc is the allocator's int64 slots (mem_cache/allocator/paged.py:242,302).
     if is_context_phase:
+        num_tokens = batch_size * input_len
         seq_lens = torch.full((batch_size,), input_len, dtype=torch.int32, device=torch_device)
         prefix_lens = torch.zeros_like(seq_lens)
-        # TRTLLM/FlashInfer paths use projected heads here; Triton uses latent KV_LORA_RANK heads.
-        q_shape = (batch_size * input_len, local_num_heads, v_head_dim)
-        q_nope = torch.randn(q_shape, device=torch_device, dtype=torch.bfloat16)
-        q_rope = torch.randn(
-            batch_size * input_len,
-            local_num_heads,
-            qk_rope_head_dim,
-            device=torch_device,
-            dtype=torch.bfloat16,
-        )
-        k_shape = (batch_size * input_len, 1, v_head_dim)
-        k_nope = torch.randn(k_shape, device=torch_device, dtype=torch.bfloat16)
-        k_rope = torch.randn(
-            batch_size * input_len,
-            1,
-            qk_rope_head_dim,
-            device=torch_device,
-            dtype=torch.bfloat16,
-        )
-        # v has the same head dimension as the non-rope K fragment for each backend path.
-        v = k_nope
-        if kernel_source == "triton":
-            q = torch.cat([q_nope, q_rope], dim=-1)
-            k = torch.cat([k_nope, k_rope], dim=-1)
-        else:
-            q = q_nope
-            k = k_nope
-            q_rope_arg = q_rope
-            k_rope_arg = k_rope
-
         positions = torch.cat([torch.arange(input_len, device=torch_device) for _ in range(batch_size)])
-
         forward_batch = ForwardBatch(
             forward_mode=ForwardMode.EXTEND,
             batch_size=batch_size,
-            input_ids=torch.zeros(batch_size, input_len, dtype=torch.long, device=torch_device),
+            input_ids=torch.zeros(num_tokens, dtype=torch.int64, device=torch_device),
             req_pool_indices=req_pool_indices,
             seq_lens=seq_lens,
-            out_cache_loc=token_matrix.reshape(-1).to(torch.int32),
-            seq_lens_sum=int(seq_lens.sum().item()),
+            out_cache_loc=token_matrix.reshape(-1).to(torch.int64),
+            seq_lens_sum=num_tokens,
             seq_lens_cpu=seq_lens.cpu(),
             extend_seq_lens=seq_lens,
             extend_prefix_lens=prefix_lens,
-            extend_seq_lens_cpu=seq_lens.cpu().tolist(),
-            extend_prefix_lens_cpu=prefix_lens.cpu().tolist(),
-            extend_num_tokens=int(seq_lens.sum().item()),
+            # Host lists, as ForwardBatch.init_new fills them (forward_batch_info.py:1240-1241);
+            # trtllm_mla reads max(extend_seq_lens_cpu) (trtllm_mla_backend.py:809).
+            extend_seq_lens_cpu=[input_len] * batch_size,
+            extend_prefix_lens_cpu=[0] * batch_size,
+            extend_num_tokens=num_tokens,
             positions=positions,
         )
     else:
         history_len = input_len
+        num_tokens = batch_size
         seq_lens = torch.full((batch_size,), history_len + 1, dtype=torch.int32, device=torch_device)
-        positions = torch.full((batch_size,), history_len, device=torch_device)
-
         forward_batch = ForwardBatch(
             forward_mode=ForwardMode.DECODE,
             batch_size=batch_size,
-            input_ids=torch.zeros(batch_size, 1, dtype=torch.long, device=torch_device),
+            input_ids=torch.zeros(batch_size, dtype=torch.int64, device=torch_device),
             req_pool_indices=req_pool_indices,
             seq_lens=seq_lens,
-            out_cache_loc=token_matrix[:, history_len:].reshape(-1).to(torch.int32),
-            seq_lens_sum=int(seq_lens.sum().item()),
+            out_cache_loc=token_matrix[:, history_len:].reshape(-1).to(torch.int64),
+            seq_lens_sum=int(batch_size * (history_len + 1)),
             seq_lens_cpu=seq_lens.cpu(),
-            positions=positions,
+            positions=torch.full((batch_size,), history_len, device=torch_device),
         )
 
-        if history_len > 0:
-            history_loc = token_matrix[:, :history_len].reshape(-1).contiguous()
-            cache_k = torch.randn(
-                history_loc.numel(),
-                1,
-                kv_lora_rank,
-                device=torch_device,
-                dtype=torch.bfloat16,
-            )
-            cache_k_rope = torch.randn(
-                history_loc.numel(),
-                1,
-                qk_rope_head_dim,
-                device=torch_device,
-                dtype=torch.bfloat16,
-            )
+    # ForwardBatch.init_new binds every forward to its iteration's KV-location plan
+    # (forward_batch_info.py:1139-1142); the MLA backends hand it to the translator for
+    # their page tables (trtllm_mla_backend.py:872, triton_backend.py:910,1025).
+    translator = model_runner.kv_index_translator
+    translator.own_plan(forward_batch).bind(forward_batch, translator)
+
+    if not absorbed:
+        # trtllm_mla prefill, as forward_normal_prepare hands it to attn_mha
+        # (forward_mha.py:214-293): q is q_b_proj's (T, H, 192) view, k the concatenated
+        # (T, H, 192) key, and v the strided value half of kv_b_proj's (T, H, 256) output.
+        q = torch.randn(num_tokens, local_num_heads, qk_head_dim, device=torch_device, dtype=torch.bfloat16)
+        k = torch.randn(num_tokens, local_num_heads, qk_head_dim, device=torch_device, dtype=torch.bfloat16)
+        kv = torch.randn(
+            num_tokens, local_num_heads, QK_NOPE_HEAD_DIM + V_HEAD_DIM, device=torch_device, dtype=torch.bfloat16
+        )
+        v = kv[..., QK_NOPE_HEAD_DIM:]
+        # forward_normal_chunked_kv_core (forward_mha.py:383-386): no prefix, no LSE, and
+        # the latent cache was written in prepare, outside the attention call.
+        forward_batch.mha_return_lse = False
+        forward_batch.set_attn_attend_prefix_cache(False)
+        layer_kwargs = {"save_kv_cache": False}
+    else:
+        if not is_context_phase and history_len > 0:
+            history_loc = token_matrix[:, :history_len].reshape(-1).to(torch.int64)
             kv_pool.set_mla_kv_buffer(
                 layer,
-                history_loc.to(torch.int64),
-                cache_k,
-                cache_k_rope,
+                history_loc,
+                torch.randn(history_loc.numel(), 1, KV_LORA_RANK, device=torch_device, dtype=torch.bfloat16),
+                torch.randn(history_loc.numel(), 1, QK_ROPE_HEAD_DIM, device=torch_device, dtype=torch.bfloat16),
             )
-
-        q_nope = torch.randn(batch_size, local_num_heads, v_head_dim, device=torch_device, dtype=torch.bfloat16)
-        q_rope = torch.randn(
-            batch_size,
-            local_num_heads,
-            qk_rope_head_dim,
-            device=torch_device,
-            dtype=torch.bfloat16,
-        )
-        k_nope = torch.randn(batch_size, 1, v_head_dim, device=torch_device, dtype=torch.bfloat16)
-        k_rope = torch.randn(batch_size, 1, qk_rope_head_dim, device=torch_device, dtype=torch.bfloat16)
+        # forward_absorb_core (forward_mla.py:726-799): q_nope_out / q_pe and the new
+        # token's k_nope / k_pe, saved to the cache inside the call.
+        q_nope = torch.randn(num_tokens, local_num_heads, KV_LORA_RANK, device=torch_device, dtype=torch.bfloat16)
+        q_rope = torch.randn(num_tokens, local_num_heads, QK_ROPE_HEAD_DIM, device=torch_device, dtype=torch.bfloat16)
+        k_nope = torch.randn(num_tokens, 1, KV_LORA_RANK, device=torch_device, dtype=torch.bfloat16)
+        k_rope = torch.randn(num_tokens, 1, QK_ROPE_HEAD_DIM, device=torch_device, dtype=torch.bfloat16)
         v = k_nope
-        q_nope = q_nope.view(batch_size * 1, local_num_heads, v_head_dim)
-        q_rope = q_rope.view(batch_size * 1, local_num_heads, qk_rope_head_dim)
-        if kernel_source == "triton":
+        layer_kwargs = {}
+        if selected_backend == "triton":
+            # Backends outside FORWARD_ABSORB_CORE_ATTENTION_BACKENDS (models/deepseek_common/
+            # utils.py:65-75) get the concatenated q / k (forward_mla.py:784-799).
             q = torch.cat([q_nope, q_rope], dim=-1)
             k = torch.cat([k_nope, k_rope], dim=-1)
         else:
             q = q_nope
             k = k_nope
-            q_rope_arg = q_rope
-            k_rope_arg = k_rope
+            layer_kwargs.update(q_rope=q_rope, k_rope=k_rope)
+        if selected_backend == "trtllm_mla" and not is_context_phase and kv_cache_dtype == torch.float8_e4m3fn:
+            # FP8 trtllm_mla decode defers RoPE into the backend's fused rope + quantize
+            # (forward_mla.py:964-987 _fuse_rope_for_trtllm_mla, :730-735). The cache is
+            # the rotary embedding's float32 [max_position, rotary_dim] cos|sin table
+            # (flashinfer.rope.mla_rope_quantize_fp8 requires float32).
+            layer_kwargs["cos_sin_cache"] = torch.randn(
+                total_len, QK_ROPE_HEAD_DIM, device=torch_device, dtype=torch.float32
+            )
 
-    # Add dummy cos_sin_cache only for TRTLLM MLA path (both prefill/decode)
-    if kernel_source == "trtllm_mla" and qk_rope_head_dim > 0:
-        # flashinfer.rope.mla_rope_quantize_fp8 requires cos_sin_cache to be float32
-        cos_sin_cache = torch.randn(
-            total_len,
-            max(1, qk_rope_head_dim // 2),
-            2,
-            device=torch_device,
-            dtype=torch.float32,
-        )
-        extra_kwargs = {"cos_sin_cache": cos_sin_cache}
-    else:
-        extra_kwargs = {}
+    with forward_context(ForwardContext(attn_backend=attn_backend)):
+        attn_backend.init_forward_metadata(forward_batch)
 
-    forward_batch.req_to_token_pool = req_to_token_pool
-    forward_batch.token_to_kv_pool = kv_pool
-    forward_batch.attn_backend = attn_backend
-    attn_backend.init_forward_metadata(forward_batch)
-
-    latency, power_stats = benchmark_layer(
-        layer,
-        forward_batch,
-        q,
-        k,
-        v,
-        q_rope_arg,
-        k_rope_arg,
-        **extra_kwargs,
-    )
+    latency, power_stats = benchmark_layer(layer, attn_backend, forward_batch, q, k, v, **layer_kwargs)
 
     if is_context_phase:
         isl = input_len

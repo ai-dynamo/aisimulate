@@ -421,21 +421,33 @@ impl DsaModuleOp {
         )
     }
 
-    /// CP (round-robin split) per-layer DSA composition. Verbatim mirror of
-    /// Python `ContextDSAModule._query_cp` (2026-06-11 strategy):
+    /// CP (round-robin split) per-layer DSA composition:
     ///
     /// ```text
     /// result = dsa(isl/cp, prefix)
     ///        + [mqa(isl, prefix)/cp       - mqa(isl/cp, prefix)]
-    ///        + [topk_last(isl, prefix)/cp - topk_flat(isl/cp, prefix)]
+    ///        + [topk_last(isl, prefix)/cp - topk_module(isl/cp, prefix)]
     ///        + AG_KV + AG_LSE
     /// ```
     ///
+    /// The last bracket swaps the top-k time embedded in the per-card module
+    /// for the full-context top-k share. `topk_module` is the calibration
+    /// that matches how the module table was collected, read from the loaded
+    /// top-k table:
+    ///
+    /// - the table has `flat` rows: the module was timed on degenerate
+    ///   (all-tie) index scores, so `topk_module = topk_flat`;
+    /// - the table has no `flat` rows: the module was timed on written
+    ///   history with non-degenerate scores, so `topk_module = topk_last`
+    ///   (the same form as the DeepSeek-V4 CSA composition).
+    ///
+    /// The table decides as a whole. One with `flat` rows for only some
+    /// shapes still uses `topk_flat` for every query; the two calibrations
+    /// are never mixed within one table.
+    ///
     /// `base(per_card)` supplies the per-card monolithic dsa_module latency;
     /// `ag(elems)` the all-gather latency for an element volume (bf16). Both
-    /// are injected so the composition is unit-testable against the same
-    /// synthetic inputs as the Python test
-    /// (`tests/unit/sdk/test_cp_dsa_modeling.py::test_query_cp_composition`).
+    /// are injected so the composition is unit-testable on synthetic inputs.
     fn query_cp_with(
         &self,
         sparse: &DsaSparseTables,
@@ -456,18 +468,16 @@ impl DsaModuleOp {
         // that. Message shape mirrors Python's fail-loud contract.
         // skip_indexer layers carry NO indexer -> no mqa/topk deltas needed,
         // so don't require the sparse tables for them (Python dsa.py:835-837).
+        // `topk_flat` is not required: a top-k table without `flat` rows
+        // selects the `topk_last` per-card term below.
         let missing: Vec<&str> = if skip_indexer {
             Vec::new()
         } else {
-            [
-                ("mqa", &sparse.mqa),
-                ("topk_last", &sparse.topk_last),
-                ("topk_flat", &sparse.topk_flat),
-            ]
-            .into_iter()
-            .filter(|(_, grid)| grid.is_empty())
-            .map(|(name, _)| name)
-            .collect()
+            [("mqa", &sparse.mqa), ("topk_last", &sparse.topk_last)]
+                .into_iter()
+                .filter(|(_, grid)| grid.is_empty())
+                .map(|(name, _)| name)
+                .collect()
         };
         if !missing.is_empty() {
             return Err(AicError::PerfDatabase(format!(
@@ -485,25 +495,33 @@ impl DsaModuleOp {
         // (queried at b) WITHOUT an external x b linearity assumption.
         let mqa_tab = bs_slice(&sparse.mqa, b);
         let tl_tab = bs_slice(&sparse.topk_last, b);
-        let tf_tab = bs_slice(&sparse.topk_flat, b);
+        // Top-k calibration matching the top-k time inside the per-card
+        // module: `flat` when the table carries any `flat` row, `top_last`
+        // when it carries none (see the method docs).
+        let topk_module = if sparse.topk_flat.is_empty() {
+            &sparse.topk_last
+        } else {
+            &sparse.topk_flat
+        };
+        let tm_tab = bs_slice(topk_module, b);
         let empty = std::collections::BTreeMap::new();
         let mqa_tab = mqa_tab.unwrap_or(&empty);
         let tl_tab = tl_tab.unwrap_or(&empty);
-        let tf_tab = tf_tab.unwrap_or(&empty);
+        let tm_tab = tm_tab.unwrap_or(&empty);
         let mqa_full = lookup_2d(mqa_tab, isl, prefix)?;
         let mqa_perc = lookup_2d(mqa_tab, per_card, prefix)?;
         let tl_full = lookup_2d(tl_tab, isl, prefix)?;
-        let tf_perc = lookup_2d(tf_tab, per_card, prefix)?;
+        let tm_perc = lookup_2d(tm_tab, per_card, prefix)?;
         let mut latency = dsa_base;
         // skip layers reuse a sibling's topk index: no per-layer mqa/topk, so
         // no full/cp deltas — just the per-card skip base + the attention
         // all-gathers (Python dsa.py:871-876).
         if !skip_indexer {
-            if let (Some(mqa_full), Some(mqa_perc), Some(tl_full), Some(tf_perc)) =
-                (mqa_full, mqa_perc, tl_full, tf_perc)
+            if let (Some(mqa_full), Some(mqa_perc), Some(tl_full), Some(tm_perc)) =
+                (mqa_full, mqa_perc, tl_full, tm_perc)
             {
                 let delta_mqa = mqa_full / f64::from(cp) - mqa_perc;
-                let delta_topk = tl_full / f64::from(cp) - tf_perc;
+                let delta_topk = tl_full / f64::from(cp) - tm_perc;
                 latency += delta_mqa + delta_topk;
             }
         }
@@ -1362,10 +1380,90 @@ mod tests {
         );
     }
 
-    /// Composition parity with Python
-    /// `tests/unit/sdk/test_cp_dsa_modeling.py::test_query_cp_composition`,
-    /// same synthetic inputs (cp=8, isl=16384, prefix=0, b=1; base 4300,
-    /// each AG 50):
+    /// Run the CP composition on synthetic sparse tables with a fixed
+    /// per-card base (4300) and a fixed latency per all-gather (50), at
+    /// cp=8, isl=16384, prefix=0, b=1.
+    fn cp_latency(sparse: &DsaSparseTables) -> Result<f64, AicError> {
+        glm_cp_op(8)
+            .query_cp_with(sparse, 1, 16384, 0, false, &mut |_| Ok(4300.0), &mut |_| {
+                Ok(50.0)
+            })
+            .map(|r| r.latency_ms)
+    }
+
+    /// A top-k table without `flat` rows (module timed on non-degenerate
+    /// scores) takes the per-card top-k from `top_last`. Hand calculation,
+    /// same inputs as `cp_composition_matches_python_synthetic` minus the
+    /// `flat` row:
+    ///
+    ///   delta_mqa  = mqa_full/cp - mqa_perc = 1600/8 - 25  = 175
+    ///   delta_topk = tl_full/cp  - tl_perc  = 800/8  - 190 = -90
+    ///   latency    = 4300 + 175 - 90 + ag_kv 50 + ag_lse 50 = 4485
+    #[test]
+    fn cp_composition_without_flat_rows_uses_top_last_per_card() {
+        let sparse = DsaSparseTables {
+            mqa: grid(&[(1, 16384, 0, 1600.0), (1, 2048, 0, 25.0)]),
+            topk_last: grid(&[(1, 16384, 0, 800.0), (1, 2048, 0, 190.0)]),
+            topk_flat: SparseGrid::new(),
+            dsa_attn: SparseGrid::new(),
+        };
+        assert_eq!(cp_latency(&sparse).unwrap(), 4485.0);
+    }
+
+    /// A table with `flat` rows for only some shapes keeps the `flat`
+    /// per-card term for every query: the per-card shape (isl 2048) has no
+    /// `flat` row here, so the lookup takes the nearest collected `flat` isl
+    /// (4096 -> 100) and never the `top_last` row at 2048 (190).
+    ///
+    ///   delta_topk = tl_full/cp - tf_perc = 800/8 - 100 = 0
+    ///   latency    = 4300 + 175 + 0 + 50 + 50          = 4575
+    #[test]
+    fn cp_composition_with_partial_flat_rows_keeps_flat_per_card() {
+        let sparse = DsaSparseTables {
+            mqa: grid(&[(1, 16384, 0, 1600.0), (1, 2048, 0, 25.0)]),
+            topk_last: grid(&[(1, 16384, 0, 800.0), (1, 2048, 0, 190.0)]),
+            topk_flat: grid(&[(1, 4096, 0, 100.0)]),
+            dsa_attn: SparseGrid::new(),
+        };
+        assert_eq!(cp_latency(&sparse).unwrap(), 4575.0);
+    }
+
+    /// `mqa` and `topk_last` stay required whether or not the table carries
+    /// `flat` rows: an empty grid is a data error naming the missing table,
+    /// never a silent fall back to the per-card base.
+    #[test]
+    fn cp_missing_mqa_or_top_last_fails_loud() {
+        let mqa = grid(&[(1, 16384, 0, 1600.0), (1, 2048, 0, 25.0)]);
+        let topk_last = grid(&[(1, 16384, 0, 800.0), (1, 2048, 0, 190.0)]);
+        let topk_flat = grid(&[(1, 2048, 0, 100.0)]);
+        let cases = [
+            // (mqa, topk_last, topk_flat, tables named in the error)
+            (true, false, true, "['topk_last']"),
+            (true, false, false, "['topk_last']"),
+            (false, true, true, "['mqa']"),
+            (false, true, false, "['mqa']"),
+            (false, false, false, "['mqa', 'topk_last']"),
+        ];
+        for (has_mqa, has_last, has_flat, named) in cases {
+            let pick =
+                |keep: bool, g: &SparseGrid| if keep { g.clone() } else { SparseGrid::new() };
+            let sparse = DsaSparseTables {
+                mqa: pick(has_mqa, &mqa),
+                topk_last: pick(has_last, &topk_last),
+                topk_flat: pick(has_flat, &topk_flat),
+                dsa_attn: SparseGrid::new(),
+            };
+            let msg = cp_latency(&sparse).unwrap_err().to_string();
+            assert!(
+                msg.contains(&format!("DSA CP modeling needs sparse tables {named} for")),
+                "unexpected message: {msg}"
+            );
+        }
+    }
+
+    /// A top-k table with `flat` rows (module timed on degenerate scores)
+    /// keeps the `flat` per-card term. Synthetic inputs (cp=8, isl=16384,
+    /// prefix=0, b=1; base 4300, each AG 50), hand calculation:
     ///
     ///   delta_mqa  = mqa_full/cp - mqa_perc  = 1600/8 - 25  = 175
     ///   delta_topk = tl_full/cp  - tf_perc   = 800/8  - 100 = 0
@@ -1440,10 +1538,10 @@ mod tests {
         );
     }
 
-    /// Fail-loud symmetry with Python's absent-sparse-table contract: the
-    /// glm5_* / dsv32_* sparse parquets ship nowhere, so a CP context query
-    /// against a real perf DB must error, naming the missing tables and the
-    /// files to collect — never degrade silently to the per-card base.
+    /// Absent-sparse-table contract on a real perf DB: this system/backend/
+    /// version loads no glm5_* sparse rows, so a CP context query must
+    /// error, naming the required tables and the files to collect — never
+    /// degrade silently to the per-card base.
     #[test]
     fn cp_missing_sparse_tables_fail_loud() {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1456,7 +1554,7 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("DSA CP modeling needs sparse tables")
-                && msg.contains("['mqa', 'topk_last', 'topk_flat']")
+                && msg.contains("['mqa', 'topk_last']")
                 && msg.contains("GlmMoeDsaForCausalLM")
                 && msg.contains("num_heads=64")
                 && msg.contains("collect glm5_mqa_logits/glm5_topk first."),

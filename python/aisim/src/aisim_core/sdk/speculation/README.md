@@ -16,7 +16,7 @@ The compatibility command shipped in the `aisim` wheel accepts `--spec-method`, 
 ```bash
 aiconfigurator cli estimate \
   --model-path Qwen/Qwen3-8B \
-  --system h100_sxm --backend vllm --backend-version 0.24.0 \
+  --system h100_sxm --backend vllm --backend-version current \
   --estimate-mode static_gen --isl 64 --osl 128 --batch-size 8 \
   --gemm-quant-mode bfloat16 --kvcache-quant-mode bfloat16 \
   --fmha-quant-mode bfloat16 \
@@ -38,7 +38,7 @@ result = cli_estimate(
     model_path="Qwen/Qwen3-8B",
     system_name="h100_sxm",
     backend_name="vllm",
-    backend_version="0.24.0",
+    backend_version="current",
     isl=64,
     osl=128,
     batch_size=8,

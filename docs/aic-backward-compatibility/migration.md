@@ -73,10 +73,12 @@ AIC command replacement; see the [onboarding guide](../perf-model/fpm-self-servi
 ## Verified serving examples
 
 These examples use the offline `engine` stack, H200 op-level performance data,
-and vLLM 0.24.0. Run them in one working directory with fresh output directories.
+and the `current` vLLM data version. Run them in one working directory with
+fresh output directories.
 They describe simulated serving traffic, not fixed-batch AIC results.
 [Archived example checks](../../benchmarks/evidence/migration/examples.json) retain the exact source
-revision, environment and commands used at capture time. They are historical
+revision, environment and commands used at capture time, when the examples
+pinned vLLM 0.24.0. They are historical
 execution evidence, not current qualification or silicon-accuracy results.
 
 ### Predict one deployment
@@ -95,7 +97,7 @@ engine:
   model: meta-llama/Meta-Llama-3.1-8B
   hardware: h200_sxm
   backend: vllm
-  backend_version: "0.24.0"
+  backend_version: current
   workers:
     aggregated:
       parallelism: {tensor: 2, replicas: 1}
@@ -124,7 +126,7 @@ engine:
   model: meta-llama/Meta-Llama-3.1-8B
   hardware: h200_sxm
   backend: vllm
-  backend_version: "0.24.0"
+  backend_version: current
   workers:
     aggregated:
       parallelism: {preset: default}

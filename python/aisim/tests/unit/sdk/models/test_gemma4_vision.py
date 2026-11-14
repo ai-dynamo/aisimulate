@@ -251,6 +251,7 @@ class TestGemma4VisionRuntime:
         assert expected_bytes > 32 * 1024 * 1024
         assert memory["activations"] == pytest.approx(expected_bytes / (1 << 30))
 
+    @pytest.mark.usefixtures("raw_data_coordinates")
     @pytest.mark.parametrize("include_energy", [True, False])
     def test_visual_attention_overlay_uses_native_kernel_without_fused_extras(self, include_energy):
         from aisim_core.sdk.engine import build_ops_json

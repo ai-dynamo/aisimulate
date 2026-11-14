@@ -463,7 +463,7 @@ def render_backend_templates(
 
     # ── Apply the hardware-derived moe_backend fact onto the shared context ──
     # HARDWARE selection (not a model default): trtllm needs the right MoE kernel
-    # (WIDEEP on Blackwell, CUTLASS on Hopper — the wrong choice on Blackwell is a
+    # (WIDEEP on Blackwell where the release accepts it — the wrong choice on Blackwell is a
     # startup crash). Applied here, BEFORE the engine render loop, which reads
     # ``context["moe_config"]["backend"]`` via each per-worker ``wc = dict(context)``
     # (the shallow copy aliases the ``moe_config`` dict, so the fill is visible to

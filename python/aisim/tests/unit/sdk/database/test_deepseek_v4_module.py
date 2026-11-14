@@ -122,6 +122,7 @@ def test_mhc_weight_memory_uses_quant_mode():
     assert fp8_op.get_weights() == pytest.approx(bf16_op.get_weights() / 2)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_deepseek_v4_per_op_sol_queries_run_end_to_end():
     """Every DSV4 op must answer a per-op SOL query through the per-call
     ``op._engine_query()`` surface (the PERMANENT internal single-op plumbing,

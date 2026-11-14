@@ -27,7 +27,7 @@ from __future__ import annotations
 # 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+__compat__ = "sglang==0.5.23"
 
 import argparse
 import contextlib
@@ -331,13 +331,9 @@ def _resolve_model_path(
           ``sm90_fp8_gemm_1d2d_impl`` kernel — the same path the production
           server uses, so kernel-by-kernel the latency lines up with a real run.
 
-    TP simulation is NOT done at this layer (do not patch num_attention_heads).
-    Use ``_tp_load_model_patch`` instead, which sets ``_TP.world_size`` and
-    ``_ATTN_TP_SIZE`` to N at model construction.  That keeps FMLA's required
-    h_q=64 (Q is zero-padded with only the rank's tp_slice filled) while
-    projection GEMMs (wq_b, wo_a, wo_b, ColumnParallel/RowParallel) allocate
-    1/N shards.  Patching ``num_attention_heads`` directly would bypass the
-    zero-pad path and trip FlashMLA's "Unsupported h_q: 8" template guard.
+    TP is not emulated at this layer (do not patch num_attention_heads): that
+    would bypass the attention-TP query padding to h_q=64 and trip FlashMLA's
+    "Unsupported h_q: 8" template guard. See ``_refuse_tp_emulation``.
     """
 
     if os.path.isdir(model_path):
@@ -422,79 +418,32 @@ def _resolve_model_path(
     return tmp_dir
 
 
-@contextlib.contextmanager
-def _tp_load_model_patch(tp_size: int):
-    """Single-process simulation of TP=N rank-0 attention.
+def _refuse_tp_emulation(tp_size: int) -> None:
+    """Refuse a TP>1 row before its model is built: this process cannot time one rank of it.
 
-    Runs sglang with a real torch.distributed group of world_size=1 (no NCCL
-    setup) but lies to the model-construction code so ColumnParallelLinear /
-    RowParallelLinear allocate weights as if running on N ranks.
+    SGLang shards DeepSeek-V4 attention by the published parallel context only.
+    MQALayer reads get_parallel().attn_tp_size / attn_tp_rank for n_local_heads
+    (srt/models/deepseek_v4.py:1024-1036 at v0.5.23; :766-780 at v0.5.21), and its
+    wq_b / wo_a / wo_b bind get_parallel().attn_tp_group (parallel_group="attn_tp",
+    deepseek_v4.py:1118-1166; srt/layers/linear.py:111-137). The previous load patch
+    rewrote parallel_state._TP.world_size and dp_attention._ATTN_TP_SIZE, which no
+    longer exist or are not read, so every TP=N row timed the TP=1 module under a
+    rank-local num_heads label: the 0.5.21 SGLang tables are flat across tp_size
+    (H200 CSA decode, batch 64, step 1: 0.1253/0.1251/0.1253/0.1256 ms at TP 1/2/4/8)
+    where the 0.5.14 ones scale (0.1248/0.0961/0.0824/0.0743 ms).
 
-    Mechanics:
-      1.  ``ModelRunner.load_model`` is wrapped.  Just before it constructs
-          the model, set ``ps._TP.world_size = N`` and ``rank_in_group = 0``.
-          ``get_tensor_model_parallel_world_size()`` returns N, so projection
-          ``ColumnParallelLinear``/``RowParallelLinear`` allocate ``out//N``
-          shards.  ``dp_attention._ATTN_TP_SIZE/RANK`` are set to (N, 0).
-      2.  After ``load_model`` returns, ``_TP.world_size`` is restored to 1.
-          Any forward-time ``tensor_model_parallel_all_reduce`` /
-          ``_all_gather`` then short-circuits at ``world_size == 1`` (the real
-          group only has 1 rank, so a real collective would hang/fail anyway).
-      3.  ``_ATTN_TP_SIZE`` is **NOT** restored.  V4's ``_forward_prepare``
-          reads ``get_attention_tp_size()`` at forward time for the
-          ``q_padded[..., n_heads]`` / ``q_out = q_padded[:, tp_slice, :]``
-          zero-pad logic; keeping it at N is what makes FlashMLA receive the
-          fixed h_q=64 with only the rank-0 slice filled (matching prod TP=N
-          rank-0 byte-for-byte).
-
-    Why this is safe:
-      - FlashMLA's ``Unsupported h_q: 8`` error is avoided because Q is always
-        zero-padded to h_q=64 before FMLA — at any N, FMLA sees h_q=64.
-      - V4 main attention's ``wq_b`` is ``ColumnParallelLinear`` and stores
-        ``self.tp_size`` at construction (read once), so forward uses N
-        without re-querying _TP.world_size.
-      - Indexer / Compressor are ``ReplicatedLinear`` (no sharding); they are
-        unaffected by the patch.
-
-    What the measured kernel time represents: the cost of attention module
-    forward on **one** rank of a real TP=N deployment, including projection
-    GEMMs at the correctly sharded shape and full-resolution attention
-    kernels (FMLA/paged_mqa_logits/compressor — TP-invariant).
+    Retire by building the model under a scoped get_parallel().override(...) of the
+    TP and attention-TP widths, as parallel_state.patch_tensor_parallel_group(...,
+    owns_attention=True) does (srt/distributed/parallel_state.py:3114-3171), with the
+    projections on a logical group (linear.py:88-91, :111-137); validate on a GPU that
+    n_local_heads and the projection shards match one rank before re-enabling.
     """
-    if tp_size <= 1:
-        yield
-        return
-
-    import sglang.srt.distributed.parallel_state as ps
-    import sglang.srt.layers.dp_attention as dp_attn
-    from sglang.srt.model_executor.model_runner import ModelRunner
-
-    orig_load = ModelRunner.load_model
-
-    def patched_load(self):
-        tp_group = ps._TP
-        assert tp_group is not None, (
-            "_TP not initialized; ModelRunner.load_model called before init_distributed_environment ran."
+    if tp_size > 1:
+        raise RuntimeError(
+            f"dsv4 module tp_size={tp_size}: single-process TP emulation does not reach SGLang's "
+            "parallel context (get_parallel().attn_tp_size), so the module would run all heads "
+            "unsharded; refusing to record TP=1 timings under a TP>1 label"
         )
-        orig_world_size = tp_group.world_size
-        orig_rank = tp_group.rank_in_group
-        tp_group.world_size = tp_size
-        tp_group.rank_in_group = 0
-        dp_attn._ATTN_TP_SIZE = tp_size
-        dp_attn._ATTN_TP_RANK = 0
-        try:
-            return orig_load(self)
-        finally:
-            # Restore _TP for forward-time collective short-circuit; leave
-            # _ATTN_TP_SIZE at N because V4 forward re-reads it for tp_slice.
-            tp_group.world_size = orig_world_size
-            tp_group.rank_in_group = orig_rank
-
-    ModelRunner.load_model = patched_load
-    try:
-        yield
-    finally:
-        ModelRunner.load_model = orig_load
 
 
 def _effective_prefill_chunk_size(model_runner) -> int:
@@ -502,13 +451,13 @@ def _effective_prefill_chunk_size(model_runner) -> int:
 
     This is SGLang's own serving chunk (``chunked_prefill_size``), nothing
     less. The retired extra bound ``(shared_memory_per_block_optin//4 - 1)//5``
-    modeled the deep_gemm sched-meta kernel's SMEM limit, but exact SGLang
-    0.5.14 does not expose prefill to that kernel: ``PagedIndexerMetadata``
-    builds its metadata through the JIT path whenever
-    ``SGLANG_OPT_USE_JIT_INDEXER_METADATA`` is set (default ``True``,
-    ``environ.py:789``; only HIP disables it), and even with the env off it
-    switches to the JIT path above ``_LARGE_INDEXER_QUERY_THRESHOLD`` = 11,673
-    query rows (``layers/attention/dsv4/metadata.py``). On H20 the derived
+    modeled the deep_gemm sched-meta kernel's SMEM limit, but SGLang does not
+    expose prefill to that kernel: ``PagedIndexerMetadata`` builds its metadata
+    through the JIT path whenever ``SGLANG_OPT_USE_JIT_INDEXER_METADATA`` is set
+    (default ``True``, ``srt/environ.py:1829`` at v0.5.23; only HIP disables it,
+    ``arg_groups/model_hook.py:506``), and even with the env off it switches to
+    the JIT path above ``_LARGE_INDEXER_QUERY_THRESHOLD`` = 11,673 query rows
+    (``layers/attention/dsv4/metadata.py:66, :212-219``). On H20 the derived
     chunk (8,192) sat below the old bound (11,622), so removing it changes
     nothing on SM90; on B200 the derived chunk is 16,384 and a probe
     executed 8,192/12,288/16,384 fresh-token CSA
@@ -531,9 +480,10 @@ def _derive_csa_context_pool_cap(
     sm_major, sm_minor = torch.cuda.get_device_capability(model_runner.device)
     sm_version = sm_major * 10 + sm_minor
     if sm_version == 120:
-        # Exact SGLang 0.5.14 forces a Torch logits leaf on SM120.  That leaf
-        # materializes additional FP32 gather/BMM intermediates, so the
-        # DeepGEMM output-workspace formula below is not its memory contract.
+        # SGLang forces the Torch/TileLang logits leaves on SM120
+        # (arg_groups/model_hook.py:499-502 at v0.5.23). Those leaves
+        # materialize additional FP32 gather/BMM intermediates, so the
+        # DeepGEMM output-workspace formula below is not their memory contract.
         raise RuntimeError(
             "DSV4 CSA context on SM120 uses the Torch indexer and needs a separately "
             "validated workspace policy; the SM90/100/103 DeepGEMM formula is disabled"
@@ -557,9 +507,16 @@ def _derive_csa_context_pool_cap(
     if bool(getattr(model_runner.server_args, "enable_deepseek_v4_fp4_indexer", False)):
         raise RuntimeError("DSV4 CSA context pool derivation is not validated for the FP4 indexer")
 
-    configurator = create_memory_pool_configurator(model_runner)
+    # Serving hands the pool configurator factory the KV-cache configurator, which
+    # alloc_memory_pool builds first (model_runner.py:971-983, kv_cache_configurator.py:
+    # 3187 at v0.5.23). The runner itself no longer carries the pp_size / attn_dp_size
+    # the DSV4 configurator reads (pool_configurator.py:1119, :1140-1142), so build the same
+    # object here, before the pool exists; alloc_memory_pool rebuilds it.
+    model_runner.init_kv_cache_configurator()
+    kv_cache_configurator = model_runner.kv_cache_configurator
+    configurator = create_memory_pool_configurator(kv_cache_configurator)
     if not isinstance(configurator, DSV4PoolConfigurator):
-        raise TypeError(f"expected SGLang 0.5.14 DSV4PoolConfigurator, got {type(configurator).__name__}")
+        raise TypeError(f"expected SGLang's DSV4PoolConfigurator, got {type(configurator).__name__}")
 
     from collector.sglang.runtime_compat import resolved_arg
 
@@ -581,17 +538,9 @@ def _derive_csa_context_pool_cap(
     if not chunk_eligible_shapes:
         raise RuntimeError(f"DSV4 CSA context pool derivation has no shape within effective_chunk={effective_chunk}")
 
-    # sglang>=0.5.21 moved the pool profiling off ModelRunner onto the KV-cache
-    # configurator (mem_cache/kv_cache_configurator.py:2177 _profile_available_bytes,
-    # same free-memory-minus-slack arithmetic). Serving builds that object inside
-    # alloc_memory_pool (model_runner.py:885 init_kv_cache_configurator, then
-    # configure); build it the same way here, before the pool exists.
-    _profile = getattr(model_runner, "_profile_available_bytes", None)
-    if _profile is None:
-        if getattr(model_runner, "kv_cache_configurator", None) is None:
-            model_runner.init_kv_cache_configurator()
-        _profile = model_runner.kv_cache_configurator._profile_available_bytes
-    profiled_bytes = int(_profile(model_runner.pre_model_load_memory))
+    # The free-memory-minus-slack profile serving sizes the pool from
+    # (kv_cache_configurator.py:2990 _profile_available_bytes at v0.5.23).
+    profiled_bytes = int(kv_cache_configurator._profile_available_bytes(model_runner.pre_model_load_memory))
     profiled_config = configurator.calculate_pool_sizes(profiled_bytes, page_size)
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO["csa"]
     if page_size % compress_ratio != 0:
@@ -797,16 +746,15 @@ def _load_model_runner(
     from collector.sglang.runtime_compat import init_runtime_config
 
     _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
-    with _tp_load_model_patch(tp_size):
-        model_runner = ModelRunner(
-            model_config=model_config,
-            # Use sglang's own __post_init__-derived value, not a collector knob.
-            mem_fraction_static=server_args.mem_fraction_static,
-            gpu_id=gpu_id,
-            nccl_port=nccl_port,
-            server_args=server_args,
-            **_runner_parallel_kwargs,
-        )
+    model_runner = ModelRunner(
+        model_config=model_config,
+        # Use sglang's own __post_init__-derived value, not a collector knob.
+        mem_fraction_static=server_args.mem_fraction_static,
+        gpu_id=gpu_id,
+        nccl_port=nccl_port,
+        server_args=server_args,
+        **_runner_parallel_kwargs,
+    )
     derived_requirements = None
     if csa_context_shapes is not None:
         if max_total_tokens is not None:
@@ -815,19 +763,15 @@ def _load_model_runner(
             model_runner,
             csa_context_shapes,
         )
-        try:
-            model_runner.server_args.max_total_tokens = derived_requirements[0]
-        except AttributeError:
-            # sglang>=0.5.21: ServerArgs is read-only once resolved (server_args.py:396);
-            # post-publish config changes go through the context's config bags
-            # (runtime_context.py:1080 override(source, **fields) — the same call
-            # serving uses for control-plane updates, tokenizer_manager.py:2204). The
-            # configurator reads the cap from get_schedule().max_total_tokens
-            # (kv_cache_configurator.py:2269 _apply_token_constraints).
-            from sglang.srt.runtime_context import get_context
+        # A resolved ServerArgs is read-only (server_args.py:474-490 at v0.5.23);
+        # post-publish config changes go through the context's config bags
+        # (runtime_context.py:1103 override(source, **fields)). The configurator
+        # reads the cap from get_schedule().max_total_tokens
+        # (kv_cache_configurator.py:3090-3102 _apply_token_constraints).
+        from sglang.srt.runtime_context import get_context
 
-            get_context().override("collector-dsv4-csa-context", max_total_tokens=derived_requirements[0])
-    # SGLang 0.5.14 separates model construction from serving-state setup.
+        get_context().override("collector-dsv4-csa-context", max_total_tokens=derived_requirements[0])
+    # Model construction is separate from serving-state setup.
     model_runner.alloc_memory_pool()
     if derived_requirements is not None:
         _, required_full_tokens, required_swa_tokens = derived_requirements
@@ -840,46 +784,6 @@ def _load_model_runner(
                 f"actual_swa={actual_swa_tokens}, required_swa={required_swa_tokens}"
             )
     model_runner.init_attention_backends()
-    # --- AIC proper init (env-gated) -------------------------------------
-    # Dummy load uses uniform(-1e-3, 1e-3) (sglang initialize_dummy_weights).
-    # Those tiny weights make the C4 indexer's q.k logits land in the fp16
-    # subnormal range (<6.1e-5). extract_coarse_bin casts scores to fp16
-    # first, so subnormal logits collapse into very few coarse bins -> the
-    # topK threshold bin holds hundreds of ties (num_equal >> 64) -> Small
-    # path takes its O(n^2) block tie-break -> topk_short_transform is huge
-    # and non-representative vs a trained checkpoint.
-    # Re-init projection weights with a normal of larger scale so logits keep
-    # full fp16 precision (spread). norm/scale params are forced to 1.0 to
-    # avoid scaling activations back down (norm) or producing inf on fp8
-    # dequant (scale). Only safe because the collector runs num_layers==1.
-    _proper = os.environ.get("AIC_DSV4_PROPER_INIT", "")
-    if _proper and _proper != "0":
-        _std = float(os.environ.get("AIC_DSV4_PROPER_INIT_STD", "0.05"))
-        torch.manual_seed(1234)
-        _n_normal = _n_norm = _n_scale = 0
-        with torch.no_grad():
-            for _name, _p in model_runner.model.state_dict().items():
-                if not torch.is_floating_point(_p):
-                    continue
-                _lname = _name.lower()
-                if "scale" in _lname:
-                    _p.fill_(1.0)
-                    _n_scale += 1
-                elif "norm" in _lname:
-                    _p.fill_(1.0)
-                    _n_norm += 1
-                elif torch.finfo(_p.dtype).bits < 16:
-                    _tmp = torch.empty_like(_p, dtype=torch.float16).normal_(0.0, _std)
-                    _p.copy_(_tmp.to(_p.dtype))
-                    _n_normal += 1
-                else:
-                    _p.normal_(0.0, _std)
-                    _n_normal += 1
-        print(
-            f"[dsv4-collector] AIC_DSV4_PROPER_INIT std={_std}: "
-            f"normal={_n_normal} norm->1={_n_norm} scale->1={_n_scale}",
-            flush=True,
-        )
 
     allocator = model_runner.token_to_kv_pool_allocator
     pool_parts = []
@@ -902,46 +806,233 @@ def _load_model_runner(
     return model_runner
 
 
-def _make_reqs(
-    batch_size: int,
-    seq_len: int,
-    *,
-    decode: bool,
-    prefix_len: int = 0,
-    prefix_indices: list[torch.Tensor] | None = None,
-    swa_evicted_seqlen: int = 0,
-):
+def _make_reqs(batch_size: int, seq_len: int, *, decode: bool, prefix_len: int = 0):
+    """Requests that extend fill ids [prefix_len, prefix_len + seq_len).
+
+    SGLang 0.5.23 tracks prefill progress as Req.prefix_len and the end of this
+    round's extend as Req.extend_end (managers/schedule_batch.py:1103-1106, :1218-1220;
+    sglang #42824, #42822); the KV of [0, prefix_len) sits in the request's row
+    (``_hold_prefix_rows``), not on the request (#42825). The fields are set as SGLang's
+    offline batch builder sets them (benchmark/one_batch.py:450-476).
+    """
     from array import array
 
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     full_len = prefix_len + seq_len
-    prefix_indices = prefix_indices or [torch.empty((0,), dtype=torch.int64, device="cuda") for _ in range(batch_size)]
-
     reqs = []
     for i in range(batch_size):
         req = Req(
             rid=str(i),
             origin_input_text="",
-            origin_input_ids=list(torch.randint(0, 10000, (full_len,)).tolist()),
+            origin_input_ids=array("q", torch.randint(0, 10000, (full_len,)).tolist()),
             sampling_params=SamplingParams(temperature=0, max_new_tokens=1),
         )
-        req.prefix_indices = prefix_indices[i]
         req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
-        req.fill_len = full_len
         req.logprob_start_len = 0
-        _n = seq_len if prefix_len else full_len
-        if hasattr(req, "set_extend_input_len"):
-            req.set_extend_input_len(_n)
-        else:  # sglang 0.5.16: schedule_batch.py:1153 set_extend_range(start, end)
-            req.set_extend_range(full_len - _n, full_len)
-        req.swa_evicted_seqlen = swa_evicted_seqlen
+        req.prefix_len = prefix_len
+        req.extend_end = full_len
         if decode:
             req.cached_tokens = 0
             req.already_computed = 0
         reqs.append(req)
     return reqs
+
+
+def _hold_prefix_rows(model_runner, reqs, prefix_len: int) -> None:
+    """Give every request the row an earlier prefill leaves: KV for [0, prefix_len) written.
+
+    alloc_for_extend reads a held row's [0, prefix_len) as the prefix
+    (mem_cache/allocation.py:363-371 at v0.5.23). The rows are installed as SGLang
+    installs a prefilled request outside a prefix tree (PD decode,
+    disaggregation/decode.py:2371-2386, 2408-2422): ReqToTokenPool.alloc binds a row
+    (mem_cache/memory_pool.py:419-435), the prefix slots are written into it, and
+    on a hybrid-SWA pool only the window tail holds SWA slots, recorded as the SWA
+    eviction cursor (ReqKvInfo.set_evicted_seqlen, managers/schedule_batch.py:1021).
+    The prefix slots come from runtime_limits.alloc_prefix_indices, which allocates
+    that SWA tail the same way (alloc_extend_swa_tail, mem_cache/allocator/swa.py:356).
+    """
+    if prefix_len <= 0:
+        return
+    from sglang.srt.mem_cache.unified_cache.component_type import ComponentType
+
+    prefix_indices = _alloc_prefix_indices(model_runner, len(reqs), prefix_len)
+    pool = model_runner.req_to_token_pool
+    if pool.alloc(reqs) is None:
+        raise RuntimeError(f"no free request rows for {len(reqs)} prefix rows; available={pool.available_size()}")
+    allocator = model_runner.token_to_kv_pool_allocator
+    window_size = getattr(model_runner.model_config, "window_size", None)
+    page_size = getattr(allocator, "page_size", None)
+    swa_evicted_seqlen = 0
+    if (
+        callable(getattr(allocator, "alloc_extend_swa_tail", None))
+        and isinstance(window_size, int)
+        and window_size > 0
+        and isinstance(page_size, int)
+        and page_size > 1
+    ):
+        # alloc_prefix_indices' page-aligned window start: SWA KV exists from here on.
+        swa_evicted_seqlen = (max(0, prefix_len - window_size) // page_size) * page_size
+    for req, indices in zip(reqs, prefix_indices, strict=True):
+        pool.write((req.kv.req_pool_idx, slice(0, prefix_len)), indices)
+        req.kv.kv_allocated_len = prefix_len
+        req.kv.kv_committed_len = prefix_len
+        if swa_evicted_seqlen:
+            req.kv.set_evicted_seqlen(ComponentType.SWA, swa_evicted_seqlen)
+
+
+# Distinct history keys: a longer history repeats them, so writing it costs one store call
+# per this many keys (16 MiB of activations) and no further sampling. A key then recurs a
+# handful of times in the longest histories, far below kMaxNumTie = 2048, the number of
+# threshold-bin candidates the top-k stages before it re-derives them
+# (kernels/jit/include/sgl_kernel/deepseek_v4/topk_impl.cuh:178 at v0.5.23).
+_HISTORY_ROWS = 1 << 16
+
+
+def _write_index_history(model_runner, attention_module, forward_batch, history_length: int) -> None:
+    """Write the index keys of the cached history the C4 indexer scores and selects from.
+
+    _hold_prefix_rows only binds slots. The indexer pool starts as zeros
+    (DeepSeekV4IndexerPool._create_buffer, mem_cache/deepseek_v4_memory_pool.py:594-632)
+    and one ModelRunner serves every point of a row, so the history held zeros or an
+    earlier point's keys. A zero key carries a zero scale: every such candidate scored
+    exactly 0.0 and the top-k was timed on ties, a case serving does not have.
+
+    Serving writes key j of a request when it computes token 4j+3, at pool slot
+    raw_out_loc // 4 (_init_compressed_attn_metadata_kernel,
+    kernels/ops/attention/dsv4/metadata_kernel.py:101), as 128 FP8 values and one fp32
+    scale (kernels/jit/csrc/deepseek_v4/fused_norm_rope_v2.cuh:197-199, "matching the
+    indexer cache layout (fused_store_indexer_cache)"). The indexer reads that buffer
+    through the request's page table (forward_c4_indexer, layers/attention/dsv4/
+    indexer.py:1074-1101). Seeded N(0, 1) keys, the magnitude of a key normalized with a
+    unit gain, go to the same slots through the pool's writer for that layout,
+    DeepSeekV4TokenToKVPool.set_index_k_fused (deepseek_v4_memory_pool.py:2275-2284 ->
+    fused_store_cache type="indexer", kernels/ops/attention/dsv4/attn.py:75 ->
+    fused_store_indexer_cache, kernels/jit/csrc/deepseek_v4/store.cuh:147), outside the
+    measurement. They stand for no particular checkpoint distribution. Same treatment as
+    the DSA modules (collect_mla_module._initialize_dsa_history). Paths are relative to
+    python/sglang/srt unless they start with kernels/; citations are v0.5.23.
+    """
+    indexer = getattr(attention_module, "indexer", None)
+    keys_per_request = history_length // 4
+    if indexer is None or keys_per_request <= 0:
+        return
+    if indexer.use_fp4_indexer:
+        # set_index_k_fused writes the FP8 layout; an FP4 pool has 68-byte keys.
+        raise RuntimeError("DSV4 index history is written in the FP8 indexer layout; the FP4 indexer is enabled")
+    # The slot of each group's fourth token, as serving derives the key's slot from it.
+    token_slots = model_runner.req_to_token_pool.req_to_token[
+        forward_batch.req_pool_indices.long(), 3 : 4 * keys_per_request : 4
+    ]
+    slots = (token_slots.long() // 4).flatten().contiguous()
+    generator = torch.Generator(device=slots.device)
+    generator.manual_seed(0)
+    keys = torch.randn(
+        (min(slots.numel(), _HISTORY_ROWS), indexer.head_dim),
+        generator=generator,
+        device=slots.device,
+        dtype=torch.bfloat16,
+    )
+    pool = model_runner.token_to_kv_pool
+    for start in range(0, slots.numel(), _HISTORY_ROWS):
+        chunk = slots[start : start + _HISTORY_ROWS]
+        pool.set_index_k_fused(layer_id=attention_module.layer_id, loc=chunk, cache_k=keys[: chunk.numel()])
+
+
+def _give_index_scores_magnitude(model_runner, attention_module) -> None:
+    """Bring the C4 index scores of a dummy-weight module into fp16's normal range.
+
+    A score is sum_h relu(q_h . k) * w_h * k_scale (fp8_paged_mqa_logits; the torch
+    reference is fp8_paged_mqa_logits_torch, layers/attention/dsv4/indexer.py:82-145), with
+    q = indexer.wq_b(q_norm(wq_a(x))) (MqaAttentionBase._normalize_q_lora, models/
+    deepseek_v4.py:1736-1773; C4Indexer.compute_q, indexer.py:1220-1244),
+    w = indexer.weights_proj(x) * weight_scale (compute_weights, indexer.py:1246-1250) and
+    k = indexer.compressor.norm(...) (Compressor, layers/attention/dsv4/compressor.py:76-78).
+    initialize_dummy_weights draws every float parameter from U(-1e-3, 1e-3), the two
+    normalization gains included (model_loader/weight_utils.py:1740-1776), so q_norm's
+    output, the keys and w were each about a thousand times smaller than a unit-gain
+    module's and the scores came out near 1e-9. The top-k bins scores as fp16 first
+    (extract_coarse_bin, __float2half_rn; kernels/jit/include/sgl_kernel/deepseek_v4/
+    topk_impl.cuh:87-93). Scores below fp16's smallest subnormal (6e-8) all round to zero
+    and share its bin, and a threshold bin holding more than kMaxNumTie nonzero
+    candidates is re-derived in exact-key radix rounds (refine_ties, topk_impl.cuh:571-574,
+    taken at :766-768), work that scores spread over the fp16 bins do not need.
+
+    Unit gains on q_norm and the indexer compressor's norm, and U(-1, 1) on weights_proj
+    through SGLang's own initializer, give scores a standard deviation of a few tenths.
+    Those three are plain bf16/fp32 parameters read at every forward. wq_b is left alone:
+    under FP8 block quantization its weight is stored against scales SGLang repacks at
+    load (Fp8LinearMethod.process_weights_after_loading_block_quant, layers/quantization/
+    fp8.py:743-850), which new values would not match. Values only: no kernel in the
+    module is chosen by them. A loaded checkpoint keeps its own weights. Citations are
+    v0.5.23, paths relative to python/sglang/srt unless they start with kernels/.
+    """
+    indexer = getattr(attention_module, "indexer", None)
+    if indexer is None or model_runner.server_args.load_format != "dummy":
+        return
+    from sglang.srt.model_loader.weight_utils import initialize_dummy_weights
+
+    attention_module.q_norm.weight.data.fill_(1.0)
+    indexer.compressor.norm.weight.data.fill_(1.0)
+    initialize_dummy_weights(indexer.weights_proj, low=-1.0, high=1.0)
+
+
+def _serving_tree_cache(model_runner):
+    """The prefix cache a radix-disabled server builds over this runner's pools, built once.
+
+    The scheduler builds it in kv_cache_builder.build_kv_cache
+    (mem_cache/kv_cache_builder.py:330-461 at v0.5.23): with --disable-radix-cache,
+    registry.default_radix_cache_factory returns UnifiedRadixCache in its disabled
+    mode for every layout but pure SWA (mem_cache/registry.py:80-96). ChunkCache,
+    which earlier collectors used, is gone (sglang #43201). A disabled tree shares
+    no prefix, so it frees out-of-window SWA slots of a held row on its extend
+    (ScheduleBatch.maybe_evict_swa, managers/schedule_batch.py:4068-4129), as serving does.
+    """
+    tree_cache = getattr(model_runner, "_aic_tree_cache", None)
+    if tree_cache is not None:
+        return tree_cache
+    from sglang.srt.configs.model_config import is_deepseek_dsa
+    from sglang.srt.mem_cache.allocator.swa import is_swa_req_ring
+    from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+    from sglang.srt.mem_cache.deepseek_v4_memory_pool import DeepSeekV4TokenToKVPool
+    from sglang.srt.mem_cache.kv_cache_builder import uses_ssm_state
+    from sglang.srt.mem_cache.registry import TreeCacheBuildContext, create_tree_cache
+    from sglang.srt.runtime_context import get_schedule
+
+    pool = model_runner.token_to_kv_pool
+    allocator = model_runner.token_to_kv_pool_allocator
+    dsv4_pool = isinstance(pool, DeepSeekV4TokenToKVPool)
+    # kv_cache_builder.py:332-335, :349-360.
+    is_hybrid_swa = model_runner.is_hybrid_swa and (not dsv4_pool or pool.needs_paged_swa_allocator)
+    params = CacheInitParams(
+        disable=True,
+        req_to_token_pool=model_runner.req_to_token_pool,
+        token_to_kv_pool_allocator=allocator,
+        page_size=model_runner.page_size,
+        chunked_prefill_size=get_schedule().chunked_prefill_size,
+        sliding_window_size=model_runner.sliding_window_size if is_hybrid_swa else None,
+        swa_gates_prefix_match=not (is_swa_req_ring(allocator) or (dsv4_pool and pool.request_window is not None)),
+    )
+    tree_cache = create_tree_cache(
+        TreeCacheBuildContext(
+            server_args=model_runner.server_args,
+            params=params,
+            is_hybrid_swa=is_hybrid_swa,
+            full_tokens_per_layer=model_runner.full_max_total_num_tokens if is_hybrid_swa else None,
+            is_hybrid_ssm=uses_ssm_state(model_runner.model_config),
+            is_dsa=is_deepseek_dsa(model_runner.model_config.hf_config),
+            enable_hierarchical_cache=False,
+            disable_radix_cache=True,
+            tp_worker=None,  # read only to attach HiCache or a cache linker, both off here
+            model_config=model_runner.model_config,
+            tp_size=1,
+            tp_rank=0,
+            tp_group=None,
+        )
+    )
+    model_runner._aic_tree_cache = tree_cache
+    return tree_cache
 
 
 def _build_forward_batch(
@@ -953,8 +1044,6 @@ def _build_forward_batch(
     prefix_len: int = 0,
 ):
     from sglang.srt.managers.schedule_batch import ScheduleBatch
-    from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-    from sglang.srt.mem_cache.chunk_cache import ChunkCache
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
@@ -963,65 +1052,36 @@ def _build_forward_batch(
 
     cached_prefix_len = prefix_len if is_prefill else seq_len
     extend_seq_len = seq_len if is_prefill else 0
-    prefix_indices = _alloc_prefix_indices(model_runner, batch_size, cached_prefix_len)
-    swa_evicted_seqlen = 0
-    allocator = model_runner.token_to_kv_pool_allocator
-    window_size = getattr(model_runner.model_config, "window_size", None)
-    page_size = getattr(allocator, "page_size", None)
-    if (
-        cached_prefix_len > 0
-        and callable(getattr(allocator, "alloc_extend_swa_tail", None))
-        and isinstance(window_size, int)
-        and window_size > 0
-        and isinstance(page_size, int)
-        and page_size > 1
-    ):
-        swa_evicted_seqlen = max(0, cached_prefix_len - window_size)
-        swa_evicted_seqlen = (swa_evicted_seqlen // page_size) * page_size
-    reqs = _make_reqs(
-        batch_size,
-        extend_seq_len,
-        decode=not is_prefill,
-        prefix_len=cached_prefix_len,
-        prefix_indices=prefix_indices,
-        swa_evicted_seqlen=swa_evicted_seqlen,
-    )
-    cache_params = CacheInitParams(
-        disable=True,
-        req_to_token_pool=model_runner.req_to_token_pool,
-        token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
-        page_size=model_runner.token_to_kv_pool_allocator.page_size,
-    )
-    tree_cache = ChunkCache(cache_params)
+    reqs = _make_reqs(batch_size, extend_seq_len, decode=not is_prefill, prefix_len=cached_prefix_len)
+    _hold_prefix_rows(model_runner, reqs, cached_prefix_len)
     batch = ScheduleBatch.init_new(
         reqs=reqs,
         req_to_token_pool=model_runner.req_to_token_pool,
         token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
-        tree_cache=tree_cache,
+        tree_cache=_serving_tree_cache(model_runner),
         model_config=model_runner.model_config,
         enable_overlap=False,
         spec_algorithm=SpeculativeAlgorithm.NONE,
     )
 
     with _temporarily_chunked_alloc_extend(model_runner, batch_size * extend_seq_len):
-        if is_prefill:
-            batch.prepare_for_extend()
-        else:
-            batch.prepare_for_extend()
-            for req in batch.reqs:
-                req.output_ids.append(0)
-            batch.prepare_for_decode()
+        batch.prepare_for_extend()
+    if is_prefill:
+        # prepare_for_extend stages the ids on the host (schedule_batch.py:3069-3070);
+        # the forward stream receives them as SGLang's offline builder hands them over
+        # (benchmark/one_batch.py:516-523), so the ForwardBatch counts its real tokens
+        # (forward_batch_info.py:1364-1382).
+        batch.input_ids = batch.prefill_input_ids_cpu.to(batch.device, non_blocking=True)
+        batch.prefill_input_ids_cpu = None
+    else:
+        for req in batch.reqs:
+            req.output_ids.append(0)
+        # The sampled token of the previous step (benchmark/one_batch.py:536-538).
+        batch.input_ids = torch.zeros(batch_size, dtype=torch.int64, device=batch.device)
+        batch.prepare_for_decode()
 
-    import inspect as _inspect
-
-    # sglang 0.5.16: return_hidden_states_before_norm is a required keyword of
-    # ForwardBatch.init_new; older pins reject it (collect_msa_module.py:1015 pattern)
-    _fb_kw = (
-        {"return_hidden_states_before_norm": False}
-        if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
-        else {}
-    )
-    forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
+    # forward_batch_info.py:958-1142 at v0.5.23 also binds the KV location plan.
+    forward_batch = ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
     model_runner.attn_backend.init_forward_metadata(forward_batch)
     return forward_batch
 
@@ -1127,12 +1187,12 @@ def _resolve_local_heads(*, native_heads: int, module_heads: int | None, tp_size
     The unified convention persists the head count this rank's module actually
     runs with; consumers derive the model-native count as
     ``num_heads * tp_size``.  Local is derived from the HF config's
-    ``num_attention_heads``, which stays native under ``_tp_load_model_patch``
-    (the patch shards via ``_TP``/``_ATTN_TP_SIZE`` and never rewrites the
-    config).  ``attention_module.n_heads`` may report the native or the
-    rank-local count depending on the sglang version, so it is only
-    cross-checked, never persisted — a value matching neither is a geometry
-    surprise worth failing the case over.
+    ``num_attention_heads``, which no TP layout rewrites.
+    ``attention_module.n_heads`` may report the native or the rank-local count
+    depending on the sglang version, so it is only cross-checked, never
+    persisted — a value matching neither is a geometry surprise worth failing
+    the case over. The heads the module actually runs (``n_local_heads``) are
+    checked against this value by ``_check_module_local_heads``.
     """
     local_heads = max(1, int(native_heads) // tp_size)
     if module_heads is not None and int(module_heads) not in (int(native_heads), local_heads):
@@ -1141,6 +1201,21 @@ def _resolve_local_heads(*, native_heads: int, module_heads: int | None, tp_size
             f"config-native {int(native_heads)} nor rank-local {local_heads} (tp_size={tp_size})"
         )
     return local_heads
+
+
+def _check_module_local_heads(attention_module, local_heads: int, tp_size: int) -> None:
+    """Fail a row whose module runs a different head count than its persisted ``num_heads``.
+
+    MQALayer runs n_local_heads = n_heads // attn_tp_size query heads
+    (srt/models/deepseek_v4.py:1035 at v0.5.23); a row labeled with
+    ``local_heads`` must time exactly that many.
+    """
+    module_local_heads = getattr(attention_module, "n_local_heads", None)
+    if module_local_heads is not None and int(module_local_heads) != int(local_heads):
+        raise RuntimeError(
+            f"DSV4 attention runs n_local_heads={int(module_local_heads)}, but the row would persist "
+            f"num_heads={int(local_heads)} at tp_size={tp_size}"
+        )
 
 
 def _log_result(
@@ -1315,6 +1390,7 @@ def run_dsv4_mla_module(
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO[attn_kind]
     if tp_size not in (1, 2, 4, 8, 16, 32):
         raise ValueError(f"tp_size must be a power of 2 in [1, 32]; got {tp_size}")
+    _refuse_tp_emulation(tp_size)
     model_runner = _load_model_runner(
         model_path,
         attn_kind=attn_kind,
@@ -1338,10 +1414,14 @@ def run_dsv4_mla_module(
         module_heads=getattr(attention_module, "n_heads", None),
         tp_size=tp_size,
     )
+    _check_module_local_heads(attention_module, local_attention_heads, tp_size)
+    _give_index_scores_magnitude(model_runner, attention_module)
 
     print(
         f"[dsv4-collector] layer={layer_id}, attn_kind={attn_kind}, "
-        f"compress_ratio={actual_ratio}, mode={mode}, prefix_lens={sorted(seq_lens_by_prefix)}"
+        f"compress_ratio={actual_ratio}, mode={mode}, prefix_lens={sorted(seq_lens_by_prefix)}, "
+        f"n_local_heads={getattr(attention_module, 'n_local_heads', None)}, "
+        f"wo_a_fp8={getattr(attention_module, 'wo_a_fp8', None)}"
     )
 
     version = get_version("sglang")
@@ -1384,6 +1464,11 @@ def run_dsv4_mla_module(
                     prefix_len=cur_prefix,
                 )
                 point_clock.mark("forward_batch")
+                # Context history is the prefix; generation history is the whole past KV.
+                _write_index_history(
+                    model_runner, attention_module, forward_batch, cur_prefix if is_prefill else seq_len
+                )
+                point_clock.mark("index_history")
                 hidden_states, positions = _make_inputs(
                     model_runner,
                     batch_size=batch_size,
@@ -1551,6 +1636,8 @@ def _run_subprocess(
     Builds one ``ModelRunner`` for the batch and measures every point.  Per-point
     crash isolation is handled by ``run_dsv4_mla_module``'s try/except per forward.
     """
+    # Before the child pays for an SGLang import.
+    _refuse_tp_emulation(tp_size)
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     env["AIC_DSV4_PORT_SHARD"] = str(gpu_id)
@@ -1560,10 +1647,16 @@ def _run_subprocess(
     # triggers runtime lazy JIT for the (M, N, K) shapes it needs;
     # subsequent sl within the same subprocess hit in-memory cache.
     env["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
-    # Newer DeepSeek-V4 defaults route wo_a through an FP8 GEMM.  The bf16
-    # collector path deliberately drops quantization_config, so that FP8-only
-    # wo_a path would fail model construction due to missing weight_scale_inv.
-    env["SGLANG_OPT_FP8_WO_A_GEMM"] = "1" if gemm_type == "fp8_block" else "0"
+    # Leave the FP8 wo_a GEMM to SGLang, as a default server does: it stays on
+    # SM100 (UE8M0 scales) and is turned off on SM90 unless the variable is set
+    # explicitly (arg_groups/serving_hook.py:471-492, layers/deep_gemm_wrapper/
+    # configurer.py:58-60) and on SM120 for DeepSeek-V4 (arg_groups/model_hook.py:
+    # 485-486); citations are v0.5.23, and v0.5.21 is the same. Setting it to 1
+    # for fp8_block timed the FP8 wo_a einsum on Hopper and SM120, where serving
+    # dequantizes wo_a to BF16 at load (models/deepseek_v4.py:276-287).
+    # A bfloat16 row drops the checkpoint's quantization_config, so its wo_a has
+    # no Fp8Config and stays BF16 either way.
+    env.pop("SGLANG_OPT_FP8_WO_A_GEMM", None)
 
     inner_shapes_arg = tuple(
         (int(prefix), tuple(int(seq_len) for seq_len in seq_lens)) for prefix, seq_lens in inner_shapes
@@ -1707,9 +1800,8 @@ def run_dsv4_attn_worker(
     its reason, and never re-derives the grid. ``perf_filename`` is bound by
     collect.py via OpEntry, not in the tuple.
 
-    ``tp_size`` triggers single-process TP simulation in the spawned subprocess
-    via ``collect_dsv4_mla_module._tp_load_model_patch``: ColumnParallel /
-    RowParallel weights allocate at 1/N shape; FMLA sees h_q=64 (zero-padded).
+    A row with ``tp_size`` > 1 is refused before the subprocess starts
+    (``_refuse_tp_emulation``): this process cannot build one rank of a TP=N module.
     """
     del seq_len, attention_backend  # the row's points replace seq_len; SGLang picks the backend.
 

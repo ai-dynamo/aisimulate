@@ -37,16 +37,18 @@ def _load_functions(*names: str, namespace: dict | None = None) -> dict:
     from collector.helper import WORKER_RESTART
     from collector.sglang.moe_config_observation import observe_triton_config_selection
 
-    # Guard behavior has dedicated tests; return the 0.5.14 series here so
-    # the alignment tests exercise the legacy probed constraints.
+    # The lane guard has dedicated tests; it returns the installed version.
     loaded = {
         "WORKER_RESTART": WORKER_RESTART,
-        "_raise_if_unverified_moe_lane": lambda _moe_type: "0.5.14",
+        "_raise_if_unverified_moe_lane": lambda _moe_type: "0.5.23",
         # Record-only Triton config observation (own tests in
         # test_moe_config_observation.py); no SGLang module to observe here.
         "_triton_config_namespaces": lambda: [],
         "observe_triton_config_selection": observe_triton_config_selection,
         "append_triton_config_record": lambda *_args, **_kwargs: None,
+        # The architecture only widens SGLang's FlashInfer tuning range
+        # (test_collect_moe_serving_paths.py covers it).
+        "moe_model_layer": lambda *_args: SimpleNamespace(architecture=None),
         **(namespace or {}),
     }
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(SOURCE_PATH), "exec"), loaded)
@@ -392,19 +394,101 @@ def test_case_generator_preserves_representative_sglang_moe_runtime_contracts():
     assert "num_expert_group=num_expert_group" in source
 
 
-def test_sm120_population_gates_w4a8_and_keeps_w4a16_marlin():
-    # SGLang's w4a8_mxfp4_mxfp8 runner has no verified SM120 pin
-    # (collector/skips.py), so the plan leaves that region out on
-    # SM120 while the w4a16_mxfp4 slice runs on Marlin.
+def test_sm120_population_runs_gptoss_as_w4a8_and_skips_w4a16():
+    # SGLang serves GPT-OSS MXFP4 on SM120 as MXFP8 x MXFP4 on flashinfer_mxfp4
+    # (gpt_oss.py:69-74, mxfp4.py:426-427) and no W4A16 lane (collector/skips.py),
+    # so only the w4a8_mxfp4_mxfp8 slice is planned there.
     populated = _populate_gptoss_cases(
         [_gptoss_case(tp=1, ep=1)],
         sm_version=120,
         allowed_mode={"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"},
-        resolved_backend="marlin",
     )
 
+    assert {case[0] for case in populated} == {"w4a8_mxfp4_mxfp8"}
+    assert all(case[12] == "flashinfer_mxfp4" for case in populated)
+
+
+def _k3_case(*, tp: int = 1, ep: int = 1):
+    k3 = _gptoss_case(tp=tp, ep=ep)
+    k3.model_name = "moonshotai/Kimi-K3"
+    k3.architecture = "KimiK3ForConditionalGeneration"
+    return k3
+
+
+def test_sm120_population_keeps_kimi_k3_w4a16_and_skips_its_mxfp8_activations():
+    # Kimi-K3 keeps auto on SM120 (kimi_k3.py:172-190): Mxfp4MoEMethod's Triton
+    # runner on BF16-upcast experts, so only the W4A16 slice is served.
+    populated = _populate_gptoss_cases(
+        [_k3_case()], sm_version=120, allowed_mode={"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}, resolved_backend="triton"
+    )
     assert {case[0] for case in populated} == {"w4a16_mxfp4"}
-    assert all(case[12] == "marlin" for case in populated)
+    assert all(case[12] == "triton" for case in populated)
+
+
+def test_kimi_k3_row_carries_serving_situ_and_triton_pins():
+    from collector.case_generator import get_common_moe_test_cases, get_sglang_moe_backend
+
+    k3 = next(case for case in get_common_moe_test_cases() if case.model_name == "moonshotai/Kimi-K3")
+    # models/kimi_k3.py:503-521: activation=config.hidden_act, the SiTU betas as gemm1.
+    assert (k3.sglang_moe_activation, k3.sglang_moe_gemm1_alpha, k3.sglang_moe_gemm1_clamp_limit) == (
+        "situ",
+        4.0,
+        25.0,
+    )
+    # auto off SM100/103/107 resolves Mxfp4MoEMethod to Triton (mxfp4.py:1443-1450).
+    assert [get_sglang_moe_backend(k3, "w4a16_mxfp4", sm) for sm in (89, 90, 120)] == ["triton"] * 3
+    assert get_sglang_moe_backend(k3, "w4a8_mxfp4_mxfp8", 100) == "flashinfer_mxfp4"
+
+
+@pytest.mark.parametrize("sm_version", [100, 103])
+def test_sm100_population_runs_kimi_k3_as_w4a8_only(sm_version):
+    # SM100/103 serve K3 on flashinfer_mxfp4 at the default precision, MXFP8
+    # activations (fields/exec_.py:892-897, moe_runner/flashinfer_trtllm.py:1145-1166).
+    populated = _populate_gptoss_cases(
+        [_k3_case()], sm_version=sm_version, allowed_mode={"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
+    )
+    assert {case[0] for case in populated} == {"w4a8_mxfp4_mxfp8"}
+
+
+@pytest.mark.parametrize("sm_version", [89, 90])
+def test_gptoss_w4a16_runs_triton_kernel_at_ep1_where_serving_keeps_auto(sm_version):
+    # SGLang's GPT-OSS override serves triton_kernel at ep_size 1 and leaves
+    # auto (Triton, the per-SM pin) at EP>1 (model_overrides/gpt_oss.py:102-120).
+    populated = _populate_gptoss_cases(
+        [_gptoss_case(tp=1, ep=1), _gptoss_case(tp=4, ep=1), _gptoss_case(tp=1, ep=8)],
+        sm_version=sm_version,
+        allowed_mode="w4a16_mxfp4",
+        resolved_backend="triton",
+    )
+    assert {(case[6], case[7]): case[12] for case in populated} == {
+        (1, 1): "triton_kernel",
+        (4, 1): "triton_kernel",
+        (1, 8): "triton",
+    }
+
+    # Kimi-K3 has no such override: auto stays Triton at every EP.
+    k3 = _populate_gptoss_cases(
+        [_k3_case()], sm_version=sm_version, allowed_mode="w4a16_mxfp4", resolved_backend="triton"
+    )
+    assert [case[12] for case in k3] == ["triton"]
+
+
+@pytest.mark.parametrize("sm_version", [100, 103])
+def test_gptoss_on_blackwell_runs_w4a8_on_flashinfer_mxfp4_at_every_ep(sm_version):
+    # gpt_oss.py:64-75 selects flashinfer_mxfp4 on SM100/103 before the EP check, at
+    # MXFP8 activations: the W4A8 cases run it and collector/skips.py leaves W4A16 out.
+    populated = _populate_gptoss_cases(
+        [_gptoss_case(tp=1, ep=1), _gptoss_case(tp=1, ep=8)], sm_version=sm_version, allowed_mode="w4a8_mxfp4_mxfp8"
+    )
+    assert [case[12] for case in populated] == ["flashinfer_mxfp4", "flashinfer_mxfp4"]
+    assert not _populate_gptoss_cases([_gptoss_case(tp=1, ep=1)], sm_version=sm_version, allowed_mode="w4a16_mxfp4")
+
+
+def test_moe_population_rejects_an_architecture_sglang_builds_differently_under_one_key():
+    # GPT-OSS (EP1 runner) and Gemma-4 (routing function) build a different
+    # layer than another architecture's row with the same fields.
+    with pytest.raises(ValueError, match="time different layers under one consumer key"):
+        _populate_gptoss_cases([_gptoss_case(tp=1, ep=1), _k3_case()], sm_version=90, allowed_mode="w4a16_mxfp4")
 
 
 @pytest.mark.parametrize(("tp", "ep"), [(4, 8), (32, 1), (32, 8)])
@@ -431,6 +515,7 @@ def test_gptoss_mxfp4_population_retains_tp_and_ep_buckets(tp, ep):
         ("w4a16_mxfp4", 90, "triton"),
         ("w4a16_mxfp4", 120, "marlin"),
         ("w4a8_mxfp4_mxfp8", 100, "flashinfer_mxfp4"),
+        ("w4a8_mxfp4_mxfp8", 120, "flashinfer_mxfp4"),
     ],
 )
 def test_yaml_backend_map_matches_sglang_0514(mode, sm_version, expected):
@@ -512,8 +597,7 @@ def test_quantized_moe_uses_framework_path_and_fails_closed(
         "run_moe_torch",
         namespace={
             "torch": fake_torch,
-            "_benchmark_framework_quantized_moe": framework_benchmark,
-            "benchmark": lambda *_args, **_kwargs: pytest.fail("quantized MoE must not use the raw benchmark"),
+            "_benchmark_moe_layer": framework_benchmark,
             "get_moe_quantization_module_config": lambda *_args, **_kwargs: {"group_size": 32},
             "get_sm_version": lambda: sm_version,
             "_fmoe_kernels_mod": SimpleNamespace(_B_DESC_CACHE=SimpleNamespace(clear=lambda: None)),
@@ -556,40 +640,42 @@ def test_quantized_moe_uses_framework_path_and_fails_closed(
                 perf_filename="moe.csv",
             )
 
-    assert framework_calls[0]["model_name"] == model_name
+    assert framework_calls[0]["moe_backend"] == moe_backend
     assert logged[0]["kernel_source"] == kernel_source
 
 
-def test_raw_moe_case_cleans_gpu_state_and_fails_closed():
-    cleared = []
-    collected = []
-    emptied = []
+def test_bfloat16_triton_case_builds_the_serving_layer_and_fails_closed():
+    """Mixtral/gemma-4 BF16 and FP8-block Triton cases build FusedMoE + TopK like the
+    other cases: serving runs no other path, and the retired raw fused_moe call piled
+    every non-local EP slot onto expert 0 (topk_ids.clamp(min=0))."""
+    layer_calls = []
     fake_torch = SimpleNamespace(
         bfloat16=object(),
         device=lambda value: value,
         set_default_device=lambda _device: None,
         cuda=SimpleNamespace(
             set_device=lambda _device: None,
-            empty_cache=lambda: emptied.append(True),
+            empty_cache=lambda: None,
             memory_allocated=lambda _device: 0,
             get_device_properties=lambda _device: SimpleNamespace(total_memory=100),
             get_device_name=lambda _device: "H200",
         ),
     )
+
+    def layer_benchmark(**kwargs):
+        layer_calls.append(kwargs)
+        for num_tokens in kwargs["num_tokens_list"]:
+            kwargs["on_result"](num_tokens, 1.25, {"power": 100.0}, "sglang_fused_moe_triton")
+        return "sglang_fused_moe_triton"
+
     run = _load_functions(
         "run_moe_torch",
         namespace={
             "torch": fake_torch,
-            "benchmark": lambda *_args, **_kwargs: (1.25, {"power": 100.0}),
-            "build_rank0_workloads": lambda **_kwargs: pytest.fail("EP=1 must not build rank-local workloads"),
+            "_benchmark_moe_layer": layer_benchmark,
             "get_moe_quantization_module_config": lambda *_args, **_kwargs: {},
-            "_benchmark_framework_quantized_moe": lambda **_kwargs: pytest.fail("BF16 must use the raw benchmark"),
-            "_fmoe_kernels_mod": SimpleNamespace(_B_DESC_CACHE=SimpleNamespace(clear=lambda: cleared.append(True))),
-            "gc": SimpleNamespace(collect=lambda: collected.append(True)),
             "get_sm_version": lambda: 90,
             "log_perf": lambda **_kwargs: False,
-            "_dist_version": lambda _name: "0.5.14",
-            "EXIT_CODE_RESTART": 10,
         },
     )["run_moe_torch"]
 
@@ -602,15 +688,15 @@ def test_raw_moe_case_cleans_gpu_state_and_fails_closed():
             2,
             8,
             1,
-            1,
+            8,
             "mistralai/Mixtral-8x7B-v0.1",
-            distributed="balanced",
+            distributed="power_law",
+            power_law_alpha=1.01,
             perf_filename="moe.csv",
         )
 
-    assert cleared == [True]
-    assert collected == [True]
-    assert emptied == [True]
+    assert [call["moe_backend"] for call in layer_calls] == ["triton"]
+    assert layer_calls[0]["moe_ep_size"] == 8
 
 
 @pytest.mark.parametrize(
@@ -705,36 +791,46 @@ def test_runtime_rejects_misaligned_sm90_dsv4_w4a16_case():
         )
 
 
-def test_runtime_rejects_misaligned_sm100_dsv4_w4a8_case():
-    # B200 hardware probe SGLang 0.5.14 flashinfer_mxfp4 W4A8
-    # weight shuffle asserts M % 128 == 0 and the TRTLLM-gen batched GEMM has
-    # no config for misaligned local widths; local_inter 128/384/768/1536/3072
-    # pass while 64/96/192 fail. The guard converts those framework errors
-    # into one classified message without removing the cases from the plan.
+def test_sm100_dsv4_w4a8_unaligned_local_inter_runs_as_serving_pads_it():
+    """Mxfp4FlashinferTrtllmMoEMethod.process_weights_after_loading pads the local
+    intermediate width to 128 (sglang v0.5.23
+    srt/layers/quantization/mxfp4_flashinfer_trtllm_moe.py:55-100), so the collector no
+    longer refuses these cases before building the layer."""
+    layer_calls = []
     fake_torch = SimpleNamespace(
         set_default_device=lambda _device: None,
-        cuda=SimpleNamespace(set_device=lambda _device: None),
+        cuda=SimpleNamespace(
+            set_device=lambda _device: None,
+            memory_allocated=lambda _device: 0,
+            get_device_properties=lambda _device: SimpleNamespace(total_memory=100),
+            get_device_name=lambda _device: "B200",
+        ),
     )
     run = _load_functions(
         "run_moe_torch",
-        namespace={"torch": fake_torch, "get_sm_version": lambda: 100},
+        namespace={
+            "torch": fake_torch,
+            "get_sm_version": lambda: 100,
+            "_benchmark_moe_layer": lambda **kwargs: layer_calls.append(kwargs),
+        },
     )["run_moe_torch"]
 
-    with pytest.raises(ValueError, match=r"SM100/103 DeepSeek-V4 W4A8.*local_inter_size"):
-        run(
-            "w4a8_mxfp4_mxfp8",
-            128,
-            7168,
-            3072,
-            6,
-            384,
-            32,
-            1,
-            "deepseek-ai/DeepSeek-V4-Pro",
-            moe_backend="flashinfer_mxfp4",
-            is_fp4_experts=True,
-            perf_filename="moe.csv",
-        )
+    run(
+        "w4a8_mxfp4_mxfp8",
+        128,
+        7168,
+        3072,
+        6,
+        384,
+        32,
+        1,
+        "deepseek-ai/DeepSeek-V4-Pro",
+        moe_backend="flashinfer_mxfp4",
+        is_fp4_experts=True,
+        perf_filename="moe.csv",
+    )
+
+    assert [(call["moe_tp_size"], call["is_fp4_experts"]) for call in layer_calls] == [(32, True)]
 
 
 def test_framework_moe_router_logits_are_explicitly_float32():
@@ -743,7 +839,7 @@ def test_framework_moe_router_logits_are_explicitly_float32():
         next(
             node
             for node in ast.parse(SOURCE_PATH.read_text()).body
-            if isinstance(node, ast.FunctionDef) and node.name == "_benchmark_framework_quantized_moe"
+            if isinstance(node, ast.FunctionDef) and node.name == "_benchmark_moe_layer"
         ),
     )
 
@@ -757,7 +853,7 @@ def test_framework_int4_builds_grouped_compressed_tensors_config():
         next(
             node
             for node in ast.parse(SOURCE_PATH.read_text()).body
-            if isinstance(node, ast.FunctionDef) and node.name == "_benchmark_framework_quantized_moe"
+            if isinstance(node, ast.FunctionDef) and node.name == "_quant_config"
         ),
     )
 
@@ -772,17 +868,21 @@ def test_framework_moe_source_comes_from_the_constructed_quant_method():
     functions = {
         node.name: ast.get_source_segment(source_text, node) for node in tree.body if isinstance(node, ast.FunctionDef)
     }
-    framework_bench = functions["_benchmark_framework_quantized_moe"]
+    kernel_source = functions["_kernel_source"]
     run_moe = functions["run_moe_torch"]
 
+    assert "moe_layer.runner_backend" in kernel_source
     for method_name in (
         "Mxfp4MoEMethod",
         "Mxfp4FlashinferCutlassMoEMethod",
         "Mxfp4FlashinferTrtllmMoEMethod",
         "CompressedTensorsWNA16MoE",
+        "CompressedTensorsMxInt4MoE",
         "ModelOptNvFp4FusedMoEMethod",
+        "Fp8MoEMethod",
+        "UnquantizedFusedMoEMethod",
     ):
-        assert method_name in framework_bench
+        assert method_name in source_text
     assert 'model_name == "deepseek-ai/DeepSeek-V4-Pro"' not in run_moe
 
 
@@ -828,8 +928,7 @@ def test_run_moe_torch_times_every_token_point_on_one_framework_layer():
         "run_moe_torch",
         namespace={
             "torch": fake_torch,
-            "_benchmark_framework_quantized_moe": framework_benchmark,
-            "benchmark": lambda *_args, **_kwargs: pytest.fail("nvfp4 must use the framework layer"),
+            "_benchmark_moe_layer": framework_benchmark,
             "get_moe_quantization_module_config": lambda *_args, **_kwargs: {},
             "get_sm_version": lambda: 100,
             "_fmoe_kernels_mod": SimpleNamespace(_B_DESC_CACHE=SimpleNamespace(clear=lambda: None)),
@@ -882,10 +981,10 @@ def test_run_moe_torch_times_every_token_point_on_one_framework_layer():
     assert [row["item_list"][0]["num_tokens"] for row in logged] == [768]
 
 
-def test_raw_moe_case_persists_each_token_point_and_cleans_up_once():
+def test_triton_case_persists_each_token_point_with_its_config_record():
     logged = []
-    bench_calls = []
-    cleared = []
+    sidecar = []
+    layer_calls = []
     fake_torch = SimpleNamespace(
         bfloat16=object(),
         device=lambda value: value,
@@ -899,23 +998,23 @@ def test_raw_moe_case_persists_each_token_point_and_cleans_up_once():
         ),
     )
 
-    def fake_benchmark(num_tokens, *_args, **_kwargs):
-        bench_calls.append(num_tokens)
-        return 0.5 * num_tokens, {"power": 1.0}
+    def layer_benchmark(**kwargs):
+        layer_calls.append(kwargs["num_tokens_list"])
+        for num_tokens in kwargs["num_tokens_list"]:
+            kwargs["on_result"](num_tokens, 0.5 * num_tokens, {"power": 1.0}, "sglang_fused_moe_triton")
+        return "sglang_fused_moe_triton"
 
     run = _load_functions(
         "run_moe_torch",
         namespace={
             "torch": fake_torch,
-            "benchmark": fake_benchmark,
-            "build_rank0_workloads": lambda **_kwargs: pytest.fail("EP=1 must not build rank-local workloads"),
+            "_benchmark_moe_layer": layer_benchmark,
             "get_moe_quantization_module_config": lambda *_args, **_kwargs: {},
-            "_benchmark_framework_quantized_moe": lambda **_kwargs: pytest.fail("BF16 must use the raw benchmark"),
-            "_fmoe_kernels_mod": SimpleNamespace(_B_DESC_CACHE=SimpleNamespace(clear=lambda: cleared.append(True))),
-            "gc": SimpleNamespace(collect=lambda: None),
             "get_sm_version": lambda: 90,
             "log_perf": lambda **kwargs: logged.append(kwargs) or True,
-            "EXIT_CODE_RESTART": 10,
+            "append_triton_config_record": lambda _path, row, source, _observed: sidecar.append(
+                (row["num_tokens"], source)
+            ),
         },
     )["run_moe_torch"]
 
@@ -933,7 +1032,7 @@ def test_raw_moe_case_persists_each_token_point_and_cleans_up_once():
         perf_filename="moe.csv",
     )
 
-    assert bench_calls == [16, 32]
+    assert layer_calls == [[16, 32]]
     assert [row["item_list"][0]["num_tokens"] for row in logged] == [16, 32]
     assert [row["kernel_source"] for row in logged] == ["sglang_fused_moe_triton"] * 2
-    assert cleared == [True]
+    assert sidecar == [(16, "sglang_fused_moe_triton"), (32, "sglang_fused_moe_triton")]

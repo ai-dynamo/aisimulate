@@ -38,6 +38,7 @@ def _ctx_msa():
     )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_msa_sol_scales_with_workload():
     """SOL mode computes the three-group MSA SOL (gemm + fp8 indexer + sparse attn). Assert it
     RESPONDS to the workload rather than returning a constant: more new tokens (s) add work, and

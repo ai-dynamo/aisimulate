@@ -67,9 +67,9 @@ from vllm.version import __version__ as vllm_version
 # The campaign manifest still selects one exact release per run.
 # Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
-# away and prior-version DATA stays permanent under its version key. The
-# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
-__compat__ = "vllm==0.30.0"
+# away and prior-version DATA stays permanent under its version key. Serving
+# citations are @v0.32.0 unless stated otherwise.
+__compat__ = "vllm==0.32.0"
 
 
 DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]
@@ -83,6 +83,13 @@ SPARSE_KERNEL_TO_OP_NAME = {"paged_mqa_logits": "dsv4_paged_mqa_logits_module"}
 SPARSE_KERNEL_TO_PERF_FILE = {"paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE}
 MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisim_core" / "model_configs"
 SUPPORTED_GEMM_TYPES = {"fp8_block"}
+# Values drawn per host sample, which bounds the host temporary.
+_SAMPLE_CHUNK_ELEMENTS = 1 << 20
+# Distinct history keys: a longer history repeats them, so writing it costs one cache
+# write per this many keys and no further sampling. A request scores only its own
+# history, and no request in the plan holds more compressed tokens than this, so no
+# score recurs within a row today.
+_HISTORY_ROWS = 1 << 18
 
 
 def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:
@@ -113,16 +120,16 @@ def _patched_config_dir(model_id: str, *, compress_ratio: int):
     config = dict(_read_model_config(model_id))
     config.pop("auto_map", None)
 
-    # The converted sgl-project configs use ``deepseek_ref``. vLLM 0.24.0 has a
-    # native DeepseekV4Config, so use the production model type rather than
-    # routing the layer through a DeepSeek-V3 config compatibility hack.
+    # The converted sgl-project configs use ``deepseek_ref``. vLLM has a native
+    # DeepseekV4Config, so use the production model type rather than routing the
+    # layer through a DeepSeek-V3 config compatibility hack.
     config["model_type"] = "deepseek_v4"
     config["architectures"] = [ARCHITECTURE]
     config["num_hidden_layers"] = 1
     config["num_key_value_heads"] = 1
     config["compress_ratios"] = [compress_ratio]
     # The converted SGLang FP8 artifacts omit this field, while their canonical
-    # DeepSeek-V4 configs and vLLM 0.24.0's native attention module require it.
+    # DeepSeek-V4 configs and vLLM's native attention module require it.
     config["rms_norm_eps"] = 1e-6
 
     with tempfile.TemporaryDirectory(prefix=f"aic_vllm_dsv4_{compress_ratio}_{os.getpid()}_") as tmp_dir:
@@ -174,10 +181,40 @@ def _tp_simulation(tp_size: int):
             setattr(module, name, original)
 
 
+def _move_to_device(module: torch.nn.Module, device: str) -> torch.nn.Module:
+    """Move the module to the device with the rotary tables its constructor computed.
+
+    Module.to cannot copy meta parameters and to_empty reallocates every tensor, the
+    buffers included, so a module moved with to_empty would hold an uninitialized
+    cos_sin_cache (a non-persistent buffer, DeepseekV4ScalingRotaryEmbedding.__init__,
+    model_executor/layers/rotary_embedding/deepseek_scaling_rope.py:237-242). The tables
+    are held aside and put back.
+    """
+    if not any(p.is_meta for p in module.parameters()):
+        return module.to(device)
+    tables = [
+        (owner, owner.cos_sin_cache)
+        for owner in module.modules()
+        if isinstance(getattr(owner, "cos_sin_cache", None), torch.Tensor)
+    ]
+    module = module.to_empty(device=torch.device(device))
+    for owner, table in tables:
+        owner.cos_sin_cache = table.to(device)
+    return module
+
+
 def _init_dummy_module_tensors(module: torch.nn.Module) -> None:
     with torch.no_grad():
         for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
             if tensor.is_meta:
+                continue
+            if name.endswith("cos_sin_cache"):
+                # The RoPE table is the constructor's (build_deepseek_v4_rope,
+                # models/deepseek_v4/common/rope.py:9-52), not a weight. Filled with a
+                # constant it rotated every position alike, so no index query or key
+                # depended on its position; get_rope also hands the same module to every
+                # later build in the process (_ROPE_DICT, model_executor/layers/
+                # rotary_embedding/__init__.py:84-85,351), so the fill was permanent.
                 continue
             if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2, torch.uint8):
                 tensor.zero_()
@@ -185,6 +222,45 @@ def _init_dummy_module_tensors(module: torch.nn.Module) -> None:
                 tensor.fill_(1.0)
             else:
                 tensor.fill_(0.01)
+
+
+def _give_index_query_values(attn_module: DeepseekV4Attention) -> None:
+    """Give the CSA indexer a non-zero index query that differs between its heads.
+
+    The index query is indexer.wq_b applied to qr, the q_norm output of the fused_wqa_wkv
+    projection (DeepseekV4Attention.forward -> _split_qkv_and_norm -> DeepseekV4Indexer
+    .forward, models/deepseek_v4/attention.py:483-486,519-536,1109-1120). Both projections
+    are FP8 in the FP8 checkpoints and _init_dummy_module_tensors zeroes FP8 tensors, so qr
+    and the index query were zero and every candidate scored the same. The top-k that
+    follows depends on the scores (top_k_per_row_prefill and the decode radix top-k,
+    model_executor/layers/sparse_attn_indexer.py:711,869): the prefill one bins them as
+    fp16 first (csrc/sampler.cu, "Step 0: Process first 11 bits of half representation")
+    and equal scores never leave one bin.
+
+    Seeded N(0, 0.02) values in the two projections, as collect_mla_module gives the DSA
+    indexer, and unit gains in the two norms that set the magnitude of the query (q_norm)
+    and of the compressed index keys the forward writes (indexer.compressor.norm,
+    models/deepseek_v4/compressor.py:280), so those keys match the unit-variance history
+    keys of _write_indexer_history. The values stand for no checkpoint; no kernel is
+    chosen by them. A module without an indexer (HCA) is left alone. The other index
+    inputs keep their constants: with the constant hidden states the collector feeds,
+    weights_proj gives every head the same positive weight and the compressor gives
+    every new key the same vector before RoPE, which the position then rotates.
+    """
+    indexer = attn_module.indexer
+    if indexer is None:
+        return
+    # Sampled on the host as collect_mla_module does, a bounded block at a time.
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    with torch.no_grad():
+        for weight in (attn_module.fused_wqa_wkv.weight, indexer.wq_b.weight):
+            flat = weight.view(-1)
+            for start in range(0, flat.numel(), _SAMPLE_CHUNK_ELEMENTS):
+                part = flat[start : start + _SAMPLE_CHUNK_ELEMENTS]
+                values = torch.randn(part.shape, generator=generator, dtype=torch.float32, device="cpu") * 0.02
+                part.copy_(values.to(device=part.device, dtype=part.dtype))
+        for norm in (attn_module.q_norm, indexer.compressor.norm):
+            norm.weight.fill_(1.0)
 
 
 def _process_quantized_weights(module: torch.nn.Module, vllm_config) -> None:
@@ -209,7 +285,19 @@ def _create_dsv4_attention_module(
 ):
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO[attn_kind]
     with _patched_config_dir(model_path, compress_ratio=compress_ratio) as local_model:
-        max_model_len = max(seq_len, 4096)
+        # Serving's default max_model_len is the checkpoint's max_position_embeddings
+        # (config/model.py:2592-2602,2621-2634: YaRN keeps it unscaled), 1M for the
+        # DeepSeek-V4 checkpoints, and DSV4 plans its prefill with it: the FlashMLA
+        # prefill splits a step into chunks whose gather workspace area is
+        # PREFILL_CHUNK_SIZE * (max_model_len / compress_ratio + window + tokens)
+        # (v1/attention/backends/mla/sparse_swa.py:250-329, models/deepseek_v4/attention.py:155,
+        # nvidia/flashmla.py:310), and the indexer's prefill buffer, its chunking and its
+        # decode-logits width follow it too (models/deepseek_v4/attention.py:995-1002,
+        # config/vllm.py:1790-1798). A max_model_len of the point's own length splits
+        # small-isl, large-batch prefills into chunks serving never runs, so build at
+        # serving's default.
+        max_position = int(_read_model_config(model_path).get("max_position_embeddings") or 0)
+        max_model_len = max(seq_len, max_position or 4096)
         if query_len is None:
             query_len = seq_len if is_context else 1
         query_tokens = batch_size * query_len
@@ -250,8 +338,9 @@ def _create_dsv4_attention_module(
                 f"does not support SM{capability.to_int()}"
             )
 
-        # Keep production selection for SM100/SM103 and SM120. These paths are
-        # source-derived from vLLM 0.24.0 and remain hardware-unvalidated here.
+        # Keep production selection for SM100/SM103 and SM120 (_select_dsv4_attn_cls,
+        # models/deepseek_v4/nvidia/model.py:1013-1044: FlashInfer on SM12x, FlashMLA
+        # elsewhere). B200 was qualified (header); SM103 and SM120 are source-derived.
         # DeepSeek rotary construction creates CPU tensors internally; setting the
         # default device only for module construction keeps those tensors aligned.
         torch.set_default_device(device)
@@ -273,13 +362,11 @@ def _create_dsv4_attention_module(
         finally:
             torch.set_default_device("cpu")
 
-        if any(p.is_meta for p in attn_module.parameters()):
-            attn_module = attn_module.to_empty(device=torch.device(device))
-        else:
-            attn_module = attn_module.to(device)
+        attn_module = _move_to_device(attn_module, device)
         attn_module.eval()
         attn_module.requires_grad_(False)
         _init_dummy_module_tensors(attn_module)
+        _give_index_query_values(attn_module)
         _process_quantized_weights(attn_module, vllm_config)
         yield attn_module, vllm_config
 
@@ -348,13 +435,13 @@ def _remap_common_metadata(common, *, block_size: int, device: str):
 
 
 def _allocate_attention_kv_cache(backend, spec, num_blocks: int, cache_dtype: str, *, device: str) -> torch.Tensor:
-    # 0.29: the shape contract lives in the generic spec pipeline. Serving
+    # The shape contract lives in the generic spec pipeline. Serving
     # allocates flat bytes and views each layer as the 4D logical [B,H,N,C]
-    # page (compute_layer_kv_cache_shape_bytes, v1/kv_cache_interface.py:253-269;
-    # per-layer element view = bytes.view(spec.dtype), create_kv_cache_views).
+    # page (compute_layer_kv_cache_shape_bytes, v1/kv_cache_interface.py:319-334;
+    # per-layer element view = bytes.view(spec.dtype), create_kv_cache_views :377).
     # The dsv4 layout facts (584B fp8_ds_mla state content, 576B alignment,
-    # tokens_per_state=compress_ratio) are spec fields at 0.29
-    # (models/deepseek_v4/attention.py:741-753), so the helper output IS the
+    # tokens_per_state=compress_ratio) are spec fields
+    # (models/deepseek_v4/attention.py:865-878), so the helper output IS the
     # serving shape. Page padding: mirror create_kv_cache_views' block stride
     # (page_size_bytes per block) via empty_strided when the spec pads pages.
     from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
@@ -371,16 +458,16 @@ def _allocate_attention_kv_cache(backend, spec, num_blocks: int, cache_dtype: st
 
 
 def _make_builder(backend, spec, prefix, vllm_config, common, *, device: str):
-    """Construct the layer's metadata builder exactly as serving does at 0.29.
+    """Construct the layer's metadata builder exactly as serving does.
 
     Builders may demand kw-only block_table_width (DeepseekV32IndexerMetadataBuilder,
-    mla/indexer.py:519,531); serving computes it via get_block_table_width and
-    ALLOCATES the block table at that width (v1/worker/utils.py:276-283 +
-    v1/worker/block_table.py:29-49), so builders assume
+    mla/indexer.py:988,1000); serving computes it via get_block_table_width and
+    ALLOCATES the block table at that width (v1/worker/utils.py:308-316 +
+    v1/worker/block_table.py:29-41), so builders assume
     table.shape[1] == width — the family-100 decode path copies the table into
-    a width-sized expanded buffer (indexer.py:609,745) and crashes on narrower
-    tables (found on B300 in the mla 029 lane; same contract here).
-    Zero-pad our ceil(seq/block)-column table to the width.
+    a width-sized expanded buffer (indexer.py:1091-1095,1197-1248) and crashes on
+    narrower tables (found on B300 in the mla 029 lane; same contract here).
+    Zero-pad our ceil(seq/block)-column table to the width. All @v0.32.0.
     """
     builder_cls = backend.get_builder_cls()
     kwargs = {}
@@ -416,7 +503,7 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
         )
         cache_dtype = getattr(spec, "cache_dtype_str", None) or "auto"
         # serving binds through each layer's bind_kv_cache
-        # (v1/worker/utils.py:622) — layer overrides may reshape the
+        # (v1/worker/utils.py:811-880) — layer overrides may reshape the
         # raw view (e.g. squeeze the H=1 dim), so never assign .kv_cache raw
         registered_layer.bind_kv_cache(
             _allocate_attention_kv_cache(
@@ -455,6 +542,72 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
         )
 
     return metadata
+
+
+def _write_indexer_history(attn_module, common, *, context_len: int) -> None:
+    """Write the compressed index keys of the cached history the CSA indexer selects from.
+
+    _allocate_attention_kv_cache zero-fills the indexer cache and nothing here runs the
+    forwards that would have written the history, so every history candidate scored
+    exactly 0.0 and the top-k was timed on ties. Serving writes a compressed key when the
+    last of its compress_ratio tokens is computed: DeepseekCompressor.forward ->
+    _fused_kv_compress_norm_rope_insert_indexer_attn (models/deepseek_v4/compressor.py:
+    354-499, common/ops/fused_compress_quant_cache.py:711-883), at the slot
+    block_table[request, state // states_per_block] * states_per_block + state %
+    states_per_block (CompressedSlotMappingKernel, v1/attention/backends/mla/
+    compressor_utils.py:91-100). A cached prefix of context_len tokens therefore holds
+    context_len // compress_ratio keys per request, the count the indexer reads back
+    (seq_lens // compress_ratio, v1/attention/backends/mla/indexer.py:1488-1491,1723-1731).
+
+    That kernel only takes the compressor's own state, so seeded N(0, 1) rows go through
+    ops.indexer_k_quant_and_cache instead: the DeepSeek-V3.2 indexer's cache writer
+    (model_executor/layers/sparse_attn_indexer.py:523-541), whose FP8 layout the
+    DeepSeek-V4 indexer cache shares (DeepseekV4Indexer.__init__, "FP8 indexer cache uses
+    the same layout as V3.2", models/deepseek_v4/attention.py:1010-1014). Both write a
+    block as states_per_block * head_dim FP8 values, then one float32 ue8m0 scale per
+    key, with blocks kv_cache.stride(0) apart (csrc/cache_kernels.cu:624-683,1917-1946
+    against fused_compress_quant_cache.py:826-832,865-883). The rows are written outside
+    the measurement and stand for no particular checkpoint distribution. Same treatment
+    as _populate_indexer_kv_cache in collect_mla_module and the SGLang and TensorRT-LLM
+    collectors.
+
+    The MXFP4 indexer cache (attention_config.indexer_kv_dtype="mxfp4") has another
+    layout and no standalone writer; this collector never selects it (the default "auto"
+    resolves to fp8, dsa_indexer_uses_fp4, v1/attention/backends/mla/indexer.py:59-97),
+    so it is refused rather than left unwritten.
+    """
+    indexer = getattr(attn_module, "indexer", None)
+    history = context_len // indexer.compress_ratio if indexer is not None else 0
+    if history == 0:
+        return
+    from vllm import _custom_ops as ops
+
+    k_cache = indexer.k_cache.kv_cache
+    head_dim = indexer.head_dim
+    entry_bytes = head_dim + head_dim // indexer.quant_block_size * 4
+    if indexer.use_fp4_kv or k_cache.dtype != torch.uint8 or k_cache.shape[2] != entry_bytes:
+        raise RuntimeError(
+            "the indexer history is written for the FP8 indexer cache only "
+            f"({entry_bytes} bytes per key); the module holds {k_cache.dtype} entries of {k_cache.shape[2]} bytes"
+        )
+    block_table = common.block_table_tensor
+    states_per_block = k_cache.shape[1]
+    device = k_cache.device
+    total = history * block_table.shape[0]
+    rows = min(total, _HISTORY_ROWS)
+    generator = torch.Generator(device="cpu").manual_seed(1234)
+    keys = torch.empty((rows, head_dim), dtype=torch.bfloat16, device=device)
+    chunk_rows = max(1, _SAMPLE_CHUNK_ELEMENTS // head_dim)
+    for start in range(0, rows, chunk_rows):
+        part = keys[start : start + chunk_rows]
+        part.copy_(torch.randn(part.shape, generator=generator, dtype=torch.float32, device="cpu"))
+    for start in range(0, total, rows):
+        # History keys in request order: the request and the key's compressed position.
+        key = torch.arange(start, min(start + rows, total), dtype=torch.long, device=device)
+        request, state = key // history, key % history
+        blocks = block_table[request, state // states_per_block].to(torch.long)
+        slots = blocks * states_per_block + state % states_per_block
+        ops.indexer_k_quant_and_cache(keys[: key.numel()], k_cache, slots, indexer.quant_block_size, indexer.scale_fmt)
 
 
 def _positions(
@@ -514,6 +667,7 @@ def _bench_attention_shape(
             query_len=query_len,
         )
         metadata = _build_metadata_and_bind_caches(attn_module, vllm_config, common, device=device)
+        _write_indexer_history(attn_module, common, context_len=metadata_seq_len - query_len)
 
         hf_config = vllm_config.model_config.hf_config
         concrete_layer = vllm_config.compilation_config.static_forward_context[attn_module.prefix]
@@ -553,6 +707,21 @@ def _bench_attention_shape(
             ):
                 attn_module(positions, hidden_states, None)
 
+            # Deviations from serving, which runs DeepseekV4ForCausalLM on breakable CUDA
+            # graphs (config/vllm.py:74-102,812-840) where this times one graph per step:
+            # - CSA: serving runs a step above its graph ceiling (1024 tokens on the SM100
+            #   family, else 512; config/vllm.py:2341-2446) eagerly, and there the indexer's
+            #   short-context branch (max_seq_len // 4 <= index_topk) skips the indexer query
+            #   projection, MQA logits and top-k (models/deepseek_v4/attention.py:1082-1107,
+            #   keyed on torch.cuda.is_current_stream_capturing()). The graph captured here
+            #   always runs them, so such rows overstate serving: about 1.1k (SM100) / 1.4k
+            #   (SM90) of the 9,880 CSA context points, and SM90 generation above 512
+            #   requests. Steps up to the ceiling are captured in serving too and match.
+            #   Retired by timing eager-regime steps eagerly (the pending measurement-method
+            #   decision) or by pinning that capture check as collect_mla_module does for DSA.
+            # - SM120: serving autotunes the FlashInfer sparse-MLA decode at warm-up
+            #   (model_executor/warmup/flashinfer_sparse_mla_warmup.py:225-289,
+            #   kernel_warmup.py:234-235); these rows time FlashInfer's untuned tactic.
             with benchmark_with_power(
                 device=torch.device(device),
                 kernel_func=kernel_func,

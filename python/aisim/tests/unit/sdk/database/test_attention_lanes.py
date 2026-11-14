@@ -968,6 +968,7 @@ def test_generation_qk_norm_is_present_in_rust_wire_spec():
     assert spec["use_qk_norm"] is True
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_generation_qk_norm_contributes_latency_through_python_query():
     from aisim.sdk import common
     from aisim_core.sdk.operations.attention import GenerationAttention
@@ -1063,7 +1064,7 @@ def test_explicit_override_stays_ahead_of_the_framework_default_lane(lane_system
 def test_explicit_flashinfer_override_resolves_the_shipped_b200_generation_label(version, expected_head):
     """Real-data companion: on b200 the explicit FlashInfer override must head
     the generation walk with the label the requested vLLM version collected
-    (0.30.0 and 0.25.0 are outside the slots on this tree, hence the
+    (0.25.0 and 0.24.0 are outside the slots on this tree, hence the
     allow_unlisted_version load)."""
     from aisim.sdk.perf_database import get_database
     from aisim_core.sdk.operations.attention import resolved_lane_order_for_op

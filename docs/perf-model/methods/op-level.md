@@ -35,9 +35,9 @@ cross-shape or cross-precision transfer must retain its transfer provenance.
 
 ### Context-attention measurement boundaries
 
-TRT-LLM `torch_flow` context-attention rows produced by `1.3.0rc20` and
-`1.3.0rc29` time the attention forward with internal RoPE and both K/V-cache
-writes. The estimator therefore does not add separate RoPE or KV-write costs
+TRT-LLM `torch_flow` context-attention rows produced by `1.3.0rc20`,
+`1.3.0rc29` and `1.4.0rc2` time the attention forward with internal RoPE and
+both K/V-cache writes. The estimator therefore does not add separate RoPE or KV-write costs
 on top of these timings. Q/K normalization remains a separate estimate.
 
 This decision follows the stored framework, version, and selected kernel lane,

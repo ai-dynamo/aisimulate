@@ -18,6 +18,12 @@ GOLDEN = Path(__file__).parent / "goldens" / "afd_execution_plan.json"
 CASES = json.loads(GOLDEN.read_text())["cases"]
 
 
+@pytest.fixture(autouse=True)
+def _raw_data_coordinates(monkeypatch):
+    """The AFD parity configs pin SGLang 0.5.14, a raw data coordinate outside the queryable slots."""
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+
+
 def case_config(case, directory):
     return afd_parity.layout_config(case, directory)
 

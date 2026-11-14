@@ -24,6 +24,7 @@ def custom_systems(tmp_path):
     return tmp_path
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("discovery", ["sdk", "ordered_sdk", "environment"])
 def test_omitted_roots_preserve_configured_discovery(custom_systems, monkeypatch, discovery):
     import aisim_core
@@ -85,6 +86,7 @@ def test_omitted_roots_preserve_configured_discovery(custom_systems, monkeypatch
     assert resolve_systems_paths(["default"]) != (str(custom_systems),)
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_prediction_pins_populated_version_slots(custom_systems):
     from dataclasses import replace
 
@@ -182,6 +184,7 @@ def request(**changes):
     )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("input_kind", ["dataclass", "mapping"])
 @pytest.mark.parametrize("field", ["attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"])
 @pytest.mark.parametrize("sentinel", ["NaN", "Infinity", "-Infinity"])
@@ -227,6 +230,7 @@ def test_canonical_nonfinite_regression_weights_preserve_native_and_regression_c
     )
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 @pytest.mark.parametrize("field", ["attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"])
 @pytest.mark.parametrize("sentinel", ["NaN", "Infinity", "-Infinity"])
 def test_resolver_preserves_nonfinite_regression_weight_contract(field, sentinel):
@@ -757,6 +761,7 @@ def test_legacy_migration_validates_recorded_dcp():
             ForwardPassPerfModelConfig.from_legacy_engine_config({**legacy, "dcp_size": dcp}, "decode")
 
 
+@pytest.mark.usefixtures("raw_data_coordinates")
 def test_canonical_operation_diagnostics_include_native_sol_and_provenance():
     model = RustForwardPassPerfModel.best_available(
         ForwardPassPerfModelConfig(

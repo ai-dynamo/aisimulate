@@ -8,31 +8,33 @@ One measurement, two tables — the registry entry declares the second one as
 binds both to this producer's checkpoint:
   perf_filename            -> computescale_perf.txt  (dynamic per-token quant minus static quant)
   extra_perf_filenames[0]  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
+
+Both quantizations are the calls apply_fp8_linear makes in serving
+(python/sglang/srt/layers/quantization/fp8_utils.py at the v0.5.23 tag):
+dynamic per-token ``sglang_per_token_quant_fp8`` (:2625, the JIT
+per_token_quant_fp8 kernel, kernels/ops/quantization/__init__.py:17-23, 52-60)
+and static per-tensor ``static_quant_fp8`` (:2615-2621 and :2494, a Triton
+kernel, kernels/ops/quantization/fp8_kernel.py:713-769). Each row's
+kernel_source names the kernel it times (the compute_scale row by its dynamic
+quant).
 """
 
-# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
-# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file; earlier code is `git log -- <this file>` away.
-__compat__ = "sglang==0.5.21"
+# Source-checked against the sglang v0.5.23 tag. One release per file; earlier
+# code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.23"
 
 from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 
 import torch
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
-from sgl_kernel import sgl_per_token_quant_fp8
+from sglang.kernels.ops.quantization.fp8_kernel import sglang_per_token_quant_fp8, static_quant_fp8
 
 _OUTSIDE_LOOP_COUNT = 5
 
 
 def get_computescale_test_cases():
     return plan_cases("compute_scale", "sglang", get_sm_version())
-
-
-def _static_quantize_e4m3_per_tensor(x: torch.Tensor, scale: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
-    fp8_info = torch.finfo(torch.float8_e4m3fn)
-    out.copy_((x / scale).clamp(min=fp8_info.min, max=fp8_info.max).to(torch.float8_e4m3fn))
-    return out
 
 
 def _setup(m, k, device):
@@ -44,13 +46,9 @@ def _setup(m, k, device):
 
 
 def _bench_dynamic(device, x):
-    m = x.shape[0]
-    dynamic_out = torch.empty_like(x, dtype=torch.float8_e4m3fn)
-    dynamic_scale = torch.empty((m, 1), dtype=torch.float32, device=device)
-
     def kernel_func():
         for _ in range(_OUTSIDE_LOOP_COUNT):
-            sgl_per_token_quant_fp8(x, dynamic_out, dynamic_scale)
+            sglang_per_token_quant_fp8(x)
 
     with benchmark_with_power(device=device, kernel_func=kernel_func, repeat_n=1) as results:
         pass
@@ -58,12 +56,17 @@ def _bench_dynamic(device, x):
 
 
 def _bench_static(device, x):
-    static_out = torch.empty_like(x, dtype=torch.float8_e4m3fn)
     static_scale = torch.tensor([1.0], dtype=torch.float32, device=device)
+    # apply_fp8_linear broadcasts the static scale to one per row only where the
+    # per-channel CUTLASS epilogue cannot take a scalar A scale: native_scalar_a_scale
+    # holds on SM90/SM100/SM120 (fp8_utils.py:2555-2557, 2615-2621), and the
+    # FlashInfer per-tensor path never repeats it (:2494). On SM89 the static
+    # quant therefore also writes an [M, 1] scale.
+    repeat_scale = get_sm_version() < 90
 
     def kernel_func():
         for _ in range(_OUTSIDE_LOOP_COUNT):
-            _static_quantize_e4m3_per_tensor(x, static_scale, static_out)
+            static_quant_fp8(x, static_scale, repeat_scale=repeat_scale)
 
     with benchmark_with_power(device=device, kernel_func=kernel_func, repeat_n=1) as results:
         pass
@@ -84,7 +87,7 @@ def run_computescale(m, k, *, perf_filename, extra_perf_filenames, device="cuda:
         version=version,
         device_name=torch.cuda.get_device_name(device),
         op_name="compute_scale",
-        kernel_source="sglang",
+        kernel_source="sglang_jit_per_token_quant_fp8",
         perf_filename=perf_filename,
         power_stats=dynamic_power,
     ):
@@ -96,7 +99,7 @@ def run_computescale(m, k, *, perf_filename, extra_perf_filenames, device="cuda:
         version=version,
         device_name=torch.cuda.get_device_name(device),
         op_name="scale_matrix",
-        kernel_source="sglang",
+        kernel_source="sglang_triton_static_quant_fp8",
         perf_filename=scale_matrix_filename,
         power_stats=static_power,
     ):

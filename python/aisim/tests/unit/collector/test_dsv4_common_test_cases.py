@@ -95,8 +95,8 @@ def test_dsv4_module_points_follow_the_long_context_and_decode_grids(monkeypatch
     assert all(b * s <= 16384 and b * (s + p) <= 1048576 and s + p <= 1048576 for b, s, p in context)
     # The top-k knees of DeepSeek-V4-Flash (512) and DeepSeek-V4-Pro (1024) stay prefix anchors.
     assert {512, 1024} <= {p for _b, _s, p in context}
-    # From a 16K prefix on, only chunk-sized isl.
-    assert {s for _b, s, p in context if p >= 16384} == {1, 512, 2048, 8192, 16384}
+    # Every sequence length the chunk budget allows runs at long prefixes too.
+    assert {s for _b, s, p in context if p >= 16384} >= {1, 16, 32, 64, 128, 256, 512, 1024, 2048, 8192, 16384}
 
     decode = {(c.batch_size, c.seq_len) for c in plan("dsv4_csa_generation_module", "vllm", 100).cases}
     assert (1, 1048575) in decode and (2, 262144) in decode and (4, 131072) in decode and (64, 8192) in decode
