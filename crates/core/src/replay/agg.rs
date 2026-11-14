@@ -648,7 +648,8 @@ where
             return Ok(());
         }
         if let Some(token_id) = signal.token_id {
-            self.admission.defer_output_token(signal.uuid, token_id)?;
+            self.admission
+                .defer_output_token(signal.uuid, token_id, self.now_ms)?;
             if self.detokenization.is_some() {
                 self.collector
                     .on_detokenized_token(signal.uuid, self.now_ms, received_ms);

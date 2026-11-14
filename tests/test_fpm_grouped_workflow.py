@@ -23,8 +23,12 @@ from aisim.support.schema import SupportRequest
 from aisim.sweeper.config import Workload
 from aisim.sweeper.kv_load import resolve_kv_load
 from aisim.sweeper.model_hw import parallel_configs_for
+from aisim_core.ais_perf_model import AisPerfModelDeprecationWarning
 
 pytestmark = pytest.mark.unit
+
+# AISim still writes the old estimator fields into the configs it saves, so reading one back warns.
+reads_saved_config = pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning")
 
 
 @pytest.fixture
@@ -283,7 +287,8 @@ def test_mixed_profile_recommendation_preserves_pinned_linear_prefix_cache(group
     path.write_text(yaml.safe_dump(raw))
     output = tmp_path / "linear-recommendation"
     assert cli.main(["recommend", "-c", str(path), "--output-dir", str(output)]) == 0
-    exported = CorePredictionConfig.from_yaml(output / "recommendations/0001.yaml")
+    with pytest.warns(AisPerfModelDeprecationWarning):
+        exported = CorePredictionConfig.from_yaml(output / "recommendations/0001.yaml")
     assert exported.engine.workers.aggregated.parallelism.tensor == 2
     assert exported.engine.workers.aggregated.kv_cache.prefix_caching is True
 
@@ -521,6 +526,7 @@ def test_public_predict_does_not_clamp_logical_context_to_window(grouped_case, t
     assert any(gap["coordinates"]["total_kv_read_tokens"] == 1152 for gap in gaps)
 
 
+@reads_saved_config
 @pytest.mark.parametrize("relative_load", [False, True])
 @pytest.mark.parametrize("observed_memory", [False, True])
 def test_grouped_recommendation_exports_a_runnable_prediction(
@@ -852,6 +858,7 @@ def test_grouped_onboarding_profile_reaches_real_collector_preview_and_render(
     assert collector_cli.main([arg for arg in command if arg != "--plan-only"]) == 0
 
 
+@reads_saved_config
 @pytest.mark.parametrize("dep", [False, True])
 def test_onboard_validation_replays_windowed_weka_with_full_context(grouped_case, tmp_path, monkeypatch, dep):
     from aisim import supervision

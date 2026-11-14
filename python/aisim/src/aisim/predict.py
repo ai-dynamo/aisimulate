@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from aisim_core.sdk.errors import UnsupportedVisionFamilyError
+from aisim_core.sdk.perf_database import UnlistedQueryVersionError
 from aisim_core.sdk.utils import get_model_config_from_model_path
 
 from .compiler import prediction_to_replay_spec
@@ -110,6 +111,8 @@ def run_prediction(
         spec, and raw runner report.
 
     Raises:
+        UnlistedQueryVersionError: If timing preparation rejects a backend version
+            outside its queryable slots. Propagates unchanged as an input error.
         UnsupportedVisionFamilyError: If native VL replay cannot support the
             requested image processor. This ValueError subtype propagates unchanged.
         PredictionExecutionError: If the runner fails with another execution error.
@@ -147,11 +150,13 @@ def run_prediction(
     try:
         try:
             report = runner.run(spec, output_requirements=output_requirements)
-        except (KeyboardInterrupt, ResourceLimitError, UnsupportedVisionFamilyError):
+        except (KeyboardInterrupt, ResourceLimitError, UnsupportedVisionFamilyError, UnlistedQueryVersionError):
             # ResourceLimitError from a guarded runner must reach the caller
             # unwrapped so it can be handled distinctly from execution failures.
             # A known unsupported vision family is likewise an input rejection,
             # even though its geometry is resolved while preparing the runner.
+            # Version-slot refusals discovered during timing preparation also
+            # retain their configuration-error type and complete repair guidance.
             raise
         except Exception as exc:
             raise PredictionExecutionError(

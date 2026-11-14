@@ -22,6 +22,7 @@ from pydantic import (
 
 from aisim.fpm_profile import FpmModelProfile
 
+from .ais_perf_model import lower_engine
 from .common import (
     AFD_UNSUPPORTED_MODEL_CONTROLS,
     ENGINE_MODEL_CONTROL_FIELDS,
@@ -500,8 +501,8 @@ class TimingConfig(StrictModel):
                 value.setdefault("fallback_policy", "deny")
         return value
 
-    prefill_ms: float | None = Field(default=None, ge=0.0)
-    decode_ms: float | None = Field(default=None, ge=0.0)
+    prefill_ms: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+    decode_ms: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
@@ -971,6 +972,17 @@ class EstimatorPolicyConfig(StrictModel):
     estimation_mode: ReplayEstimationMode = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
+    # Another spelling of the estimator fields above. It is rewritten into them
+    # before validation and is never dumped.
+    # It is left out of repr() too, so the repr of an existing config stays what it was before this field.
+    ais_perf_model: dict[str, Any] | list[dict[str, Any]] | None = Field(default=None, exclude=True, repr=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lower_ais_perf_model(cls, value: Any) -> Any:
+        # This must stay the first validator that runs, so every other
+        # validator sees the estimator fields it already reads.
+        return lower_engine(value, "recommend" if issubclass(cls, EngineRecommendationConfig) else "predict")
 
     @model_validator(mode="after")
     def _migrate_systems_path(self):

@@ -21,7 +21,11 @@ from aisim.config import CorePredictionConfig, CoreRecommendationConfig
 from aisim.fpm_profile import load_fpm_profile
 from aisim.support.schema import SupportRequest
 
-pytestmark = pytest.mark.unit
+pytestmark = [
+    pytest.mark.unit,
+    # Onboarding still writes the old estimator fields into its replay configs, so reading one back warns.
+    pytest.mark.filterwarnings("ignore::aisim_core.ais_perf_model.AisPerfModelDeprecationWarning"),
+]
 
 # Original synthetic decoder geometries, not downloaded checkpoints or measurements.
 _SMALL = {
@@ -541,8 +545,8 @@ from aisim.supervision import main
 code = main(sys.argv[1:])
 assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules for prefix in blocked)
 core = {name for name in sys.modules if name == 'aisim_core' or name.startswith('aisim_core.')}
-assert core <= {'aisim_core', 'aisim_core.decoder_config', 'aisim_core.fpm_profile',
-                'aisim_core.quantization'}, core
+assert core <= {'aisim_core', 'aisim_core.ais_perf_model', 'aisim_core.decoder_config',
+                'aisim_core.fpm_profile', 'aisim_core.quantization'}, core
 raise SystemExit(code)
 """
     result = subprocess.run([sys.executable, "-c", script, *command], text=True, capture_output=True, timeout=30)

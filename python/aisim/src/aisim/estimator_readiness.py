@@ -92,6 +92,32 @@ def perf_data_missing_message(error: BaseException | str) -> str | None:
     )
 
 
+def reject_unlisted_estimator_version(diagnostics: dict[str, Any]) -> None:
+    """Preserve a version-slot input refusal before formatting an unready estimator."""
+
+    provenance = diagnostics.get("provenance") or {}
+    if not provenance.get("selection_failures") and not diagnostics.get("last_warning"):
+        # Explicit regression identities need not use an op-data version slot.
+        return
+    config = provenance.get("config") or {}
+    if not all(config.get(key) for key in ("system", "backend", "backend_version")):
+        return
+    from aisim_core.sdk.perf_database import UnlistedQueryVersionError, resolve_query_version
+
+    try:
+        resolve_query_version(
+            config["system"],
+            config["backend"],
+            config["backend_version"],
+            systems_paths=config.get("systems_paths") or None,
+        )
+    except UnlistedQueryVersionError:
+        raise
+    except ValueError:
+        # Other lookup failures retain the existing missing-data diagnostic.
+        pass
+
+
 def _unavailable_version_message(
     system: str | None,
     backend: str | None,

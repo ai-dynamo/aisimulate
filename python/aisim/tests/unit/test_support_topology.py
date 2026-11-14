@@ -607,8 +607,8 @@ assert report.default.draft.resolved['runtime_overhead_bytes'] == 3758096384
 assert report.default.draft.resolved['comm_overhead_bytes'] == 0
 assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules for prefix in forbidden)
 core = {name for name in sys.modules if name == 'aisim_core' or name.startswith('aisim_core.')}
-assert core <= {'aisim_core', 'aisim_core.decoder_config', 'aisim_core.fpm_profile',
-                'aisim_core.quantization'}, core
+assert core <= {'aisim_core', 'aisim_core.ais_perf_model', 'aisim_core.decoder_config',
+                'aisim_core.fpm_profile', 'aisim_core.quantization'}, core
 print(json.dumps(report.to_dict()))
 """
     source = Path(__file__).parents[2] / "src"

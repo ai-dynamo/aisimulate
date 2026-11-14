@@ -168,6 +168,41 @@ pub(crate) enum CompletedTransfer {
     },
 }
 
+/// A caller's last [`HostTier::touch_reversed`] of one key list. The next
+/// call skips what cannot have changed since.
+pub(crate) struct ReversedTouch {
+    /// [`Lru::touches`] after the call. While it stands, the keys' blocks
+    /// are still the newest, in order, and the next call does nothing.
+    lru_touches: u64,
+    /// `admitted_blocks` when the tier held none of the keys from
+    /// `absent_from` on. While it stands, those keys need no lookup.
+    admitted: u64,
+    absent_from: usize,
+    /// The [`Lru`] run the keys' blocks join as they move.
+    run: u32,
+    /// The blocks the call left newest, if the first key had one. While
+    /// `run` is whole they move again as one, without lookups.
+    leading: Option<Leading>,
+}
+
+impl ReversedTouch {
+    /// The caller's own store admitted `blocks` of its keys, all before
+    /// index `end`.
+    pub(crate) fn stored(&mut self, blocks: usize, end: usize) {
+        self.admitted += blocks as u64;
+        self.absent_from = self.absent_from.max(end);
+    }
+}
+
+/// The adjacent blocks of a caller's first `len` keys: `oldest` holds key
+/// `len - 1`, `newest` key 0.
+#[derive(Clone, Copy)]
+struct Leading {
+    len: usize,
+    oldest: NonZeroU32,
+    newest: NonZeroU32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EntryState {
     PendingStore { transfer_id: TransferId },
@@ -303,6 +338,9 @@ pub(crate) struct HostTier {
     entries: FxHashMap<HostBlockKey, Entry>,
     /// Includes pinned residents; pending destinations count only in `entries`.
     resident_blocks: usize,
+    /// Blocks ever admitted, by a store or an external reservation. A key
+    /// the tier lacked is still absent while this count stands.
+    admitted_blocks: u64,
     /// Resident, currently unpinned blocks, or every present block of a
     /// [`HostPolicy::Ranked`] tier. Under [`HostPolicy::CohortLru`], blocks a
     /// framework operation makes evictable together are one cohort because
@@ -315,6 +353,8 @@ pub(crate) struct HostTier {
     /// Router identity of each block, retained while residency is published.
     meta: FxHashMap<HostBlockKey, HostBlockMeta>,
     completion_epoch: u64,
+    /// See [`Self::lookup_epoch`].
+    lookup_epoch: u64,
     next_transfer_id: u64,
     current_time_ms: f64,
     warned_structurally_unfittable: bool,
@@ -357,12 +397,14 @@ impl HostTier {
             config,
             entries: FxHashMap::default(),
             resident_blocks: 0,
+            admitted_blocks: 0,
             lru: Lru::default(),
             transfers: FxHashMap::default(),
             transport,
             clients: FxHashMap::default(),
             meta: FxHashMap::default(),
             completion_epoch: 0,
+            lookup_epoch: 0,
             next_transfer_id: 0,
             current_time_ms: 0.0,
             warned_structurally_unfittable: false,
@@ -583,6 +625,8 @@ impl HostTier {
         }
 
         let transfer_id = self.allocate_transfer_id();
+        self.admitted_blocks += missing.len() as u64;
+        self.lookup_epoch += 1;
         for key in &missing {
             let mut entry = Entry {
                 state: EntryState::PendingStore { transfer_id },
@@ -641,6 +685,7 @@ impl HostTier {
     }
 
     fn remove_residents(&mut self, request_id: Uuid, victims: &[HostBlockKey], now_ms: f64) {
+        self.lookup_epoch += 1;
         for victim in victims {
             let mut entry = self
                 .entries
@@ -854,6 +899,7 @@ impl HostTier {
             .remove(&id)
             .filter(|transfer| transfer.kind == Kind::External)
             .expect("external G2 reservation missing");
+        self.lookup_epoch += 1;
         for key in &transfer.blocks {
             let entry = self.entries.get_mut(key).unwrap();
             assert_eq!(entry.state, EntryState::PendingStore { transfer_id: id });
@@ -892,6 +938,7 @@ impl HostTier {
             "external G2 reservation missing"
         );
         let transfer = self.transfers.remove(&id).unwrap();
+        self.lookup_epoch += 1;
         for key in transfer.blocks {
             let mut entry = self.entries.remove(&key).unwrap();
             assert_eq!(entry.load_pins, 0);
@@ -1103,6 +1150,13 @@ impl HostTier {
         }
     }
 
+    /// Moves whenever an entry appears, disappears or becomes resident, the
+    /// only changes to a [`Self::lookup`] answer, so answers read at one
+    /// epoch hold until it moves.
+    pub(crate) fn lookup_epoch(&self) -> u64 {
+        self.lookup_epoch
+    }
+
     /// Apply framework-defined recency order. Not-ready or pinned blocks are
     /// outside vLLM's evictable LRU and ignore ordinary touches, except in a
     /// ranked tier, which re-ranks every present block.
@@ -1113,6 +1167,71 @@ impl HostTier {
         {
             self.lru.touch(&mut entry.lru_slot, key);
         }
+    }
+
+    /// [`Self::touch`] each of `keys` from the last to the first, so the
+    /// first ends up the newest. `last` is the caller's from its previous
+    /// call with the same `keys`, `None` before the first.
+    pub(crate) fn touch_reversed(
+        &mut self,
+        keys: &[HostBlockKey],
+        last: &mut Option<ReversedTouch>,
+    ) {
+        let (run, end, kept) = match last {
+            None => (self.lru.new_run(), keys.len(), None),
+            Some(last) if last.lru_touches == self.lru.touches() => return,
+            Some(last) => {
+                let whole = self.lru.resume_run(last.run);
+                let end = if last.admitted == self.admitted_blocks {
+                    last.absent_from.min(keys.len())
+                } else {
+                    keys.len()
+                };
+                (last.run, end, last.leading.filter(|_| whole))
+            }
+        };
+        let kept_len = kept.map_or(0, |kept| kept.len);
+        debug_assert!(kept_len <= end);
+        let mut leading: Option<Leading> = None;
+        let mut absent_from = kept_len;
+        let mut index = end;
+        while index > kept_len {
+            index -= 1;
+            let Some(entry) = self.entries.get(&keys[index]) else {
+                leading = None;
+                continue;
+            };
+            absent_from = absent_from.max(index + 1);
+            // The linked blocks are the ones a touch moves.
+            let Some(oldest) = entry.lru_slot else {
+                leading = None;
+                continue;
+            };
+            let len = index + 1;
+            let (newest, matched) =
+                self.lru
+                    .touch_matching_span(run, oldest, &keys[kept_len..index]);
+            index -= matched;
+            leading
+                .get_or_insert(Leading {
+                    len,
+                    oldest,
+                    newest,
+                })
+                .newest = newest;
+        }
+        // The kept blocks are the first keys', so they move last, as one.
+        if let Some(kept) = kept {
+            self.lru.touch_span(kept.oldest, kept.newest);
+            leading.get_or_insert(kept).newest = kept.newest;
+        }
+        *last = Some(ReversedTouch {
+            lru_touches: self.lru.touches(),
+            admitted: self.admitted_blocks,
+            absent_from,
+            run,
+            leading,
+        });
     }
 
     /// Make blocks that became evictable together the newest: in key order,
@@ -1319,6 +1438,7 @@ impl HostTier {
                 .clients
                 .get(&client)
                 .is_some_and(|client| client.holds_completed_sources);
+            self.lookup_epoch += 1;
             for key in &blocks {
                 let entry = self
                     .entries
@@ -2101,6 +2221,113 @@ pub(crate) mod tests {
         // the completion cohort, not a framework policy claim.
         assert_eq!(tier.lookup(key(1)), Lookup::Miss);
         assert!(tier.is_resident(key(2)));
+    }
+
+    #[test]
+    fn touch_reversed_skips_pending_blocks_until_they_land() {
+        let mut tier = tier(8);
+        let mut now = 0.0;
+        for block in [1, 2, 3, 9] {
+            now = make_resident(&mut tier, &[key(block)], now);
+        }
+        // Of the prompt, 5 and 6 are pending and 7 is absent; 9 is another
+        // prompt's.
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.prepare_store(C, request_id(), &[key(5), key(6)], None, now)
+        else {
+            panic!("5 and 6 must be absent")
+        };
+        let prompt = [1, 2, 3, 5, 6, 7].map(key);
+        let mut last = None;
+        tier.touch_reversed(&prompt, &mut last);
+        assert_eq!(tier.lru_order(), [9, 3, 2, 1].map(key));
+
+        // 5 and 6 land in key order; the next touch puts them in touch order.
+        assert_eq!(tier.submit_prepared_stores(C, now), 1);
+        let deadline = tier.transfer_deadline(transfer_id).unwrap();
+        tier.tick(C, deadline);
+        tier.touch_reversed(&prompt, &mut last);
+        assert_eq!(tier.lru_order(), [9, 6, 5, 3, 2, 1].map(key));
+    }
+
+    #[test]
+    fn touch_reversed_keeps_its_run_until_one_of_the_blocks_moves() {
+        let mut tier = tier(5);
+        let mut now = 0.0;
+        for block in [1, 2, 3, 9] {
+            now = make_resident(&mut tier, &[key(block)], now);
+        }
+        let prompt = [1, 2, 3, 4].map(key);
+        let mut last = None;
+        tier.touch_reversed(&prompt, &mut last);
+        assert_eq!(tier.lru_order(), [9, 3, 2, 1].map(key));
+
+        // 4 is admitted and lands: the keys the tier lacked are looked up
+        // again, and 4 goes before the kept 3, 2 and 1.
+        now = make_resident(&mut tier, &[key(4)], now);
+        tier.touch(key(9));
+        tier.touch_reversed(&prompt, &mut last);
+        assert_eq!(tier.lru_order(), [9, 4, 3, 2, 1].map(key));
+
+        // A block touched alone leaves the run, which is found by key again.
+        tier.touch(key(2));
+        tier.touch_reversed(&prompt, &mut last);
+        assert_eq!(tier.lru_order(), [9, 4, 3, 2, 1].map(key));
+
+        // So does an evicted block, whose node goes to 7.
+        tier.touch(key(9));
+        make_resident(&mut tier, &[key(7)], now);
+        tier.touch_reversed(&prompt, &mut last);
+        assert_eq!(tier.lru_order(), [9, 7, 3, 2, 1].map(key));
+
+        // And blocks that another caller's touch joins to its own run.
+        tier.touch_reversed(&[1, 2, 9].map(key), &mut None);
+        assert_eq!(tier.lru_order(), [7, 3, 9, 2, 1].map(key));
+        tier.touch_reversed(&prompt, &mut last);
+        assert_eq!(tier.lru_order(), [7, 9, 3, 2, 1].map(key));
+    }
+
+    #[test]
+    fn lookup_epoch_moves_only_when_a_lookup_answer_changes() {
+        let mut tier = tier(4);
+        let mut seen = tier.lookup_epoch();
+        let mut moved = |tier: &HostTier| std::mem::replace(&mut seen, tier.lookup_epoch()) != seen;
+
+        // A store: absent, then pending, then resident.
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.prepare_store(C, request_id(), &[key(1)], None, 0.0)
+        else {
+            panic!("1 must be absent")
+        };
+        assert!(moved(&tier));
+        tier.submit_prepared_stores(C, 0.0);
+        assert!(!moved(&tier));
+        let now = tier.transfer_deadline(transfer_id).unwrap();
+        tier.tick(C, now);
+        assert!(moved(&tier));
+
+        // A touch, a pin and a load change no answer.
+        tier.touch(key(1));
+        tier.pin_external(&[key(1)]);
+        tier.unpin_external(&[key(1)]);
+        let now = load(&mut tier, &[key(1)], now);
+        assert!(!moved(&tier));
+
+        // An external reservation: pending, then resident or rolled back.
+        for (block, lands) in [(2, true), (3, false)] {
+            let StoreOutcome::Prepared { transfer_id, .. } =
+                tier.reserve_external(C, request_id(), &[key(block)], None, now)
+            else {
+                panic!("the block must be absent")
+            };
+            assert!(moved(&tier));
+            if lands {
+                tier.complete_external(transfer_id);
+            } else {
+                tier.cancel_external(transfer_id);
+            }
+            assert!(moved(&tier));
+        }
     }
 
     #[test]
