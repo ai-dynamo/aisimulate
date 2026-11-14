@@ -38,13 +38,13 @@ wheel identity; renamed builds require release-automation MR !84 before cutover.
 ## Distribution migration
 
 The renamed `aisim` wheel owns the same Python packages and CLI files as the
-historical `aisim` wheel. Existing users must uninstall `aisim` before
+historical `aisimulate` wheel. Existing users must uninstall `aisimulate` before
 installing `aisim`, including upgrades; mixed installations must be repaired
 by removing the old distribution and force-reinstalling the selected new wheel,
 or by creating a fresh environment. See the [migration procedure](../getting-started/installation.md#migrate-to-the-renamed-distribution).
 
 Coordinate downstream dependency declarations, especially Dynamo, before the
-cutover. A consumer requiring `aisim` can reinstall the old distribution
+cutover. A consumer requiring `aisimulate` can reinstall the old distribution
 and recreate the overlap. New-name environments require compatible consumers
 that declare `aisim`, followed by `pip check`. Historical release qualification
 continues using its original distribution in a separate environment.
