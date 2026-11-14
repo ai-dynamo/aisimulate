@@ -358,6 +358,8 @@ shared:
     owners: [infra, maintainers]
   - glob: pytest.ini
     owners: [infra, maintainers]
+  - glob: .cursor/
+    owners: [infra, maintainers]
   - glob: scripts/
     owners: [infra, maintainers]
   - glob: SECURITY.md

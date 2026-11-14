@@ -41,6 +41,73 @@ WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
 
 
+@pytest.mark.parametrize("pool", ["amd64", "arm64"])
+def test_runner_canary_probes_survive_container_home_override(tmp_path, pool):
+    job = _workflow("runner-canary.yml")["jobs"]["canary"]
+    entry = next(item for item in job["strategy"]["matrix"]["include"] if item["pool"] == pool)
+    step = next(item for item in job["steps"] if "run" in item)
+    assert job["container"]["env"]["USER"] == "runner"
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+    scratch.mkdir()
+    log = tmp_path / "probes.log"
+    # Model the runner replacing container HOME, then applying the job and step
+    # environments. Only host paths and architecture are controlled here; the
+    # exact canary run block still performs its HOME and source assertions.
+    env = {
+        **os.environ,
+        **job["container"]["env"],
+        "HOME": "/github/home",
+        **job.get("env", {}),
+        "EXPECTED_MACHINE": entry["machine"],
+        "EXPECT_SCRATCH": str(entry["scratch"]).lower(),
+        "GITHUB_REPOSITORY": "ai-dynamo/aisim",
+        "GITHUB_SHA": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True).strip(),
+        "RUNNER_NAME": f"controlled-{pool}",
+        "PROBE_WORKSPACE": str(workspace),
+        "PROBE_SCRATCH": str(scratch),
+        "PROBE_LOG": str(log),
+    }
+    controls = r"""
+pwd() { printf '/__w/aisim/aisim\n'; }
+uname() { printf 'architecture\n' >> "$PROBE_LOG"; printf '%s\n' "$EXPECTED_MACHINE"; }
+test() {
+  if [[ "$1" == -w && "$2" == /__w/aisim/aisim ]]; then
+    builtin test -w "$PROBE_WORKSPACE"
+  elif [[ "$1" == -w && "$2" == /scratch ]]; then
+    builtin test -w "$PROBE_SCRATCH"
+  else
+    builtin test "$@"
+  fi
+}
+mktemp() {
+  printf '%s\n' "$1" >> "$PROBE_LOG"
+  case "$1" in
+    /__w/aisim/aisim/*) command mktemp "$PROBE_WORKSPACE/${1##*/}" ;;
+    /scratch/*) command mktemp "$PROBE_SCRATCH/${1##*/}" ;;
+    *) return 1 ;;
+  esac
+}
+"""
+    result = subprocess.run(
+        ["bash", "-euc", controls + step["run"]],
+        cwd=REPOSITORY_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert f"({entry['machine']}) with writable HOME=/__w/aisim/aisim" in result.stdout
+    assert log.read_text().splitlines() == [
+        "architecture",
+        "/__w/aisim/aisim/.runner-canary.XXXXXX",
+        "/scratch/runner-canary.XXXXXX",
+    ]
+    assert not list(workspace.iterdir())
+    assert not list(scratch.iterdir())
+
+
 def test_stable_release_migrations_require_reviewed_clearance(tmp_path):
     from scripts.release.check_release_migrations import GATES, require_completed_migrations
 
