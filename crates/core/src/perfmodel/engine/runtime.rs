@@ -5697,6 +5697,129 @@ pub(crate) mod tests {
         }
     }
 
+    fn upscaling_memo_ops() -> [Op; 2] {
+        [
+            Op::MlaBmm(crate::operators::MlaBmmOp::new(
+                "bmm",
+                32,
+                GemmQuantMode::Bfloat16,
+                true,
+            )),
+            Op::Gemm(GemmOp::new("gemm", 4096, 4096, GemmQuantMode::Bfloat16)),
+        ]
+        .map(|op| {
+            Op::TokenScale(crate::operators::op::TokenScaleOp {
+                op: Box::new(op),
+                numerator: 2,
+                denominator: 1,
+            })
+        })
+    }
+
+    #[test]
+    fn op_memo_preserves_token_scale_overflow_on_the_unkeyed_field() {
+        use crate::operators::op::MemoField;
+        use crate::session::OpList;
+
+        let engine = build_engine(None);
+        let db = engine.database().sol_full_view();
+        let base = RuntimeContext {
+            batch_size: 2,
+            num_tokens: 512,
+            ..Default::default()
+        };
+        for op in upscaling_memo_ops() {
+            let Op::TokenScale(scale) = &op else {
+                unreachable!()
+            };
+            let field = scale.op.memo_field().unwrap();
+            let expected_success = op.query(&db, &base).unwrap();
+            for list in [OpList::Context, OpList::Generation] {
+                let memo = OpMemo::new(16, std::slice::from_ref(&op), std::slice::from_ref(&op));
+                // Doubling MAX/2 fits; doubling MAX/2+1 or MAX does not.
+                // Keep the child's key fixed while changing the other field.
+                // Revisit errors and successes to check repeated queries too.
+                for value in [
+                    2,
+                    u32::MAX / 2,
+                    u32::MAX / 2 + 1,
+                    u32::MAX,
+                    u32::MAX / 2 + 1,
+                    2,
+                ] {
+                    let ctx = match field {
+                        MemoField::BatchSize => RuntimeContext {
+                            num_tokens: value,
+                            ..base
+                        },
+                        MemoField::NumTokens => RuntimeContext {
+                            batch_size: value,
+                            ..base
+                        },
+                    };
+                    assert_eq!(field.of(&ctx), field.of(&base));
+                    let cold = op.query(&db, &ctx);
+                    if value > u32::MAX / 2 {
+                        assert!(matches!(&cold, Err(AicError::InvalidEngineConfig(message))
+                            if message == "draft query token count exceeds u32"));
+                    } else {
+                        assert_eq!(cold.as_ref().unwrap(), &expected_success);
+                    }
+                    let warm = memo.query(&db, list, 0, &ctx, || op.query(&db, &ctx));
+                    assert_eq!(
+                        warm.map_err(|err| format!("{err:?}")),
+                        cold.map_err(|err| format!("{err:?}")),
+                        "{} {list:?} at {value}",
+                        op.name(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn forward_pass_memo_preserves_token_scale_overflow() {
+        let fixture = build_engine(None);
+        let db = Arc::new(
+            fixture
+                .database()
+                .sol_full_view()
+                .with_mode(DatabaseMode::Sol, TransferPolicy::default()),
+        );
+        for op in upscaling_memo_ops() {
+            let build = || {
+                let mut config = fixture_engine_config(None);
+                config.database_mode = DatabaseMode::Sol;
+                Engine::build(
+                    EngineSpec::new(config, vec![op.clone()], vec![]),
+                    Arc::clone(&db),
+                )
+                .unwrap()
+            };
+            let warm = build();
+            // Two prefills keep MlaBmm's batch-size key fixed. Use even
+            // totals so the rank's per-request division loses no tokens.
+            let safe = (u32::MAX / 2) & !1;
+            for tokens in [512, safe, safe + 2, u32::MAX - 1, safe + 2, 512] {
+                let metrics = [rank_fpm(2, tokens, 0, 0, 0)];
+                let cold = build().forward_pass_time_ms(&metrics);
+                if tokens > u32::MAX / 2 {
+                    assert!(matches!(&cold, Err(AicError::InvalidEngineConfig(message))
+                        if message == "draft query token count exceeds u32"));
+                } else {
+                    assert!(cold.as_ref().is_ok_and(|ms| ms.is_finite() && *ms > 0.0));
+                }
+                assert_eq!(
+                    warm.forward_pass_time_ms(&metrics)
+                        .map_err(|err| format!("{err:?}")),
+                    cold.map_err(|err| format!("{err:?}")),
+                    "{} at {tokens} tokens",
+                    op.name(),
+                );
+            }
+        }
+    }
+
     #[test]
     fn op_memo_answers_kv_independent_ops_with_the_dispatch_result() {
         // Each pair keeps a rank's token counts and changes only its KV: the
