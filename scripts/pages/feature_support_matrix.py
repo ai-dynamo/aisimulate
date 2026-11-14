@@ -15,7 +15,7 @@ import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 
-REPOSITORY_URL = "https://github.com/ai-dynamo/aisimulate"
+REPOSITORY_URL = "https://github.com/ai-dynamo/aisim"
 DATA_PATH = "pages/feature-support-matrix/features.toml"
 TEMPLATE_PATH = "pages/feature-support-matrix/template.html"
 

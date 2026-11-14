@@ -18,6 +18,42 @@ struct G3StagingState {
     reservation: TransferId,
 }
 
+/// The leading keys G2 held, resident or pending, at a request's latest
+/// [`VllmG3OffloadAdapter::stage`]. A blocked queue head stages again on
+/// every pass, and staging only notes whether one of these keys is pending,
+/// so while G2 is unchanged the next one resumes at the first key G2 lacks.
+/// The default is a reading of no keys.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct HeldPrefix {
+    /// The [`HostTier::lookup_epoch`] the keys were read at.
+    epoch: u64,
+    /// How many keys were read: a suffix of the request's prompt blocks,
+    /// which its length identifies.
+    keys_len: usize,
+    len: usize,
+    /// Whether any of the `len` keys was pending.
+    pending: bool,
+}
+
+impl HeldPrefix {
+    fn read(tier: &HostTier, keys: &[HostBlockKey]) -> Self {
+        let mut held = Self {
+            epoch: tier.lookup_epoch(),
+            keys_len: keys.len(),
+            ..Self::default()
+        };
+        for key in keys {
+            match tier.lookup(*key) {
+                Lookup::Hit => {}
+                Lookup::Pending { .. } => held.pending = true,
+                Lookup::Miss => break,
+            }
+            held.len += 1;
+        }
+        held
+    }
+}
+
 pub(super) struct VllmG3OffloadAdapter {
     registry: SharedG3Tier,
     worker: usize,
@@ -80,6 +116,7 @@ impl VllmG3OffloadAdapter {
         client: u64,
         owner: Uuid,
         restore: &mut RestoreRounds,
+        held: &mut HeldPrefix,
         keys: &[HostBlockKey],
         meta: Option<&[HostBlockMeta]>,
         now: f64,
@@ -88,14 +125,18 @@ impl VllmG3OffloadAdapter {
             self.attempted_at = now;
             self.attempted.clear();
         }
+        if (held.epoch, held.keys_len) != (tier.lookup_epoch(), keys.len()) {
+            *held = HeldPrefix::read(tier, keys);
+        }
+        debug_assert_eq!(*held, HeldPrefix::read(tier, keys));
         let (mut plan, mut no_room) = (None::<ExternalPlan>, None);
-        let mut deferred = false;
+        let mut deferred = held.pending;
         let mut registry = self.registry.lock().unwrap();
         // Like vLLM's tiering manager, which reserves each promoted block with
         // its own `prepare_write([key])`, a promotion protects only the blocks
         // it reserves: it may evict a later G2 hit of this same prefix, which
         // the walk then sees as missing.
-        for key in keys.iter().copied() {
+        for key in keys[held.len..].iter().copied() {
             match tier.planned_lookup(plan.as_ref(), key) {
                 Lookup::Hit => {}
                 Lookup::Pending { .. } => deferred = true,
@@ -288,7 +329,8 @@ mod tests {
             keys: &[HostBlockKey],
             now: f64,
         ) -> bool {
-            self.stage(tier, C, owner, &mut Default::default(), keys, None, now)
+            let (restore, held) = (&mut Default::default(), &mut Default::default());
+            self.stage(tier, C, owner, restore, held, keys, None, now)
         }
     }
 
@@ -382,6 +424,39 @@ mod tests {
             registry.lock().unwrap().snapshot().read.completed_bytes,
             3_000_000
         );
+    }
+
+    #[test]
+    fn a_waiting_request_s_repeated_stage_follows_g2() {
+        // A blocked queue head stages on every pass. Each stage still probes
+        // G3 for the first block G2 lacks, and must see the blocks G2 gained
+        // or lost since the one before.
+        let (mut g3, mut tier, registry) = fixture(2);
+        let [a, b, x, y] = [1, 2, 8, 9].map(HostBlockKey::new);
+        let mut held = HeldPrefix::default();
+        let mut stage = |g3: &mut VllmG3OffloadAdapter, tier: &mut HostTier, now: f64| {
+            let restore = &mut Default::default();
+            g3.stage(tier, C, Uuid::nil(), restore, &mut held, &[a, b], None, now)
+        };
+
+        seed(&mut tier, a);
+        for probes in 1..=2 {
+            assert!(!stage(&mut g3, &mut tier, 0.0));
+            // One probe each, for B, which G3 lacks.
+            assert_eq!(registry.lock().unwrap().snapshot().lookup_probes, probes);
+        }
+        // X and Y evict A, which G3 can restore.
+        seed(&mut tier, x);
+        seed(&mut tier, y);
+        let now = seed_secondary(&registry, &mut tier, &[a]);
+        for _ in 0..3 {
+            // Promote A, then wait for it.
+            assert!(stage(&mut g3, &mut tier, now));
+        }
+        assert_eq!(g3.stages.len(), 1);
+        g3.advance(&mut tier, now + 10.0);
+        assert_eq!(tier.lookup(a), Lookup::Hit);
+        assert!(!stage(&mut g3, &mut tier, now + 10.0));
     }
 
     #[test]
@@ -641,7 +716,11 @@ mod tests {
         let (mut g3, mut tier, registry) = fixture(1);
         let [a, b] = [1, 2].map(HostBlockKey::new);
         let mut now = seed_secondary(&registry, &mut tier, &[a, b]);
-        let mut restore = RestoreRounds::default();
+        let (mut restore, mut held) = (RestoreRounds::default(), HeldPrefix::default());
+        let mut stage =
+            |g3: &mut VllmG3OffloadAdapter, tier: &mut HostTier, restore: &mut _, now| {
+                g3.stage(tier, C, Uuid::nil(), restore, &mut held, &[a, b], None, now)
+            };
         // Rank progress before round 10 starts the count over.
         let rounds = 10 + MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS;
         for round in 0..rounds {
@@ -649,10 +728,10 @@ mod tests {
             if round == 10 {
                 g3.note_rank_progress();
             }
-            assert!(g3.stage(&mut tier, C, Uuid::nil(), &mut restore, &[a, b], None, now));
+            assert!(stage(&mut g3, &mut tier, &mut restore, now));
             if round == 0 {
                 // Waiting on the pending promotion is not another round.
-                assert!(g3.stage(&mut tier, C, Uuid::nil(), &mut restore, &[a, b], None, now));
+                assert!(stage(&mut g3, &mut tier, &mut restore, now));
                 assert_eq!(restore.rounds_without_progress, 1);
             }
             now += 1.0;

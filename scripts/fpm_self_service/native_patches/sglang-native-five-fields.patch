@@ -8,7 +8,7 @@
          sum_prefill_kv_tokens = 0
          prefill_lengths = WelfordAccumulator()
  
-+        # Modified for AISimulate native FPM collection (2026-10-31): use
++        # Modified for AISim native FPM collection (2026-10-31): use
 +        # pre-forward batch lengths, not page-rounded admission statistics or
 +        # request prefix indices that result processing may already have updated.
          if batch.forward_mode.is_mixed():

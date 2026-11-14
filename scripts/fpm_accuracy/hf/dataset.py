@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from AISim FPM Gym; see README.md for pinned source and modifications.
 
-"""Pinned, hash-verified access to the AISimulate FPM Hugging Face dataset."""
+"""Pinned, hash-verified access to the AISim FPM Hugging Face dataset."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, snapshot_download
 
@@ -53,6 +54,7 @@ _SNAPSHOT_STATUSES = frozenset({"current", "historical"})
 _FPM_SCHEMA_NAMES = frozenset({"aic_fpm_forward_perf", "fpm_forward_perf"})
 # Schema 8 adds per-row power_w and keeps the v7 execution identity.
 _FPM_SCHEMA_VERSIONS = frozenset({6, 7, 8})
+_FPM_POWER_MEASUREMENT_POLICY = "dynamo_native_single_sample_power_window_v1"
 _FPM_V7_SELECTOR_FIELDS = frozenset(
     {
         "gemm_quant_mode",
@@ -718,6 +720,16 @@ class HfDataset:
             or metadata.get("schema_version") not in _FPM_SCHEMA_VERSIONS
         ):
             raise DataError(f"FPM sidecar {artifact.metadata_path} declares an unsupported schema")
+        has_power = metadata["schema_version"] == 8
+        if has_power and (
+            configuration.framework != "vllm"
+            or metadata.get("backend") != "vllm"
+            or metadata.get("measurement_policy") != _FPM_POWER_MEASUREMENT_POLICY
+        ):
+            raise DataError(
+                f"FPM sidecar {artifact.metadata_path} schema 8 requires vLLM "
+                f"measurement_policy={_FPM_POWER_MEASUREMENT_POLICY!r}"
+            )
         expected_identity = _configuration_identity(configuration)
         selector = metadata.get("configuration_selector")
         if not isinstance(selector, Mapping):
@@ -749,6 +761,8 @@ class HfDataset:
                 value = selector[field]
                 if field in {"enable_wideep", "enable_eplb"}:
                     valid = type(value) is bool
+                elif has_power and field == "measurement_policy":
+                    valid = value == _FPM_POWER_MEASUREMENT_POLICY
                 elif field in {"measurement_repeats", "warmup_repeats", "sglang_allocator_max_split_size_mb"}:
                     minimum = 0 if field == "warmup_repeats" else 1
                     valid = type(value) is int and value >= minimum
@@ -765,6 +779,9 @@ class HfDataset:
             # configuration-to-execution binding. Native staging rejects every
             # v7 pair, even if all rows agree, until that binding is available.
             parquet_identity.update({field: selector[field] for field in execution_fields})
+        if has_power:
+            # Bind every row even when the selector omits this optional field.
+            parquet_identity["measurement_policy"] = _FPM_POWER_MEASUREMENT_POLICY
         try:
             parquet = pq.ParquetFile(artifact.local_path)
             physical_rows = parquet.metadata.num_rows
@@ -783,8 +800,12 @@ class HfDataset:
                 f"selected FPM Parquet {artifact.path} is missing configuration identity columns: "
                 f"{missing_identity_fields}"
             )
+        if has_power and (
+            "power_w" not in parquet_fields or parquet.schema_arrow.field("power_w").type != pa.float64()
+        ):
+            raise DataError(f"selected FPM Parquet {artifact.path} schema 8 requires a DOUBLE power_w column")
         try:
-            identity_table = parquet.read(columns=list(parquet_identity))
+            identity_table = parquet.read(columns=[*parquet_identity, *(["power_w"] if has_power else [])])
         except (OSError, pa.ArrowException) as exc:
             raise DataError(f"cannot read selected FPM Parquet identity columns {artifact.path}: {exc}") from exc
         parquet_mismatches: dict[str, list[Any]] = {}
@@ -798,6 +819,14 @@ class HfDataset:
                 f"selected FPM Parquet {artifact.path} contains rows for a different configuration: "
                 f"{parquet_mismatches}"
             )
+        if has_power:
+            power = identity_table["power_w"]
+            invalid_power = pc.or_(pc.invert(pc.is_finite(power)), pc.less_equal(power, 0.0))
+            # Arrow reductions skip nulls: null means unknown measured power.
+            if pc.any(invalid_power).as_py():
+                raise DataError(
+                    f"selected FPM Parquet {artifact.path} power_w must be null or finite and greater than zero"
+                )
 
     def _select_configuration(self, configuration_path: str, snapshot_id: str | None) -> ConfigurationSnapshot:
         snapshots = self.configurations()

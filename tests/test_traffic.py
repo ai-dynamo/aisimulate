@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from aisimulate.traffic import materialize_configured_traffic
+from aisim.traffic import materialize_configured_traffic
 
 pytestmark = [
     pytest.mark.pre_merge,

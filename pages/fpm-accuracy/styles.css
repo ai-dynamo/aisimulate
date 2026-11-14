@@ -56,7 +56,7 @@
 .overview-cell-note, .overview-measurement-cell span, .overview-method-cell span { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
 .overview-measurement-cell strong { display: block; color: var(--text); font-weight: 500; }
 .overview-measurement-cell a { display: inline-block; margin-top: 3px; font-size: 11px; }
-.overview-method-cell strong { color: var(--aisimulate); font-size: 13px; font-weight: 600; }
+.overview-method-cell strong { color: var(--aisim); font-size: 13px; font-weight: 600; }
 .overview-method-cell[data-label="Regression"] strong { color: var(--aic); }
 .overview-method-cell.missing strong { color: var(--muted); }
 .overview-method-cell a { display: inline-block; margin-top: 3px; font-size: 11px; }

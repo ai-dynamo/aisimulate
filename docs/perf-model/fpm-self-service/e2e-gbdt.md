@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 This chapter implements the end-to-end offline profiling route in
 [FPM self-service onboarding](README.md#choose-a-profiling-route). Collect native
 forward-pass metrics (FPM) on your cluster, train a gradient-boosted decision tree
-(GBDT) model, and use it in AISimulate Replay. These metrics describe the
+(GBDT) model, and use it in AISim Replay. These metrics describe the
 scheduled batch work and its measured duration.
 
 Start with **end-to-end offline profiling**: run a workload, collect its native
@@ -34,15 +34,15 @@ worker traces, and a client that can run your workload. Use your own cluster and
 deployment tools. An existing completed capture can start at step 2 after
 reviewing its identity and provenance through onboarding stages 1–3.
 
-In an AISimulate source checkout, prepare Python 3.11–3.13 and the training extra:
+In an AISim source checkout, prepare Python 3.11–3.13 and the training extra:
 
 ```bash
-uv sync --project python/aisimulate --extra learned
-source python/aisimulate/.venv/bin/activate
+uv sync --project python/aisim --extra learned
+source python/aisim/.venv/bin/activate
 export AIS_REPO="$PWD"
-export PYTHONPATH="$AIS_REPO/python/aisimulate${PYTHONPATH:+:$PYTHONPATH}"
-python -m aisimulate_core.sdk.fpm_learned train --help
-aisimulate predict --help
+export PYTHONPATH="$AIS_REPO/python/aisim${PYTHONPATH:+:$PYTHONPATH}"
+python -m aisim_core.sdk.fpm_learned train --help
+aisim predict --help
 
 export FPM_RUN="$PWD/fpm-run"
 export FPM_ROLE=aggregated  # prefill or decode for P/D
@@ -232,7 +232,7 @@ python3 "$AIS_REPO/scripts/fpm_accuracy/validate_native_capture.py" \
 The last argument to `--expect` is the attention-DP rank. Repeat that option for
 each expected stream. Validate P/D roles separately and keep worker restarts in
 separate inputs. The helper reads full `dynamo.fpm.trace.v1` envelopes; it is a
-source-checkout utility, not an installed AISimulate command.
+source-checkout utility, not an installed AISim command.
 
 **Proceed when** the report is `valid`, every expected worker has busy rows, and
 your client completion checks passed. Inspect counts and warnings. Exit 1 means
@@ -284,7 +284,7 @@ input and split options.
 Use the deployment identity reviewed before collection. Confirm it still
 matches the selected native files and role; resolve mismatches before fitting.
 
-Train one AISimulate-compatible GBDT per role. These CLI commands support
+Train one AISim-compatible GBDT per role. These CLI commands support
 attention DP=1: `--join-ranks none` treats each record independently, while
 `--join-ranks counter` refuses cross-rank joins. For higher attention DP, the
 Python `train` and `evaluate` APIs accept complete iteration groups established
@@ -292,7 +292,7 @@ using a trustworthy shared iteration identity. Producing and validating those
 synchronized groups is outside this walkthrough.
 
 ```bash
-python -m aisimulate_core.sdk.fpm_learned train \
+python -m aisim_core.sdk.fpm_learned train \
   --fpm "$FPM_RUN/selected/$FPM_ROLE.train.jsonl" \
   --worker-type "$FPM_ROLE" --features fpm5 --join-ranks none \
   --identity "$FPM_RUN/$FPM_ROLE.identity.json" \
@@ -300,7 +300,7 @@ python -m aisimulate_core.sdk.fpm_learned train \
   --out "$FPM_RUN/models/$FPM_ROLE.learned.json" \
   --online-checkpoint-dir "$FPM_RUN/models/$FPM_ROLE.online-seed"
 
-python -m aisimulate_core.sdk.fpm_learned evaluate \
+python -m aisim_core.sdk.fpm_learned evaluate \
   --model "$FPM_RUN/models/$FPM_ROLE.learned.json" \
   --fpm "$FPM_RUN/selected/$FPM_ROLE.test.jsonl" --join-ranks none
 ```
@@ -351,7 +351,7 @@ coverage, and error meets your chosen threshold. A successful exit alone is
 insufficient. Report error, prediction coverage, train/test counts and excluded
 rows together; missing stores need more representative data and another fit.
 
-Use the [FPM Gym](https://ai-dynamo.org/aisimulate/fpm-accuracy/scenario-comparison.html)
+Use the [FPM Gym](https://ai-dynamo.org/aisim/fpm-accuracy/scenario-comparison.html)
 as the accuracy qualification reference: select a GBDT trained through end-to-end
 offline profiling and evaluated with online updates disabled. It evaluates
 frozen predictions on held-out observations; MAPE covers successful predictions
@@ -388,7 +388,7 @@ timing:
 ```
 
 ```bash
-aisimulate predict --stack engine --config replay.yaml --output-dir replay-result
+aisim predict --stack engine --config replay.yaml --output-dir replay-result
 ```
 
 For P/D, use `engine.mode: disaggregated`, separate prefill/decode worker blocks
