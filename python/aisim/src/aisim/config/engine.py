@@ -501,8 +501,8 @@ class TimingConfig(StrictModel):
                 value.setdefault("fallback_policy", "deny")
         return value
 
-    prefill_ms: float | None = Field(default=None, ge=0.0)
-    decode_ms: float | None = Field(default=None, ge=0.0)
+    prefill_ms: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+    decode_ms: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
