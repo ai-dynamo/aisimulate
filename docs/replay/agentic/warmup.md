@@ -67,9 +67,10 @@ vLLM and SGLang replay with either aggregated workers or separate prefill/decode
 pools and HBM-only KV cache, including
 [speculative decoding](../engine/speculation.md) with explicit acceptance
 assumptions; ngram requires vLLM. vLLM also supports local or shared
-[G2 host offload](../engine/kv-cache.md#agentic-g2) on a static single aggregated worker or 1P1D,
-or local G2 on several static aggregated workers, with attention DP1 on every role and
-speculative decoding disabled. For example:
+[G2 host offload](../engine/kv-cache.md#agentic-g2) on static aggregated or P/D pools
+with any positive integer worker count, attention DP1 on every role and speculative
+decoding disabled. Canonical MTP is supported only on a single aggregated worker
+with local G2 and prefix caching; see the [combined scope](../engine/speculation.md#registered-schemes). For example:
 
 ```yaml
 traffic:

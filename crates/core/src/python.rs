@@ -390,26 +390,8 @@ fn validate_public_agentic_engine(
         .iter()
         .any(|role| role.rank.native_host_offload.is_some())
     {
-        let qualified_workers = match &spec.topology {
-            // Each aggregated worker owns a private G2, and the warm-up
-            // barrier waits on every worker's G2 work. A shared pool and P/D
-            // keep one worker per role.
-            ReplayTopology::Aggregated { workers } => {
-                workers.initial_workers == 1
-                    || roles[0]
-                        .rank
-                        .native_host_offload
-                        .as_ref()
-                        .is_some_and(|host| host.scope == crate::engine::G2Scope::DpRankLocal)
-            }
-            ReplayTopology::Disaggregated {
-                prefill, decode, ..
-            } => prefill.initial_workers == 1 && decode.initial_workers == 1,
-        };
-        ensure!(
-            qualified_workers,
-            "agentic host offload requires one aggregated worker or one prefill and one decode worker, or static aggregated workers with scope=dp_rank_local"
-        );
+        // Without speculation, placement consumes each worker's native
+        // G2 KV events, and per-play token namespaces keep G2 identities play-local.
         ensure!(
             spec.adapters.scaling.provider == "none",
             "agentic host offload requires static worker pools without a scaling policy"
@@ -417,7 +399,7 @@ fn validate_public_agentic_engine(
         for role in &roles {
             ensure!(
                 role.rank.aic_nextn.is_none()
-                    || (matches!(&spec.topology, ReplayTopology::Aggregated { .. })
+                    || (matches!(&spec.topology, ReplayTopology::Aggregated { workers } if workers.initial_workers == 1)
                         && role.rank.has_canonical_mtp_timing()),
                 "agentic host offload requires speculative decoding disabled except canonical MTP on an aggregated worker"
             );
@@ -6184,17 +6166,16 @@ mod tests {
                 if scope.is_none() && other.is_none() {
                     continue;
                 }
+                let mut multi_replica = pd.clone();
+                for pointer in [
+                    "/spec/topology/prefill/initial_workers",
+                    "/spec/topology/decode/initial_workers",
+                ] {
+                    *multi_replica.pointer_mut(pointer).unwrap() = serde_json::json!(2);
+                }
+                let report = run(&multi_replica);
+                assert_eq!(report["completed_requests"], 1, "{scope:?}/{other:?}");
                 for (pointer, value, message) in [
-                    (
-                        "/spec/topology/prefill/initial_workers",
-                        serde_json::json!(2),
-                        "one aggregated worker or one prefill and one decode worker",
-                    ),
-                    (
-                        "/spec/topology/decode/initial_workers",
-                        serde_json::json!(2),
-                        "one aggregated worker or one prefill and one decode worker",
-                    ),
                     ("/spec/engine/prefill/dp_size", serde_json::json!(2), "DP=1"),
                     ("/spec/engine/decode/dp_size", serde_json::json!(2), "DP=1"),
                     (

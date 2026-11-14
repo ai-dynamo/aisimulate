@@ -356,8 +356,8 @@ class HookCapability:
 def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[str, Any]]]) -> None:
     """Constrain agentic offload without narrowing ordinary HBM-only replay.
 
-    Inspect every role, including roles without G2: the supported P/D fleet is
-    one DP1 worker per role. Canonical timing and flat topology aliases must
+    Inspect every role, including roles without G2: every role of the supported
+    fleet is DP1, with positive integer worker counts. Canonical timing and flat topology aliases must
     receive the same early gate before a runner materializes either form.
     """
 
@@ -379,21 +379,8 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
         counts = (deployment.num_prefill_workers, deployment.num_decode_workers)
     else:
         raise ValueError("agentic host offload supports only aggregated or disaggregated workers")
-    # Each aggregated worker owns a private G2; a shared pool and P/D keep one
-    # worker per role.
-    shared = any(
-        isinstance(rank, Mapping)
-        and isinstance(rank.get("native_host_offload"), Mapping)
-        and rank["native_host_offload"].get("scope", "dp_rank_local") != "dp_rank_local"
-        for _, _, rank in ranks
-    )
-    if any(type(count) is not int or count < 1 for count in counts) or (
-        any(count != 1 for count in counts) and (deployment.deployment_mode != "agg" or shared)
-    ):
-        raise ValueError(
-            "agentic host offload requires one aggregated worker or one prefill and one decode worker, "
-            "or static aggregated workers with scope=dp_rank_local"
-        )
+    if any(type(count) is not int or count < 1 for count in counts):
+        raise ValueError("agentic host offload requires at least one worker on every role")
     if any(hook.kind == "scaling_policy" for hook in spec.runtime_hooks):
         raise ValueError("agentic host offload requires static worker pools without a scaling policy")
     for role, args, rank in ranks:
