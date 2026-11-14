@@ -180,7 +180,6 @@ def _exercise_engine() -> None:
         "MiniMaxAI/MiniMax-M2.5",
         "b200_sxm",
         "vllm",
-        backend_version="0.24.0",
         tp_size=8,
         moe_tp_size=1,
         moe_ep_size=8,
@@ -230,7 +229,11 @@ def _verify_fpe_probe_results(payload: dict) -> None:
 
 def _exercise_fpe_matrix() -> None:
     """Launch the actual matrix command without exposing a source package."""
+    from aisim_core.sdk import perf_database
+
     generator = Path(__file__).resolve().parent / "support_matrix/generate_fpe_support_matrix.py"
+    # The matrix lists queryable versions only: probe the current slot.
+    backend_version = perf_database.get_version_slots("b200_sxm", "vllm")["current"]
     with tempfile.TemporaryDirectory(prefix="aisim-installed-fpe-") as directory:
         output = Path(directory) / "matrix"
         result = subprocess.run(
@@ -243,7 +246,7 @@ def _exercise_fpe_matrix() -> None:
                 "--backend",
                 "vllm",
                 "--backend-version",
-                "0.24.0",
+                backend_version,
                 "--model",
                 "Qwen/Qwen3-32B",
                 "--max-topologies-per-role",
