@@ -2053,7 +2053,7 @@ def _glm_plan(
     cache_groups = glm_tp4_cache_groups()
     # A FlashKDA prefill gives each KDA spec one checkpoint block aligned to 16 tokens (vLLM 0.33.0
     # models/glm5next/common/kda.py:168-176, model_executor/layers/mamba/kda_checkpoint.py:9-10), and the import
-    # keeps the count and the alignment of a MambaSpec group (collector/fpm_forward/runtime_memory.py:661-675). The
+    # keeps the count and the alignment of a MambaSpec group (collector/fpm_forward/runtime_memory.py:662-676). The
     # Triton backend gives no checkpoint block, and the import then keeps a count of 0 without an alignment.
     for group in cache_groups:
         if "prefill_checkpoint_blocks" in group:

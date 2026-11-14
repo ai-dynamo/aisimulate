@@ -697,7 +697,7 @@ def _deployment(*state_groups: tuple[int | None, int | None]) -> SimpleNamespace
     groups = [
         SimpleNamespace(kind="attention", page_size_bytes=PAGE, prefill_checkpoint_blocks=None),
         # The state group of the 4-token blocks is no Mamba group. The import writes the checkpoint fields only for a
-        # MambaSpec group (collector/fpm_forward/runtime_memory.py:642, :661-675), so this group has none.
+        # MambaSpec group (collector/fpm_forward/runtime_memory.py:643, :662-676), so this group has none.
         SimpleNamespace(kind="state", page_size_bytes=PAGE, prefill_checkpoint_blocks=None),
         *(
             SimpleNamespace(
