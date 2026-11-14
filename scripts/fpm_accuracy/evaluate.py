@@ -8,7 +8,7 @@ import hashlib
 import json
 import math
 from array import array
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -16,7 +16,12 @@ from scripts.fpm_accuracy.dashboard.measurement_heatmaps import _axis_values, _b
 from scripts.fpm_accuracy.dashboard.workloads import workload_details, workload_summary
 from scripts.fpm_accuracy.exceptions import DependencyError
 from scripts.fpm_accuracy.hf.models import MeasurementCase
-from scripts.fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
+from scripts.fpm_accuracy.models.aic_predictors import (
+    OP_LEVEL_CONFIG_OPTION,
+    AicFpmPredictor,
+    AicOpLevelPredictor,
+    AicRegressionPredictor,
+)
 from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, PredictorContext
 from scripts.fpm_accuracy.models.learned_predictor import LearnedFpm5Predictor, training_observation_ids
 from scripts.fpm_accuracy.models.worker_regression import (
@@ -61,6 +66,8 @@ def create_predictor(method: str, context: PredictorContext) -> ForwardPassTimeP
         return AicRegressionPredictor.create(context)
     if method == "aic-fpm":
         return AicFpmPredictor.create(context)
+    if method == "op_level":
+        return AicOpLevelPredictor.create(context)
     raise ValueError(f"unsupported public predictor: {method}")
 
 
@@ -72,6 +79,7 @@ def score(
     factory: Callable = create_predictor,
     include_points: bool = False,
     heatmaps: dict | None = None,
+    options: Mapping[str, Any] | None = None,
 ) -> dict:
     """Keep every eligible outcome; targets reach regression only after scoring."""
     cells = {}
@@ -80,7 +88,7 @@ def score(
     status = "evaluated"
     predictor = None
     construction_failed = False
-    no_input = method not in ("regression", "learned") and artifact is None
+    no_input = method not in ("regression", "learned", "op_level") and artifact is None
     training_ids: frozenset[str] = frozenset()
     if no_input:
         status = "no_fpm_input"
@@ -88,6 +96,7 @@ def score(
         context = PredictorContext(
             worker=case.configuration.worker_config_record,
             worker_role=case.worker_role,
+            options=options or {},
             fpm_artifact=artifact,
         )
         try:
@@ -99,6 +108,8 @@ def score(
                 predictor = LearnedFpm5Predictor.fit(
                     context, [item.iteration for item in case.observations if item.observation_id in training_ids]
                 )
+            elif method == "op_level":
+                predictor = factory("op_level", context)
             else:
                 predictor = factory("aic-fpm", context)
         except Exception as exc:
@@ -199,7 +210,9 @@ def evaluate_case(
     factory: Callable = create_predictor,
     comparison: dict | None = None,
     details: list | None = None,
+    op_level_config: Mapping[str, Any] | None = None,
 ) -> dict:
+    """Score every method; ``op_level_config`` (possibly empty) adds the op-level baseline."""
     config = case.configuration
     collection = workload_details(case)
     ids = [item.observation_id for item in case.observations]
@@ -231,6 +244,15 @@ def evaluate_case(
         results["learned"] = score(
             case, "learned", factory=factory, include_points=comparison is not None, heatmaps=heatmaps
         )
+        if op_level_config is not None:
+            results["op_level"] = score(
+                case,
+                "op_level",
+                factory=factory,
+                include_points=comparison is not None,
+                heatmaps=heatmaps,
+                options={OP_LEVEL_CONFIG_OPTION: dict(op_level_config)},
+            )
     if details is not None:
         details.append(
             {

@@ -16,6 +16,7 @@ from time import perf_counter
 from scripts.fpm_accuracy.contract import (
     HF_REPO,
     METHODS,
+    OP_LEVEL_METHODS,
     eligible_branch,
     sha,
     validate_summary,
@@ -44,6 +45,11 @@ def main():
         "--comparison-output",
         type=Path,
         help="Separate notification evidence; not a Pages artifact",
+    )
+    parser.add_argument(
+        "--op-level-config",
+        type=Path,
+        help="Also score AISim op-level timing; JSON object of ForwardPassPerfModelConfig overrides ({} for none)",
     )
     parser.add_argument(
         "--configuration",
@@ -79,6 +85,11 @@ def main():
         configurations = tuple(item for item in configurations if item.configuration_path in selected)
         if {item.configuration_path for item in configurations} != selected:
             raise ValueError("unknown smoke configuration")
+    op_level_config = None
+    if args.op_level_config:
+        op_level_config = json.loads(args.op_level_config.read_text())
+        if not isinstance(op_level_config, dict):
+            parser.error("--op-level-config must hold a JSON object")
     comparison = {} if args.comparison_output else None
     rows = []
     details = []
@@ -87,7 +98,7 @@ def main():
         started = perf_counter()
         print(f"Evaluating {index}/{len(configurations)}: {configuration.configuration_path}", flush=True)
         case = dataset.measurement_case(configuration.configuration_path, snapshot_id=configuration.snapshot_id)
-        rows.append(evaluate_case(case, comparison=comparison, details=details))
+        rows.append(evaluate_case(case, comparison=comparison, details=details, op_level_config=op_level_config))
         if args.scenarios:
             scenario_rows.append(evaluate_scenario_case(case))
         print(f"Completed configuration in {perf_counter() - started:.1f}s", flush=True)
@@ -106,7 +117,7 @@ def main():
             "configuration_count": len(configurations),
             "complete": True,
         },
-        "methods": list(METHODS),
+        "methods": list(METHODS if op_level_config is None else OP_LEVEL_METHODS),
         "rows": rows,
     }
     validate_summary(summary)

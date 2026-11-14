@@ -803,3 +803,71 @@ def test_learned_fit_uses_the_small_tree_hyperparameters(monkeypatch):
     assert HYPERPARAMETERS == {"max_iter": 150, "max_leaf_nodes": 15, "learning_rate": 0.2}
     assert predictor.diagnostics()["hyperparameters"] == HYPERPARAMETERS
     assert predictor.diagnostics()["hyperparameters"] is not HYPERPARAMETERS
+
+
+def test_op_level_is_scored_only_when_configured_without_artifact_or_tuning(case):
+    events, created = [], {}
+
+    def factory(method, context):
+        predictor = Predictor(method, context, events)
+        created.setdefault(method, []).append(predictor)
+        return predictor
+
+    assert "op_level" not in evaluate_case(case, factory=factory)["results"]
+    created.clear()
+    overrides = {"backend_version": "0.31.0", "attention_backend": "flashinfer"}
+    result = evaluate_case(case, factory=factory, op_level_config=overrides)["results"]["op_level"]
+    assert result["status"] == "evaluated" and result["artifact"] is None
+    metrics = result["metrics"]["all"]
+    assert metrics["measured_count"] == metrics["predicted_count"] == 12
+    (op_level,) = created["op_level"]
+    assert op_level.context.options == {aic_predictors.OP_LEVEL_CONFIG_OPTION: overrides}
+    assert op_level.count == 0 and op_level.closed  # scored, never tuned
+
+
+def test_op_level_request_selects_uncorrected_op_level_and_rejects_bad_overrides():
+    @dataclass(frozen=True)
+    class Request:
+        model: str = "m"
+        backend_version: str | None = None
+        estimation_mode: str = "auto"
+        fallback_policy: str = "allow"
+        database_mode: str = "HYBRID"
+        estimator_config: dict = field(default_factory=dict)
+
+    request = aic_predictors.op_level_request(Request(), {"backend_version": "0.31.0"})
+    assert (request.estimation_mode, request.fallback_policy, request.database_mode) == ("op_level", "deny", "SILICON")
+    assert request.estimator_config == {"correction": {"enabled": False}}
+    assert request.backend_version == "0.31.0"
+    with pytest.raises(ConfigurationError, match="unknown op-level configuration fields: nope"):
+        aic_predictors.op_level_request(Request(), {"nope": 1})
+    with pytest.raises(ConfigurationError, match="cannot override: estimation_mode"):
+        aic_predictors.op_level_request(Request(), {"estimation_mode": "fpm_learned"})
+
+
+def test_real_op_level_predicts_from_the_packaged_database(tmp_path):
+    pytest.importorskip("aisim_core.sdk")
+    from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    case = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8).measurement_case(CONFIGURATION_PATH)
+    overrides = {"model": "Qwen/Qwen3-32B", "backend_version": "0.30.0"}
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role="aggregated",
+        options={aic_predictors.OP_LEVEL_CONFIG_OPTION: overrides},
+    )
+    predictor = aic_predictors.AicOpLevelPredictor.create(context)
+    try:
+        config = predictor.diagnostics()["provenance"]["config"]
+        assert (config["model"], config["backend_version"], config["estimation_mode"]) == (
+            "Qwen/Qwen3-32B",
+            "0.30.0",
+            "op_level",
+        )
+        assert config["estimator_config"]["correction"]["enabled"] is False
+        payload = {"scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4096}}
+        assert predictor._model.estimate_forward_pass_time_ms(payload) > 0
+        with pytest.raises(RuntimeError, match="never tuned"):
+            predictor.tune([object()])
+    finally:
+        predictor.close()

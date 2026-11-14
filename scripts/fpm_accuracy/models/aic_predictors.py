@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -19,7 +20,12 @@ from scripts.fpm_accuracy.models.aic_fpm_database import PreparedAicFpmDatabase,
 from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
 from scripts.fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration
 
-AicMode = Literal["fpm", "regression"]
+AicMode = Literal["fpm", "regression", "op_level"]
+
+#: ``PredictorContext.options`` key holding the op-level configuration overrides.
+OP_LEVEL_CONFIG_OPTION = "op_level_config"
+# The op-level baseline always selects these; an override must not change them.
+_OP_LEVEL_FIXED = {"estimation_mode", "fallback_policy", "database_mode", "estimator_config", "worker_type"}
 
 
 class _AicPredictor(ForwardPassTimePredictor):
@@ -161,6 +167,55 @@ class AicRegressionPredictor(_AicPredictor):
         return result
 
 
+class AicOpLevelPredictor(_AicPredictor):
+    """AISim operation-level timing from its packaged silicon database.
+
+    The baseline a whole-forward model must beat on the same measured steps. It
+    reads no FPM artifact and is never tuned: correction is disabled, so every
+    prediction is the database estimate. Deployment facts the worker record does
+    not carry (backend database version, quantization modes, attention backend,
+    MoE kernel source) come from ``options[OP_LEVEL_CONFIG_OPTION]``, a mapping of
+    ``ForwardPassPerfModelConfig`` fields.
+    """
+
+    mode = "op_level"
+    predictor_id = "op-level"
+
+    @classmethod
+    def create(cls, context: PredictorContext) -> AicOpLevelPredictor:
+        perf_model = _import_aisim_forward_pass_perf_model()
+        config_type = _canonical_config_type()
+        if config_type is None:
+            raise DependencyError("Op-level scoring requires AISim's canonical ForwardPassPerfModelConfig.")
+        options = dict(context.options)
+        overrides = dict(options.pop(OP_LEVEL_CONFIG_OPTION, None) or {})
+        engine_config = cls._native_engine_config(context)
+        request = config_type.from_legacy_engine_config(engine_config, context.worker_role, options)
+        return cls(perf_model.best_available(op_level_request(request, overrides)), engine_config)
+
+    def tune(self, observations: Sequence[ForwardPassIteration]) -> None:
+        raise RuntimeError("the op-level baseline is never tuned")
+
+
+def op_level_request(request: Any, overrides: Mapping[str, Any]) -> Any:
+    """Select uncorrected op-level timing on ``request`` with explicit deployment overrides."""
+    names = {item.name for item in dataclasses.fields(request)}
+    unknown = sorted(set(overrides) - names)
+    if unknown:
+        raise ConfigurationError(f"unknown op-level configuration fields: {', '.join(unknown)}")
+    fixed = sorted(set(overrides) & _OP_LEVEL_FIXED)
+    if fixed:
+        raise ConfigurationError(f"op-level configuration cannot override: {', '.join(fixed)}")
+    return replace(
+        request,
+        **overrides,
+        estimation_mode="op_level",
+        fallback_policy="deny",
+        database_mode="SILICON",
+        estimator_config={"correction": {"enabled": False}},
+    )
+
+
 def _gym_regression_config(
     perf_model: Any, request: Any, options: Mapping[str, Any], engine_config: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -235,4 +290,10 @@ def _canonical_config_type() -> Any:
     return getattr(sdk, "ForwardPassPerfModelConfig", None)
 
 
-__all__ = ["AicFpmPredictor", "AicRegressionPredictor"]
+__all__ = [
+    "OP_LEVEL_CONFIG_OPTION",
+    "AicFpmPredictor",
+    "AicOpLevelPredictor",
+    "AicRegressionPredictor",
+    "op_level_request",
+]
