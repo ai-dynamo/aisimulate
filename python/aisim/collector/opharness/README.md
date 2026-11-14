@@ -8,7 +8,7 @@ collector cannot see by itself, with three checks and nothing else:
 |---|---|---|---|
 | **Source check** | What did the framework change between the two pins for this op, on every SM? | no GPU | the agent, reading the two releases; the workflow says what to read |
 | **Path gate** | Does a planned collector case run the kernels serving runs for that model? | one small GPU job per (backend, release, SM) | `components/gates.yaml` + `gates.py`, on a serving record from `probe_driver.py` |
-| **Run diff** | Did the collected tables change against the previous release in a way nobody explained? | no GPU | `components/run_diff.py` |
+| **Run diff** | Did the collected tables change against the previous release, the table they replace or a sibling system in a way nobody explained? | no GPU | `components/run_diff.py` |
 
 Each catches what the others cannot. The source check finds API breaks and
 paths the collector builds differently from serving, before any GPU hour. A
@@ -29,7 +29,7 @@ used directly, not wrapped.
 | `components/kernel_taxonomy.yaml` | kernel name -> backend label and role, one file for every SM (`sms:` scopes a rule) |
 | `components/gates.yaml` + `gates.py` | the path gates: each names one planned collector case; `gates.py plan` writes the `probe.trace_case` shards the collection pipeline runs, `gates.py grade` grades their kernels against the serving record. `ungated` gives the reason an op has no gate; `gates.py paths` reads from the op plans which paths the gates name |
 | `components/path_diff.py` | a collector case's kernels vs the serving record, through the same taxonomy |
-| `components/run_diff.py` | a run's tables against the previous release (`tables`) and its failed tasks per shard (`failures`) |
+| `components/run_diff.py` | a run's tables against the previous release, the table they replace and a sibling system (`tables`), and its failed tasks per shard, against the previous run (`failures`) |
 | `workflows/` | `upgrade_op`, `onboard_model`, `new_op_collector`: the step tables |
 
 ## Driving a workflow
@@ -40,7 +40,7 @@ whether a step is done:
 ```
 python3 components/gates.py paths --sm sm100 --op <op>                               # no GPU: each planned path and its gate
 python3 components/gates.py grade --sm sm100 --op <op> --results <job result dirs>   # exit 0: every gate in scope aligned
-python3 components/run_diff.py tables <packaged tables> --base <shipped data>        # leads to explain before integrating
+python3 components/run_diff.py tables <packaged tables> --base <shipped data> --sibling <system>   # leads to explain before integrating
 ```
 
 Steps that need judgment (the source check, triage, a deviation note) are
@@ -95,17 +95,28 @@ pipeline (the `aisim-campaign` skill). Nothing generated is committed.
   probe point (one request of the probe's prompt length, one GPU), graded against that
   checkpoint at the case's KV dtype. A path whose cases name no model (gemm, attention)
   needs a row in `gates.yaml`.
-- **Run diff.** `run_diff.py tables <new root> --base <shipped data> [--system S]
-  [--backend B] [--family F] [--detail]` reads the packaged layout
+- **Run diff.** `run_diff.py tables <new root> --base <shipped data> [--sibling <system>]...
+  [--system S] [--backend B] [--family F] [--detail]` reads the packaged layout
   (`<system>/<family>/<backend>/<version>/<table>.parquet`) on both sides and compares
   each table at its manifest pin with the same table at the greatest older version: rows,
-  cases shared, lost and gained, key buckets lost, and the median new/old latency over the
-  launch-bound half (`small`) and the compute-bound fifth (`large`) of the shared cases.
+  cases shared, lost and gained, key buckets lost, the median new/old latency over the
+  launch-bound half (`small`) and the compute-bound fifth (`large`) of the shared cases,
+  and the cases more than 2x apart in each direction.
   `large` up with `small` unchanged is a slow node or a slower kernel; both moved is a
   change of the timed region; a lost bucket is a skip, a plan change or a key the release
-  no longer serves. `run_diff.py failures <result dirs>` gives each shard's failed tasks,
-  their share and their most frequent messages. Every lead is explained (in the commit or
-  the PR) or fixed before the table is integrated.
+  no longer serves. Two more views use the same fields: `replaces`, against the table of the
+  same version under the base root (what a recollection replaces), and one per `--sibling`,
+  the same table of that system against the new table and against the base table (the
+  replaced one, else the previous release against the sibling at that release). `slow host?`
+  marks a new table that sits above the sibling where the base table stood with it. The
+  harness holds no sibling map: name the system the run should be read next to. `spikes`
+  counts the rows of the new table far above both neighbours of their series.
+  `run_diff.py failures <result dirs> [--base <result dirs of the previous run>]` gives each
+  shard's failed tasks, their share and their most frequent messages, the failed tasks that
+  still wrote rows (`partial`: some points of a multi-point task failed or were refused), and
+  with `--base` the failed tasks that are new, gone and unchanged against the previous run of
+  the same shards. Every lead is explained (in the commit or the PR) or fixed before the
+  table is integrated.
 - **SM.** A campaign's SM is its system's (`src/aisim_core/systems/<system>.yaml`);
   a record's is the one its raw reports. Records keep every kernel the taxonomy labels, so
   after a taxonomy edit re-run `--records` before grading. SM103 uses the SM100 rules where every framework

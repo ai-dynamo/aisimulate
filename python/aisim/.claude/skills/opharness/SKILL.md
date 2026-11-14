@@ -35,8 +35,8 @@ python3 components/probe_driver.py --campaign <c> --system b200_sxm --gates --op
 python3 components/gates.py plan --sm sm100 --op <op> --serving <campaign dir> --out <dir>  # one plan per (backend, release)
 python3 components/probe_driver.py --campaign <c> --import-raws <job result dir> --records  # per job
 python3 components/gates.py grade --sm sm100 --op <op> --results <job result dirs>      # verdicts per gate; exit 0 = aligned
-python3 components/run_diff.py tables <packaged tables> --base <shipped data> [--detail] # new tables vs the previous release
-python3 components/run_diff.py failures <job result dirs>                                # failed tasks per shard
+python3 components/run_diff.py tables <packaged tables> --base <shipped data> [--sibling <system>] [--detail]  # new tables vs the previous release, the table replaced, a sibling system
+python3 components/run_diff.py failures <job result dirs> [--base <previous run's dirs>]  # failed tasks per shard; new and gone against the previous run
 collect.py --backend <fw> --ops probe.trace_case --case-filter op=<op>,<field>=<value>,...  # one planned case, in the image
 ```
 
