@@ -206,8 +206,10 @@ Evicting a sequence's tail also drops its SWA pages. With HiCache, an SWA page
 stays valid while its node is host-resident, and the host SWA pool adds room:
 it is sized from the device SWA pool by the ratio of `hicache.num_host_blocks`
 to device KV blocks. Under `write_through` the host copy duplicates the device
-page, so the larger of the two pools bounds the cached SWA pages; under the
-other write policies the two pools add up.
+page, so the larger of the two pools bounds the cached SWA pages; under
+`write_back` the two pools add up. `write_through_selective` copies a node to
+the host only after repeated hits, so the device pool alone bounds the cached
+SWA pages.
 
 `auto` sizes the pool as SGLang's `cap` mode does: four tails per running
 request (`max_sequences`). It applies to a checkpoint whose bundled or local

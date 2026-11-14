@@ -278,7 +278,7 @@ pub enum LoadBalanceMethod {
     /// Ranks in turn.
     #[default]
     RoundRobin,
-    /// The rank holding the fewest placed tokens (prompt plus output budget).
+    /// The rank holding the fewest placed prompt tokens.
     TotalTokens,
 }
 

@@ -1641,6 +1641,29 @@ fn dsv4_swa_continuation_after_generated_output_reuses_the_prompt() {
 }
 
 #[test]
+fn dsv4_swa_continuation_reuses_an_exact_output_through_its_tail() {
+    // A request replaying its exact output tokens ends in the same sequence the next turn
+    // carries, so the continuation reaches the SWA page at the tail of the output.
+    let mut args = test_args(64, 64, 4096);
+    args.sglang.as_mut().unwrap().swa_prefix_tails = Some(8);
+    let mut core = SglangCore::new(args);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let output: Vec<u32> = (6000..6169).collect();
+    core.receive(DirectRequest {
+        output_token_ids: Some(output.clone()),
+        ..direct_request((0..600).collect(), output.len())
+    });
+    let mut now = 0.0;
+    while !core.is_empty() {
+        now = core.execute_pass(&mut collector, now).end_ms;
+    }
+    let next = (0..600).chain(output).chain(7000..7100).collect();
+    core.receive(direct_request(next, 0));
+    let pass = core.execute_pass(&mut collector, now);
+    assert_eq!(pass.admissions[0].reused_input_tokens, 768);
+}
+
+#[test]
 fn belady_retires_whole_prompt_once_on_first_chunk_and_includes_full_hits() {
     let tokens = (0..8).collect::<Vec<_>>();
     let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));

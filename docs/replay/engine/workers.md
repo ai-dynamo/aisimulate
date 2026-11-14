@@ -56,7 +56,7 @@ engine:
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
-| `workers.decode.scheduler.load_balance_method` | `round_robin` | predict only | SGLang PD decode only (`--load-balance-method`). `total_tokens` places a request on the attention-DP rank holding the fewest placed tokens (prompt plus output budget); `round_robin` takes ranks in turn. |
+| `workers.decode.scheduler.load_balance_method` | `round_robin` | predict only | SGLang PD decode only (`--load-balance-method`). `total_tokens` places a request on the attention-DP rank holding the fewest placed prompt tokens; `round_robin` takes ranks in turn. |
 | `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts or MTP + G2 | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts or MTP + G2. See [vLLM async scheduling](#vllm-async-scheduling). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
@@ -160,7 +160,10 @@ On the `engine` stack, requests are placed round-robin across workers and then
 across the ranks of each worker by default. With
 `workers.decode.scheduler.load_balance_method: total_tokens`, an unpinned
 disaggregated decode request instead goes to the rank holding the fewest placed
-tokens. A trace request that names a `dp_rank` keeps that rank. Worker counts are fixed for the whole run. The
+prompt tokens, as SGLang's dispatcher counts them between load reports. SGLang
+also replaces those counts with each rank's reported KV tokens in use and
+queued tokens about every 20 ms; replay keeps the placed prompts until their
+requests end. A trace request that names a `dp_rank` keeps that rank. Worker counts are fixed for the whole run. The
 [Dynamo stack](../dynamo.md) replaces placement with the KV Router and can scale
 worker counts with the Planner; `startup_seconds` then delays each added worker.
 

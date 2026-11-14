@@ -867,7 +867,8 @@ impl SglangKvManager {
         // The finished sequence keeps its last SWA page, at its tail. Replay's synthetic
         // outputs differ from the next prompt in the trace, so a continuation stops where this
         // output began rather than reaching the tail through it as in SGLang. With a known
-        // prompt, the page stands at the prompt's end instead.
+        // prompt, the page stands at the prompt's end instead; the scheduler leaves it unset
+        // for a request replaying its exact output tokens.
         let end_tokens = lease
             .prompt_tokens
             .map_or(end_tokens, |tokens| tokens.min(end_tokens));
@@ -1842,12 +1843,15 @@ mod tests {
 
     #[test]
     fn hicache_host_swa_pool_adds_room_for_swa_pages() {
-        use crate::engine::SglangHiCacheWritePolicy::{WriteBack, WriteThrough};
+        use crate::engine::SglangHiCacheWritePolicy::{
+            WriteBack, WriteThrough, WriteThroughSelective,
+        };
         // 64 device tokens in 4-token pages; two tails are 3 SWA pages on the device.
         for (host_pages, policy, expected) in [
             (64, WriteThrough, 12),
             (8, WriteThrough, 3),
             (64, WriteBack, 15),
+            (64, WriteThroughSelective, 3),
         ] {
             let (mut manager, _) = hicache_policy_manager(host_pages, 0.0, 0.0, policy);
             manager.enable_swa_prefix(2);

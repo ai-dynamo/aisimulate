@@ -664,8 +664,8 @@ mod tests {
 
     #[test]
     fn pool_token_balance_places_on_the_least_loaded_scheduler() {
-        // SGLang `total_tokens`: a request goes to the rank holding the fewest placed tokens
-        // (prompt plus output budget) and its tokens leave that rank when it terminates.
+        // SGLang `total_tokens`: a request goes to the rank holding the fewest placed prompt
+        // tokens (`len(req.input_ids)`), and its tokens leave that rank when it terminates.
         let request = |ordinal: u128, prompt: usize| DirectRequest {
             uuid: Some(Uuid::from_u128(ordinal)),
             tokens: vec![0; prompt],
@@ -703,6 +703,26 @@ mod tests {
             .unwrap();
         assert_eq!(place(&mut policy, &request(9, 10)), 0);
 
+        // The output budget is not load: a short prompt with a long budget stays the lighter rank.
+        let two = WorkerTopology {
+            worker_id: 0,
+            scheduler_ids: vec![0, 1],
+            router_hint: false,
+        };
+        let mut policy = PoolRoundRobinPlacement::<()>::new(vec![two]).with_token_balance(true);
+        let placed: Vec<usize> = [(1_000, 1), (1, 10_000), (1, 1)]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, (prompt, budget))| {
+                let request = DirectRequest {
+                    max_output_tokens: budget,
+                    ..request(40 + ordinal as u128, prompt)
+                };
+                place(&mut policy, &request)
+            })
+            .collect();
+        assert_eq!(placed, [0, 1, 1]);
+
         // A session-pinned request loads its scheduler, and the load leaves when it terminates.
         let place_in = |policy: &mut PoolRoundRobinPlacement<()>, request: &DirectRequest| {
             immediate(
@@ -732,13 +752,13 @@ mod tests {
         );
         PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(21), 0.0)
             .unwrap();
-        assert_eq!(policy.loads[&0], 20);
+        assert_eq!(policy.loads[&0], 10);
 
         // Placing an ID again moves its load instead of counting it twice.
         let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker]).with_token_balance(true);
         place(&mut policy, &request(30, 1_000));
         place(&mut policy, &request(30, 1_000));
-        assert_eq!(policy.loads.values().sum::<usize>(), 1_010);
+        assert_eq!(policy.loads.values().sum::<usize>(), 1_000);
         PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, Uuid::from_u128(30), 0.0)
             .unwrap();
         assert_eq!(policy.loads.values().sum::<usize>(), 0);

@@ -35,6 +35,25 @@ license is at the pinned repository's `LICENSE`, and the full license is
 included here as `LICENSE`. Modified for AISim's private FIFO transfer lane
 and discrete-event acknowledgements. No serving implementation is vendored.
 
+## SGLang v0.5.21 sliding-window prefix reuse
+
+The sliding-window (SWA) prefix marks, page grid, and pool bound in repository-root
+`crates/core/src/engine/cache/radix_cache.rs`, their sizing in
+`crates/core/src/engine/kv_manager/{sglang_backend.rs,sglang_backend/hicache.rs}`,
+the finish boundary in `crates/core/src/engine/scheduler/sglang/{decode.rs,tests.rs}`,
+the lowering in `python/aisim/src/aisim/compiler.py`, the descriptions in
+`docs/replay/engine/kv-cache.md`, and their regression tests are modified
+behavioral adaptations of
+`python/sglang/srt/mem_cache/unified_cache/components/swa.py` in SGLang
+v0.5.21 at commit `e00930c5489053f26d86b179cee0d087f846acbb`:
+https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
+
+Copyright 2023-2026 SGLang Team. Licensed under Apache-2.0; the upstream
+license is at the pinned repository's `LICENSE`, and the full license is
+included here as `LICENSE`. Modified for AISim's page-hash radix cache,
+least-recently-used page bound, and synthetic replay outputs. No serving
+implementation is vendored.
+
 ## SGLang v0.5.22 cache-salt namespaces
 
 The cache-salt behavior in repository-root

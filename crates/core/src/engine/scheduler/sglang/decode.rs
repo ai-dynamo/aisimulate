@@ -490,7 +490,11 @@ pub(super) fn cleanup_completed_request(
         return;
     }
     let mut lease = std::mem::take(&mut request.kv_lease);
-    lease.set_prompt_tokens(request.prompt_len());
+    // A synthetic output never matches the next prompt, so the finished sequence keeps its
+    // SWA page at the prompt end. An exact output plan is what the next turn carries.
+    if request.planned_output_ids.is_none() {
+        lease.set_prompt_tokens(request.prompt_len());
+    }
     kv_manager.finish(request.sequence_prefix(tokens_to_cache), lease);
 }
 

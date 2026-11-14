@@ -30,8 +30,8 @@ pub trait RequestIdentity {
         None
     }
 
-    /// Tokens the request can occupy on its rank (prompt plus output budget),
-    /// for load-balancing placement. Zero when unknown.
+    /// Prompt tokens the request brings to its rank, for load-balancing
+    /// placement. Zero when unknown.
     fn load_tokens(&self) -> usize {
         0
     }

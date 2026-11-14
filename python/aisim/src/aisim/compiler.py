@@ -1125,15 +1125,18 @@ def _worker_engine_args(
             raise ValueError(f"workers.{role}.scheduler.load_balance_method is supported only for the decode role")
         # Replay-only: the runner moves it to the decode pool's placement.
         payload["load_balance_method"] = worker.scheduler.load_balance_method
-    if backend == "sglang" and role != "decode":
+    if backend == "sglang":
         # SGLang chunks a prefill at `--chunked-prefill-size`, the public `max_batched_tokens`. Without it
         # the scheduler keeps its 8192 default, and a PD prefill or aggregate worker launched with a smaller
         # chunk is priced on passes several times larger than any it runs. Replay chunks whole pages,
-        # so an unaligned budget rounds down to one.
-        sglang = payload.setdefault("sglang", {})
-        assert isinstance(sglang, dict)
-        chunk = max(block_size, worker.scheduler.max_batched_tokens // block_size * block_size)
-        sglang.setdefault("chunked_prefill_size", chunk)
+        # so an unaligned budget rounds down to one, on the host-aware path too.
+        sglang = payload.get("sglang")
+        if role != "decode":
+            sglang = payload.setdefault("sglang", {})
+            assert isinstance(sglang, dict)
+            sglang.setdefault("chunked_prefill_size", worker.scheduler.max_batched_tokens)
+        if isinstance(sglang, dict) and isinstance(chunk := sglang.get("chunked_prefill_size"), int):
+            sglang["chunked_prefill_size"] = max(block_size, chunk // block_size * block_size)
     return payload
 
 

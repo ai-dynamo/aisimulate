@@ -54,7 +54,7 @@ For custom Rust composition, use `RoundRobinComposition::default()` and set its
 | Field in `adapters.placement.config` | Default | Behavior |
 | --- | --- | --- |
 | `session_affinity` | `false` | Pin each session to its first worker and attention-DP rank. Applies independently to each `round_robin` pool. |
-| `load_balance_method` | `round_robin` | `total_tokens` places each unpinned decode-pool request on the scheduler holding the fewest placed tokens (prompt plus output budget), as SGLang `--load-balance-method total_tokens`. Disaggregated decode only; aggregated replay rejects it. |
+| `load_balance_method` | `round_robin` | `total_tokens` places each unpinned decode-pool request on the scheduler holding the fewest placed prompt tokens, as SGLang `--load-balance-method total_tokens`. Disaggregated decode only; aggregated replay rejects it. |
 
 [`PlacementPolicy<Request>`](../../crates/core/src/replay/core/mod.rs) supplies:
 

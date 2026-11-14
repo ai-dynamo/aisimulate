@@ -80,14 +80,16 @@ impl HiCache {
 
     /// SWA pages that stay valid given `device_pages` of device SWA room. SGLang sizes the
     /// host SWA pool as it does the host full-KV pool, `device_blocks` being the device one.
-    /// A write-through host copy duplicates a device page; other policies add to it.
+    /// A write-through host copy duplicates a device page and a write-back one replaces it.
+    /// Selective write-through backs a node up only after repeated hits, so most SWA pages
+    /// have no host copy and the device pool alone bounds them.
     pub(super) fn swa_pages(&self, device_pages: usize, device_blocks: usize) -> usize {
         let host_pages = (device_pages as u128 * self.host_blocks as u128
             / device_blocks.max(1) as u128) as usize;
-        if self.write_policy == SglangHiCacheWritePolicy::WriteThrough {
-            device_pages.max(host_pages)
-        } else {
-            device_pages.saturating_add(host_pages)
+        match self.write_policy {
+            SglangHiCacheWritePolicy::WriteThrough => device_pages.max(host_pages),
+            SglangHiCacheWritePolicy::WriteThroughSelective => device_pages,
+            SglangHiCacheWritePolicy::WriteBack => device_pages.saturating_add(host_pages),
         }
     }
 
