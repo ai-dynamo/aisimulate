@@ -555,12 +555,25 @@ def test_canonical_api_resolves_nvfp4_lanes_under_the_selected_systems_root(monk
     assert set(_experts(model)) == {MOE.nvfp4}
 
 
-@pytest.mark.parametrize("explicit", [{}, {"gemm_quant_mode": BF16, "moe_quant_mode": MOE.fp8}])
-def test_rebuilding_from_the_same_config_keeps_per_layer_precision(explicit):
-    config = ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1, system="gb200", **explicit)
-    models = [get_model(SUPER, config, backend_name="vllm") for _ in range(2)]
-    buckets = [(_buckets(m.context_ops), _experts(m)) for m in models]
-    weights = [sum(op.get_weights() for op in m.context_ops) for m in models]
-    assert buckets[0] == buckets[1] and weights[0] == weights[1]
-    # Without overrides, Super keeps its FP8 and BF16 Mamba input projections.
-    assert len(buckets[1][0]["mamba_in_proj_gemm"]) == (1 if explicit else 2)
+def test_rebuilding_from_a_config_tracks_its_current_quant_modes():
+    import dataclasses
+
+    def build(config):
+        model = get_model(SUPER, config, backend_name="vllm")
+        return _buckets(model.context_ops), _experts(model), sum(op.get_weights() for op in model.context_ops)
+
+    def assert_uniform(built):
+        assert all(set(modes) == {BF16} for modes in built[0].values()) and set(built[1]) == {MOE.fp8}
+
+    config = ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1, system="gb200")
+    inferred = build(config)
+    # Rebuilding the same config keeps the checkpoint split (Mamba in_proj: FP8 and BF16 layers).
+    assert build(config) == inferred and len(inferred[0]["mamba_in_proj_gemm"]) == 2
+    # Overrides on a copy, or assigned to the config itself, are explicit: one mode everywhere.
+    assert_uniform(build(dataclasses.replace(config, gemm_quant_mode=BF16, moe_quant_mode=MOE.fp8)))
+    config.gemm_quant_mode, config.moe_quant_mode = BF16, MOE.fp8
+    assert_uniform(build(config))
+    assert_uniform(build(config))
+    # Clearing the overrides restores inference.
+    config.gemm_quant_mode = config.moe_quant_mode = None
+    assert build(config) == inferred
