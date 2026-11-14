@@ -32,6 +32,7 @@ REVISION = "a" * 40
 CONFIGURATION_PATH = "data/Org--Model/h100-sxm/vllm/1.0/single"
 SNAPSHOT_ID = "aisim-commit-aaaaaaaa"
 MEASUREMENT_POLICY_ID = "aisim-fpm/forward-pass-measurement-v1/max-rank-v3"
+POWER_MEASUREMENT_POLICY = "dynamo_native_single_sample_power_window_v1"
 
 
 def _sha256(path: Path) -> str:
@@ -53,6 +54,7 @@ def _build_dataset(
     dp: int = 1,
     tp: int = 1,
     dcp: int | None = None,
+    framework: str = "vllm",
     fpm_schema_version: int = 6,
     selector_extensions: dict | None = None,
 ) -> HfDataset:
@@ -86,7 +88,7 @@ def _build_dataset(
         "snapshot_status": "current",
         "model_id": "Org/Model",
         "system": "h100_sxm",
-        "framework": "vllm",
+        "framework": framework,
         "framework_version": "1.0",
         "parallelism": "single",
         "files": measurement_entries,
@@ -99,7 +101,7 @@ def _build_dataset(
         configuration_selector = {
             "model_path": "Org/Model",
             "system": "h100_sxm",
-            "backend": "vllm",
+            "backend": framework,
             "backend_version": "1.0",
             "weight_quantization": "bfloat16",
             "kv_cache_dtype": "bfloat16",
@@ -130,15 +132,23 @@ def _build_dataset(
                 fmha_resolution="checkpoint_native",
             )
         configuration_selector.update(selector_extensions or {})
+        row = {**{field: [value] for field, value in configuration_selector.items()}, "workload_kind": ["decode"]}
+        if fpm_schema_version == 8:
+            row.update(
+                cell_id=["fpm-decode-1-0-1"],
+                batch_size=[1],
+                total_prefill_tokens=[0],
+                total_kv_read_tokens=[1],
+                partition_policy=["balanced_v1"],
+                latency_ms=[10.0],
+                kv_seed_regime=["real_kv"],
+                measurement_policy=[POWER_MEASUREMENT_POLICY],
+                power_w=pa.array([300.0], type=pa.float64()),
+            )
         fpm_relative = f"{CONFIGURATION_PATH}/fpm/fpm.parquet"
         fpm_path = root / fpm_relative
         fpm_path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(
-            pa.table(
-                {**{field: [value] for field, value in configuration_selector.items()}, "workload_kind": ["decode"]}
-            ),
-            fpm_path,
-        )
+        pq.write_table(pa.table(row), fpm_path)
         fpm_hash = _sha256(fpm_path)
         metadata_relative = f"{CONFIGURATION_PATH}/fpm/fpm.metadata.json"
         _write_json(
@@ -148,6 +158,17 @@ def _build_dataset(
                 "row_count": 1,
                 "schema_name": "aic_fpm_forward_perf",
                 "schema_version": fpm_schema_version,
+                **(
+                    {
+                        "measurement_policy": POWER_MEASUREMENT_POLICY,
+                        "coordinate_system": "iteration_totals_balanced_v1",
+                        "system": "h100_sxm",
+                        "backend": framework,
+                        "backend_version": "1.0",
+                    }
+                    if fpm_schema_version == 8
+                    else {}
+                ),
                 "configuration_selector": configuration_selector,
             },
         )
@@ -172,7 +193,7 @@ def _build_dataset(
         "model_revision": "model-sha",
         "system": "h100_sxm",
         "gpu_family": "H100",
-        "framework": "vllm",
+        "framework": framework,
         "framework_version": "1.0",
         "parallelism": "single",
         "parallel_strategy": "single",
@@ -1512,6 +1533,8 @@ V7_COLLECTION_FIELDS = {
 @pytest.mark.parametrize("fpm_schema_version", [7, 8])
 @pytest.mark.parametrize("extensions", [V7_COLLECTION_FIELDS, {"warmup_repeats": 0}])
 def test_v7_collection_selector_extensions_are_verified(tmp_path, extensions, fpm_schema_version):
+    if fpm_schema_version == 8 and "measurement_policy" in extensions:
+        extensions = {**extensions, "measurement_policy": POWER_MEASUREMENT_POLICY}
     dataset = _build_dataset(
         tmp_path,
         protocol_id="forward-pass-record-v1",
@@ -1521,6 +1544,133 @@ def test_v7_collection_selector_extensions_are_verified(tmp_path, extensions, fp
     )
     case = dataset.measurement_case(CONFIGURATION_PATH)
     assert len(case.fpm_artifacts) == 1
+
+
+def _rewrite_fpm_pair(root: Path, table: pa.Table) -> HfDataset:
+    """Keep artifact hashes/counts valid so negative cases reach schema validation."""
+    fpm_path = root / CONFIGURATION_PATH / "fpm/fpm.parquet"
+    pq.write_table(table, fpm_path)
+    metadata_path = fpm_path.with_suffix(".metadata.json")
+    metadata = json.loads(metadata_path.read_text())
+    metadata["parquet_sha256"] = _sha256(fpm_path)
+    metadata["row_count"] = table.num_rows
+    _write_json(metadata_path, metadata)
+    manifest_path = root / CONFIGURATION_PATH / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["fpm"][0]["sha256"] = _sha256(fpm_path)
+    manifest["fpm"][0]["row_count"] = table.num_rows
+    _write_json(manifest_path, manifest)
+    return HfDataset.from_local(root, revision=REVISION)
+
+
+@pytest.mark.parametrize("power", [[300.0, 400.0], [300.0, None], [None, None]])
+def test_schema_eight_accepts_double_power_and_unknown_nulls(tmp_path, power):
+    _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=8)
+    table = pq.read_table(tmp_path / CONFIGURATION_PATH / "fpm/fpm.parquet")
+    table = pa.concat_tables([table, table])
+    for field, values in {
+        "cell_id": ["fpm-decode-1-0-1", "fpm-decode-2-0-2"],
+        "batch_size": [1, 2],
+        "total_kv_read_tokens": [1, 2],
+    }.items():
+        table = table.set_column(table.schema.get_field_index(field), field, pa.array(values))
+    table = table.set_column(table.schema.get_field_index("power_w"), "power_w", pa.array(power, pa.float64()))
+    dataset = _rewrite_fpm_pair(tmp_path, table)
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    assert len(case.fpm_artifacts) == 1
+    assert case.fpm_artifacts[0].row_count == 2
+
+
+@pytest.mark.parametrize("policy", ["missing", None, "dynamo_native_single_sample_v1", "unknown"])
+def test_schema_eight_rejects_missing_or_wrong_sidecar_policy(tmp_path, policy):
+    dataset = _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=8)
+    metadata_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    if policy == "missing":
+        metadata.pop("measurement_policy")
+    else:
+        metadata["measurement_policy"] = policy
+    _write_json(metadata_path, metadata)
+    with pytest.raises(DataError, match="schema 8 requires vLLM measurement_policy"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+def test_schema_eight_rejects_non_vllm_power_artifacts(tmp_path):
+    dataset = _build_dataset(
+        tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=8, framework="sglang"
+    )
+    with pytest.raises(DataError, match="schema 8 requires vLLM measurement_policy"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("backend", ["missing", None, "sglang"])
+def test_schema_eight_requires_vllm_sidecar_backend(tmp_path, backend):
+    dataset = _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=8)
+    metadata_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    if backend == "missing":
+        metadata.pop("backend")
+    else:
+        metadata["backend"] = backend
+    _write_json(metadata_path, metadata)
+    with pytest.raises(DataError, match="schema 8 requires vLLM measurement_policy"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("policy", ["dynamo_native_single_sample_v1", "unknown"])
+def test_schema_eight_rejects_mismatched_selector_policy(tmp_path, policy):
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-record-v1",
+        files=[],
+        fpm_schema_version=8,
+        selector_extensions={"measurement_policy": policy},
+    )
+    with pytest.raises(DataError, match="invalid v7 selector field 'measurement_policy'"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("policy", ["missing", None, "dynamo_native_single_sample_v1", "unknown"])
+def test_schema_eight_rejects_missing_null_or_mismatched_row_policy(tmp_path, policy):
+    _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=8)
+    table = pq.read_table(tmp_path / CONFIGURATION_PATH / "fpm/fpm.parquet")
+    if policy == "missing":
+        table = table.drop(["measurement_policy"])
+    else:
+        table = pa.concat_tables([table, table])
+        table = table.set_column(
+            table.schema.get_field_index("measurement_policy"),
+            "measurement_policy",
+            pa.array([POWER_MEASUREMENT_POLICY, policy], pa.string()),
+        )
+    dataset = _rewrite_fpm_pair(tmp_path, table)
+    with pytest.raises(DataError, match="(identity columns|different configuration).*measurement_policy"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("arrow_type", [None, pa.float32(), pa.int64(), pa.string(), pa.null()])
+def test_schema_eight_rejects_missing_or_non_double_power(tmp_path, arrow_type):
+    _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=8)
+    table = pq.read_table(tmp_path / CONFIGURATION_PATH / "fpm/fpm.parquet")
+    if arrow_type is None:
+        table = table.drop(["power_w"])
+    else:
+        value = "300" if arrow_type == pa.string() else None if arrow_type == pa.null() else 300
+        table = table.set_column(table.schema.get_field_index("power_w"), "power_w", pa.array([value], arrow_type))
+    dataset = _rewrite_fpm_pair(tmp_path, table)
+    with pytest.raises(DataError, match="schema 8 requires a DOUBLE power_w column"):
+        dataset.measurement_case(CONFIGURATION_PATH)
+
+
+@pytest.mark.parametrize("power", [-1.0, 0.0, float("nan"), float("inf"), float("-inf")])
+def test_schema_eight_rejects_invalid_non_null_power_on_later_rows(tmp_path, power):
+    _build_dataset(tmp_path, protocol_id="forward-pass-record-v1", files=[], fpm_schema_version=8)
+    table = pq.read_table(tmp_path / CONFIGURATION_PATH / "fpm/fpm.parquet")
+    table = pa.concat_tables([table, table])
+    table = table.set_column(table.schema.get_field_index("power_w"), "power_w", pa.array([300.0, power], pa.float64()))
+    dataset = _rewrite_fpm_pair(tmp_path, table)
+    with pytest.raises(DataError, match="power_w must be null or finite and greater than zero"):
+        dataset.measurement_case(CONFIGURATION_PATH)
 
 
 @pytest.mark.parametrize("field", V7_COLLECTION_FIELDS)

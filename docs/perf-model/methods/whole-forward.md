@@ -464,6 +464,30 @@ are rejected before interpolation; the existing execution-identity and real-KV
 requirements still apply. The legacy `dynamo_native_single_sample_v1` contract
 is unchanged.
 
+Schema 8 adds vLLM self-benchmark power measurements while retaining schema 7's
+execution identity. Both the sidecar and every row must declare
+`measurement_policy: dynamo_native_single_sample_power_window_v1`. This policy
+is accepted only with schema 8 and backend `vllm`; missing, null, legacy, or
+unknown row policies are rejected.
+
+| Field | Schema-8 contract |
+|---|---|
+| `measurement_policy` | Required in the sidecar and every row; `dynamo_native_single_sample_power_window_v1` |
+| `power_w` | Required nullable Parquet DOUBLE (float64) column; mean watts per GPU from a separate power window of at least one second |
+| `latency_ms` | Single-sample forward latency in milliseconds, preserved independently of the power window |
+
+Every non-null `power_w` must be finite and greater than zero. Null records
+measured latency with unknown power; the Rust loader represents that power as
+NaN rather than inventing a zero-watt measurement. Schema 6 and 7 remain
+latency-only and do not read `power_w`. Fake-KV healing retains the selected
+anchor's power, including unknown power. Operators do not yet consume the
+loaded schema-8 power values.
+
+The accuracy dataset gate validates the schema-8 policy, row binding, DOUBLE
+column, and power values before admitting a pair. Its Gym worker adapter still
+rejects schema 7 and 8 execution identities as unsupported; artifact validation
+does not establish predictor support or measured serving accuracy.
+
 For a Kimi K3 text profile, an explicit configuration can be:
 
 ```python
