@@ -293,15 +293,23 @@ The page links to the CI run and shows both tested source and probe tooling.
 
 To reproduce a release result, check out the recorded tooling commit at the
 workspace root and the recorded release source under `release-source/`.
-Download the run's `fpe-release-wheel-<version>` artifact into the workspace (preserving
-its `fpe-release-wheel/` directory and `fpe-release-shards.json`), install the
-release's locked environment and exact wheel as in the workflow. The matrix's
+Download the run's `fpe-release-wheel-<version>-manifest` Actions artifact,
+which contains only `wheel-manifest.json`. The manifest identifies the
+Artifactory objects for the `fpe-release-wheel/` directory,
+`fpe-release-shards.json`, and `fpe-release-probes.json`. Restore these paths
+into the workspace through `.github/actions/wheel-storage` from the recorded
+tooling commit, binding the recorded release source SHA, producer run ID, and
+`amd64` architecture. Use the producer attempt recorded in the manifest, and
+verify every object's size and SHA-256 before use. Install the release's locked
+environment and exact restored wheel as in the workflow. The matrix's
 per-cell command uses `release-source/python/aisim/.venv/bin/python`
 directly to run the verified release wrapper with the recorded source, tooling,
 and branch. Each invocation requires a fresh `release-probe-harness/` directory;
 remove only that generated directory between reproductions. Raw shard reports
-and the wheel are retained for seven
-days; the smaller qualified web dataset is retained for 90 days.
+remain Actions artifacts for seven days, as does the completion manifest.
+Configure Artifactory retention for the handoff payload to at least seven days;
+the wheel payload is not retained in Actions. The smaller qualified web dataset
+is retained for 90 days.
 
 The deployed `data/fpe-support-matrix/branches.json` catalog lists available
 and unavailable branches. Main retains the existing data path, and release

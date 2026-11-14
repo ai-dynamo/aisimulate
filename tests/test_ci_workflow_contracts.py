@@ -2190,6 +2190,22 @@ def test_release_artifact_handoffs_cannot_mix_versions():
             assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)
 
 
+def test_release_reproduction_documents_manifest_artifact_instead_of_wheel_payload():
+    jobs = _workflow("fpe-release-qualify.yml")["jobs"]
+    handoff = jobs["prepare"]["steps"][-1]["with"]
+    action = yaml.safe_load((ACTION_ROOT / "wheel-storage/action.yml").read_text())
+    upload = next(
+        step["with"] for step in action["runs"]["steps"] if "actions/upload-artifact@" in step.get("uses", "")
+    )
+    artifact = upload["name"].replace("${{ inputs.name }}", handoff["name"])
+    artifact = artifact.replace("${{ inputs.release }}", "<version>")
+    documentation = (REPOSITORY_ROOT / "docs/ci/accuracy.md").read_text()
+    reproduction = documentation.split("To reproduce a release result,", 1)[1].split("\nThe deployed", 1)[0]
+    assert f"`{artifact}`" in reproduction
+    assert "`fpe-release-wheel-<version>`" not in reproduction
+    assert "`wheel-manifest.json`" in reproduction
+
+
 def test_main_fpe_preserves_discovered_probe_plan_when_packaging(tmp_path):
     jobs = _workflow("fpe-support-matrix.yml")["jobs"]
     assert jobs["discover-shards"]["outputs"]["required-probes"] == "${{ steps.shards.outputs.required_probes }}"
