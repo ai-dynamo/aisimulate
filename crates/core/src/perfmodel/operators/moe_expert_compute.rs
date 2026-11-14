@@ -107,6 +107,10 @@ pub struct MoeExpertComputeOp {
     /// Python default `False` (:1039).
     #[serde(default)]
     pub enable_eplb: bool,
+    #[serde(default)]
+    pub measured_routing: Option<super::MeasuredRouting>,
+    #[serde(default = "crate::operators::gemm::default_seq_split")]
+    pub routing_attention_tp_size: u32,
 }
 
 impl MoeExpertComputeOp {
@@ -177,6 +181,87 @@ impl MoeExpertComputeOp {
                     self.inference_phase
                 )));
             }
+        }
+        if let Some(profile) = &self.measured_routing {
+            if self.enable_eplb
+                || self.routing_attention_tp_size == 0
+                || self
+                    .num_slots
+                    .is_some_and(|slots| slots != self.num_experts)
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "Measured routing requires fixed placement and positive attention shard factor"
+                        .into(),
+                ));
+            }
+            profile.validate(self.num_experts, self.topk, self.moe_ep_size)?;
+            // Use exactly the communication token convention (including its
+            // floor BEFORE globalization), not a second attention-DP scaling.
+            let global_tokens = (num_tokens / self.routing_attention_tp_size)
+                .checked_mul(self.moe_ep_size)
+                .ok_or_else(|| {
+                    AicError::InvalidEngineConfig("Measured token count overflow".into())
+                })?;
+            let mut balanced = self.clone();
+            balanced.measured_routing = None;
+            balanced.workload_distribution = "balanced".into();
+            let ep_calibration = db.moe_expert_compute.require_balanced_shape(
+                &crate::perf_database::moe_expert_compute::MoeExpertComputeKey {
+                    kernel_source: kernel_source.clone(),
+                    quant: self.quant_mode.name().into(),
+                    distribution: "balanced".into(),
+                    inference_phase: self.inference_phase.clone(),
+                    topk: self.topk,
+                    num_experts: self.num_experts,
+                    num_slots: self.num_slots.unwrap_or(self.num_experts),
+                    hidden_size: self.hidden_size,
+                    inter_size: self.inter_size,
+                    moe_tp_size: 1,
+                    moe_ep_size: self.moe_ep_size,
+                },
+            );
+            let use_ep_table = match ep_calibration {
+                Ok(()) => true,
+                Err(err) if err.is_missing_perf_data() => false,
+                Err(err) => return Err(err),
+            };
+            let standard = MoeOp {
+                name: self.name.clone(),
+                scale_factor: 1.0,
+                hidden_size: self.hidden_size,
+                inter_size: self.inter_size,
+                topk: self.topk,
+                num_experts: self.num_experts,
+                moe_tp_size: 1,
+                moe_ep_size: self.moe_ep_size,
+                attention_dp_size: 1,
+                quant_mode: self.quant_mode,
+                workload_distribution: "balanced".into(),
+                is_gated: self.is_gated,
+                moe_backend: None,
+                enable_eplb: false,
+                is_context: self.inference_phase == "context",
+            };
+            let mut sum = 0.0;
+            let equivalent =
+                profile.equivalent_balanced_tokens(global_tokens, self.topk, self.moe_ep_size)?;
+            let mut histogram = std::collections::BTreeMap::<u32, usize>::new();
+            for &coordinate in &equivalent {
+                *histogram.entry(coordinate).or_default() += 1;
+            }
+            for (coordinate, frequency) in histogram {
+                let latency = if use_ep_table {
+                    balanced.silicon_latency(db, &kernel_source, coordinate)?
+                } else {
+                    // Strict 'balanced' lookup, never uniform/power-law substitution.
+                    standard.silicon_pr(db, coordinate)?.latency_ms
+                };
+                sum += latency * frequency as f64;
+            }
+            return Ok(
+                PerformanceResult::new(sum / equivalent.len() as f64, Source::Estimated)
+                    .scaled(self.scale_factor),
+            );
         }
         let result = match self.silicon_latency(db, &kernel_source, tokens) {
             Ok(latency) => PerformanceResult::new(latency, Source::Silicon),
@@ -348,6 +433,10 @@ mod tests {
     }
 
     fn write_moe_ep_parquet(path: &Path, rows: &[EpRow]) {
+        write_moe_ep_distribution(path, rows, "uniform");
+    }
+
+    fn write_moe_ep_distribution(path: &Path, rows: &[EpRow], distribution: &str) {
         let schema = Arc::new(
             parse_message_type(
                 "message ep {
@@ -382,7 +471,7 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         write_column::<ByteArrayType>(&mut rg, &vec![ByteArray::from("fp8_block"); n]);
-        write_column::<ByteArrayType>(&mut rg, &vec![ByteArray::from("uniform"); n]);
+        write_column::<ByteArrayType>(&mut rg, &vec![ByteArray::from(distribution); n]);
         write_column::<ByteArrayType>(
             &mut rg,
             &rows
@@ -471,7 +560,54 @@ mod tests {
             kernel_source: Some("deepep_moe".into()),
             is_gated: true,
             enable_eplb: false,
+            measured_routing: None,
+            routing_attention_tp_size: 1,
         }
+    }
+
+    #[test]
+    fn measured_compute_uses_balanced_curve_and_communication_token_convention() {
+        let (tmp, db) = synthetic_db(DatabaseMode::Silicon);
+        write_moe_ep_distribution(
+            &tmp.path().join("moe_expert_compute_perf.parquet"),
+            &synthetic_rows(),
+            "balanced",
+        );
+        let mut measured_op = op();
+        measured_op.routing_attention_tp_size = 2;
+        measured_op.attention_dp_size = 8;
+        measured_op.measured_routing = Some(super::super::MeasuredRouting {
+            probabilities: vec![1.0 / 128.0; 128],
+            profile_digest: "fixture".into(),
+            layer_id: 3,
+            seed: 42,
+            trials: 16,
+        });
+        let balanced = measured_op.query(&db, 11).unwrap();
+        assert!((balanced.latency_ms - 0.25).abs() < 1e-12);
+        assert_eq!(balanced.source, Source::Estimated);
+        measured_op.measured_routing.as_mut().unwrap().probabilities = (0..128)
+            .map(|i| if i < 64 { 0.0 } else { 1.0 / 64.0 })
+            .collect();
+        let skewed = measured_op.query(&db, 11).unwrap();
+        assert!((skewed.latency_ms - 0.62).abs() < 1e-12);
+        measured_op.scale_factor = 2.0;
+        assert!((measured_op.query(&db, 11).unwrap().latency_ms - 1.24).abs() < 1e-12);
+    }
+
+    #[test]
+    fn measured_compute_never_uses_nonbalanced_fallback() {
+        let (_tmp, db) = synthetic_db(DatabaseMode::Silicon);
+        let mut measured_op = op();
+        measured_op.measured_routing = Some(super::super::MeasuredRouting {
+            probabilities: vec![1.0 / 128.0; 128],
+            profile_digest: "fixture".into(),
+            layer_id: 3,
+            seed: 42,
+            trials: 16,
+        });
+        let err = measured_op.query(&db, 5).unwrap_err();
+        assert!(err.is_missing_perf_data());
     }
 
     // -----------------------------------------------------------------
@@ -699,6 +835,8 @@ mod tests {
             kernel_source: None,
             is_gated: true,
             enable_eplb: false,
+            measured_routing: None,
+            routing_attention_tp_size: 1,
         };
 
         let got = fallback
@@ -941,6 +1079,8 @@ mod tests {
                 kernel_source: sample["kernel_source"].as_str().map(str::to_string),
                 is_gated: sample["is_gated"].as_bool().expect("is_gated"),
                 enable_eplb: sample["enable_eplb"].as_bool().expect("enable_eplb"),
+                measured_routing: None,
+                routing_attention_tp_size: 1,
             };
             let got = op
                 .query(db, u32_of("x"))

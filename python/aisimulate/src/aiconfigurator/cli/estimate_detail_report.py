@@ -105,6 +105,15 @@ def format_estimate_detail_report(
         elif section == "summary":
             section_lines = _format_raw_summary(result)
 
+        if section == "source" and getattr(result, "moe_routing_provenance", None):
+            section_lines.append("MoE routing:")
+            for phase, provenance in result.moe_routing_provenance.items():
+                source = provenance["selected_mode"]
+                reason = provenance.get("fallback_reason")
+                label = "Random-input measured" if source in {"measured", "measured_prefill_proxy"} else source
+                section_lines.append(f"  {phase}: {label}" + (f" ({reason})" if reason else ""))
+                if provenance.get("bundle_revision"):
+                    section_lines.append(f"    bundle revision: {provenance['bundle_revision']}")
         if section == "source" and result.moe_comm_fallbacks:
             if section_lines:
                 section_lines.append("")

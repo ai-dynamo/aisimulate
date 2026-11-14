@@ -81,7 +81,11 @@ class ModelConfig:
     # from backend_name when cp_size > 1; default "none". Dense models branch on
     # this in their op pipeline; GLM-5 DSA ignores it (handled in ContextDSAModule).
     cp_style: str = "none"
-    workload_distribution: str = "power_law"
+    workload_distribution: str | None = None
+    _legacy_workload_is_explicit: bool | None = field(default=None, repr=False, compare=False, kw_only=True)
+    moe_routing_mode: str = field(default="auto", kw_only=True)
+    moe_power_law_alpha: float | None = field(default=None, kw_only=True)
+    moe_model_revision: str | None = field(default=None, kw_only=True)
     # EPD: this worker hosts only the language model -- the vision encoder
     # is served elsewhere (mirrors SGLang --language-only).  Like tp_size,
     # this describes the deployed worker, not the model: vision tokens still
@@ -132,6 +136,17 @@ class ModelConfig:
     system: str | None = None
 
     def __post_init__(self) -> None:
+        from aiconfigurator_core.sdk.moe_routing import validate_routing_options
+
+        if self._legacy_workload_is_explicit is None:
+            self._legacy_workload_is_explicit = self.workload_distribution is not None
+        validate_routing_options(
+            self.moe_routing_mode,
+            self.moe_power_law_alpha,
+            self.workload_distribution if self._legacy_workload_is_explicit else None,
+        )
+        if self.workload_distribution is None:
+            self.workload_distribution = "power_law"
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(
             self.attention_backend,

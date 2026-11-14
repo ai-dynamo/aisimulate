@@ -179,6 +179,7 @@ def _build_python_model(case: EngineStepParityCase):
     if database is None:
         pytest.skip(f"no perf database for {case.system_name}/{case.backend_name}/{case.backend_version}")
     model_config = config.ModelConfig(
+        moe_routing_mode="power-law",
         tp_size=case.tp_size,
         pp_size=case.pp_size,
         attention_dp_size=case.attention_dp_size,
@@ -577,6 +578,7 @@ def _build_wideep_sglang():
     )
     assert 8 in compute_eps, "H200 parity requires the shipped DeepEP expert-compute EP8 curve"
     model_config = config.ModelConfig(
+        moe_routing_mode="power-law",
         tp_size=8,
         moe_tp_size=1,
         moe_ep_size=8,
@@ -630,6 +632,7 @@ def _build_gb200_wideep_sglang():
     )
     assert 32 in compute_eps, "GB200 parity requires the shipped DeepEP expert-compute EP32 curve"
     model_config = config.ModelConfig(
+        moe_routing_mode="power-law",
         tp_size=1,
         pp_size=1,
         attention_dp_size=32,
@@ -795,6 +798,7 @@ def _build_wideep_trtllm():
     if database is None:
         pytest.skip("no perf database for gb200/trtllm/1.3.0rc20")
     model_config = config.ModelConfig(
+        moe_routing_mode="power-law",
         tp_size=1,
         attention_dp_size=8,
         moe_tp_size=1,

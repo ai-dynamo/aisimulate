@@ -40,6 +40,10 @@ def build_model_config(
     enable_encoder_dp: bool = True,
     attention_backend: str | None = None,
     speculation=None,
+    *,
+    moe_routing_mode: str | None = None,
+    moe_power_law_alpha: float | None = None,
+    moe_model_revision: str | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     return ModelConfig(
@@ -54,6 +58,9 @@ def build_model_config(
         moe_quant_mode=MoEQuantMode[moe_quant_mode] if moe_quant_mode else None,
         comm_quant_mode=CommQuantMode[comm_quant_mode] if comm_quant_mode else None,
         forward_model=forward_model or "op_level",
+        moe_routing_mode=moe_routing_mode or "auto",
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         enable_encoder_dp=enable_encoder_dp,
         attention_backend=attention_backend,
         speculation=speculation,

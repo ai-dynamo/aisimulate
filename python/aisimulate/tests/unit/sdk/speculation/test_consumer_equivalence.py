@@ -811,6 +811,7 @@ def test_public_mixed_draft_reports_only_executed_native_fallbacks(gen_requests)
         fmha_quant_mode=common.FMHAQuantMode.fp8_block,
         moe_comm_backend={"context": "deepep_ht", "generation": "deepep_ll"},
         num_gpus_per_node=4,
+        moe_routing_mode="power-law",
     )
     model = get_model("deepseek-ai/DeepSeek-R1", config, "sglang")
     # Isolate both draft-phase fallback paths with a synthetic materialized

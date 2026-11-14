@@ -215,6 +215,8 @@ pub struct MoeAllToAllOp {
     /// Stage 1. Other backends retain their existing behavior.
     #[serde(default)]
     pub enable_eplb: bool,
+    #[serde(default)]
+    pub measured_routing: Option<super::MeasuredRouting>,
 }
 
 impl MoeAllToAllOp {
@@ -250,6 +252,11 @@ impl MoeAllToAllOp {
         // moe_comm.py:600 — validation precedes the mode gate (:610), so an
         // invalid backend/phase is a ValueError even under SOL/EMPIRICAL.
         validate_a2a_request(&self.comm_backend, &self.phase)?;
+        if self.measured_routing.is_some() && self.comm_backend != "deepep_ll" {
+            return Err(AicError::InvalidEngineConfig(
+                "Measured routing requires deepep_ll".into(),
+            ));
+        }
         match db.database_mode {
             DatabaseMode::Silicon | DatabaseMode::Hybrid => {}
             mode => {
@@ -389,7 +396,8 @@ impl MoeAllToAllOp {
             // independent of SystemSpec bandwidth for this mode.
             (LlCalibrationMode::ExactTopology, 0.0, 0.0)
         };
-        let latency_ms = if calibration_mode == LlCalibrationMode::ExactTopology
+        let latency_ms = if self.measured_routing.is_none()
+            && calibration_mode == LlCalibrationMode::ExactTopology
             && distribution == RoutingDistribution::Balanced
         {
             // Strictly balanced exact routing has alpha_comm=1. Preserve the
@@ -397,7 +405,7 @@ impl MoeAllToAllOp {
             // whose point happens to fall below the fitted OLS intercept.
             calibration.base_latency_ms
         } else {
-            let p50_variable_ms = moe_ll_monte_carlo::estimate(MonteCarloRequest {
+            let request = MonteCarloRequest {
                 phase,
                 calibration_mode,
                 per_rank_tokens: tokens,
@@ -410,7 +418,12 @@ impl MoeAllToAllOp {
                 fitted_variable_ms_bits: fitted_variable_ms.to_bits(),
                 nvl_bandwidth_bits: nvl_bandwidth.to_bits(),
                 ib_bandwidth_bits: ib_bandwidth.to_bits(),
-            })?;
+            };
+            let p50_variable_ms = if let Some(profile) = &self.measured_routing {
+                moe_ll_monte_carlo::estimate_measured(request, profile)?
+            } else {
+                moe_ll_monte_carlo::estimate(request)?
+            };
             deepep_ll_p50_latency(calibration.intercept_ms, p50_variable_ms)
         };
         let mut result =
@@ -646,6 +659,7 @@ mod tests {
             attention_tp_size,
             workload_distribution: "power_law_1.2".into(),
             enable_eplb: false,
+            measured_routing: None,
         }
     }
 
@@ -1400,6 +1414,7 @@ mod tests {
                 attention_tp_size: u32_of("attention_tp_size"),
                 workload_distribution: "power_law_1.2".into(),
                 enable_eplb: false,
+                measured_routing: None,
             };
             let got = op
                 .query(db, u32_of("x"))

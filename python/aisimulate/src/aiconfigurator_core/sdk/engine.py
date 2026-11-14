@@ -127,6 +127,8 @@ from aiconfigurator_core.sdk.rust_engine_step import (
 # - 18 (speculation migration): Generation attention gained verify_query_tokens
 #   and FPM forward gained verify_width, both positional bincode fields.
 #   TokenScale was appended to remap draft query widths before op lookup.
+# - 19 (measured routing): LL communication and expert-compute ops carry
+#   per-layer routing; compute carries its paired attention token divisor.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aiconfigurator_core.engine_spec_schema_version()
@@ -312,6 +314,10 @@ def _engine_config_dict(
         "system_name": system,
         "systems_path": systems_path,
         "backend": backend,
+        "moe_routing_mode": getattr(cfg, "moe_routing_mode", "auto"),
+        "moe_power_law_alpha": getattr(cfg, "moe_power_law_alpha", None),
+        "moe_model_revision": getattr(cfg, "moe_model_revision", None),
+        "moe_comm_backend": getattr(cfg, "moe_comm_backend", None),
         # Always a literal version directory name, never a slot alias — the
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
@@ -345,7 +351,7 @@ def _engine_config_dict(
         # directory, so the Rust reload skips its missing-directory gate for
         # exactly this identity.
         "tolerate_dirless_version": bool(getattr(database, "dirless_next_load", False)),
-        "extra": {},
+        "extra": {"moe_routing_provenance": json.dumps(getattr(model, "moe_routing_provenance", {}), sort_keys=True)},
     }
     # SpeculativeConfig (flattened, Option<>): emit nextn at the top level
     # when MTP is active. When inactive, omit it so the
@@ -418,6 +424,10 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    moe_routing_mode: str = "auto",
+    moe_power_law_alpha: float | None = None,
+    moe_model_revision: str | None = None,
+    moe_comm_backend: dict[str, str] | None = None,
     database_mode: str | None = None,
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
@@ -447,12 +457,14 @@ def compile_engine(
         moe_quant_mode=moe_quant_mode,
         comm_quant_mode=comm_quant_mode,
         forward_model=forward_model,
+        moe_routing_mode=moe_routing_mode,
+        moe_power_law_alpha=moe_power_law_alpha,
+        moe_model_revision=moe_model_revision,
         attention_backend=attention_backend,
     )
     # Apply MTP BEFORE get_model so the walked op lists carry the
     # (L+nextn)/L compute scale; accepted-token progress is applied above core.
     apply_nextn(model_config, nextn)
-    model = get_model(model_path, model_config, backend)
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the
@@ -469,6 +481,15 @@ def compile_engine(
         transfer_policy,
         strict_provenance,
     )
+
+    # Backend selection remains independent of distribution selection. Native
+    # callers may request an LL graph explicitly; absent this, preserve the
+    # existing fused graph (auto records unsupported_consumer_backend).
+    if moe_comm_backend is not None:
+        model_config.moe_comm_backend = moe_comm_backend
+        if database is not None:
+            model_config.num_gpus_per_node = database.system_spec["node"]["num_gpus_per_node"]
+    model = get_model(model_path, model_config, backend)
 
     spec_json = build_engine_spec_json(
         model,

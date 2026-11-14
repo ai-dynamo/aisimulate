@@ -2181,7 +2181,7 @@ impl PyMoEAllToAll {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, *, phase, comm_backend, hidden_size, topk, num_experts, moe_ep_size, node_num, comm_dtype="default", sms=0, attention_tp_size=1, workload_distribution="power_law_1.2", enable_eplb=false))]
+    #[pyo3(signature = (name, scale_factor, *, phase, comm_backend, hidden_size, topk, num_experts, moe_ep_size, node_num, comm_dtype="default", sms=0, attention_tp_size=1, workload_distribution="power_law_1.2", enable_eplb=false, measured_routing_json=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -2198,6 +2198,7 @@ impl PyMoEAllToAll {
         attention_tp_size: u32,
         workload_distribution: &str,
         enable_eplb: bool,
+        measured_routing_json: Option<String>,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = Op::MoeAllToAll(crate::operators::MoeAllToAllOp {
             name,
@@ -2214,6 +2215,10 @@ impl PyMoEAllToAll {
             attention_tp_size,
             workload_distribution: workload_distribution.to_string(),
             enable_eplb,
+            measured_routing: measured_routing_json
+                .map(|s| serde_json::from_str(&s))
+                .transpose()
+                .map_err(|e| PyValueError::new_err(format!("invalid measured routing: {e}")))?,
         });
         Ok((PyMoEAllToAll, PyOperation { inner }))
     }
@@ -2226,6 +2231,14 @@ impl PyMoEAllToAll {
         let args = (o.name.clone(), o.scale_factor).into_pyobject(py)?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("phase", o.phase.clone())?;
+        kwargs.set_item(
+            "measured_routing_json",
+            o.measured_routing
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        )?;
         kwargs.set_item("comm_backend", o.comm_backend.clone())?;
         kwargs.set_item("hidden_size", o.hidden_size)?;
         kwargs.set_item("topk", o.topk)?;
@@ -2327,7 +2340,7 @@ impl PyMoEExpertCompute {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, *, hidden_size, inter_size, topk, num_experts, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, inference_phase, num_slots=None, kernel_source=None, is_gated=true, enable_eplb=false))]
+    #[pyo3(signature = (name, scale_factor, *, hidden_size, inter_size, topk, num_experts, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, inference_phase, num_slots=None, kernel_source=None, is_gated=true, enable_eplb=false, measured_routing_json=None, routing_attention_tp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -2345,6 +2358,8 @@ impl PyMoEExpertCompute {
         kernel_source: Option<String>,
         is_gated: bool,
         enable_eplb: bool,
+        measured_routing_json: Option<String>,
+        routing_attention_tp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = Op::MoeExpertCompute(crate::operators::MoeExpertComputeOp {
             name,
@@ -2362,6 +2377,11 @@ impl PyMoEExpertCompute {
             kernel_source,
             is_gated,
             enable_eplb,
+            measured_routing: measured_routing_json
+                .map(|s| serde_json::from_str(&s))
+                .transpose()
+                .map_err(|e| PyValueError::new_err(format!("invalid measured routing: {e}")))?,
+            routing_attention_tp_size,
         });
         Ok((PyMoEExpertCompute, PyOperation { inner }))
     }
@@ -2373,6 +2393,15 @@ impl PyMoEExpertCompute {
         let o = slf.as_super().moe_ep()?;
         let args = (o.name.clone(), o.scale_factor).into_pyobject(py)?;
         let kwargs = PyDict::new(py);
+        kwargs.set_item(
+            "measured_routing_json",
+            o.measured_routing
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        )?;
+        kwargs.set_item("routing_attention_tp_size", o.routing_attention_tp_size)?;
         kwargs.set_item("hidden_size", o.hidden_size)?;
         kwargs.set_item("inter_size", o.inter_size)?;
         kwargs.set_item("topk", o.topk)?;

@@ -80,7 +80,9 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   batch/query widths and FpmForwardOp gained verify_width. Upstream used
 //   14/15, already occupied here; these are positional bincode layout changes.
 //   TokenScale was appended to remap draft query widths before op lookup.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 18;
+// - 19: LL communication and expert-compute ops carry per-layer measured
+//   routing; compute also carries the paired attention token-shard divisor.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -114,6 +116,9 @@ pub struct EngineConfig {
     /// predictor API (additive-optional: absent in older payloads).
     #[serde(default)]
     pub forward_model: Option<String>,
+
+    #[serde(flatten)]
+    pub moe_routing: MoeRoutingConfig,
 
     // KV
     pub kv_block_size: Option<u32>,
@@ -173,6 +178,20 @@ pub struct EngineConfig {
 /// Per-op-file ordered source list, keyed by op-file basename. See
 /// [`EngineConfig::perf_db_sources`].
 pub type PerfDbSources = BTreeMap<String, Vec<PerfSource>>;
+
+/// Distribution selection is independent of future EPLB placement strategies.
+/// Flat keys are shared with the Python SDK and YAML configuration surface.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MoeRoutingConfig {
+    #[serde(default)]
+    pub moe_routing_mode: Option<String>,
+    #[serde(default)]
+    pub moe_power_law_alpha: Option<f64>,
+    #[serde(default)]
+    pub moe_model_revision: Option<String>,
+    #[serde(default)]
+    pub moe_comm_backend: Option<BTreeMap<String, String>>,
+}
 
 /// One perf-data source: an absolute file path plus an optional
 /// `kernel_source` allowlist. `None` admits every row (the primary source);

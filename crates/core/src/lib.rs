@@ -37,7 +37,7 @@ pub use perfmodel::{
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfOptions,
     ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassWorkerType, KvCacheEstimate,
     KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
-    KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
+    KvCacheMemoryFraction, MemoryBreakdown, MoeRoutingConfig, ParallelMapping, QuantizationConfig,
     QueuedRequestMetrics, ScheduledRequestMetrics, SpeculativeConfig,
 };
 

@@ -125,6 +125,8 @@ class DraftModelScheme(SpecSchemeBase):
             nextn=0,
             forward_model="op_level",
             overwrite_num_layers=0,
+            # The target revision cannot identify a different draft checkpoint.
+            moe_model_revision=(model.config.moe_model_revision if self.draft_model_path == model.model_path else None),
         )
         self._draft_model = get_model(self.draft_model_path, draft_config, backend)
         # The independent graph stays unchanged: K forwards reuse weights

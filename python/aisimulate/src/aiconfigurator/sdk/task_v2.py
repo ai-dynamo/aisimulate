@@ -549,6 +549,9 @@ class Task:
     # forward op backed by collected fpm_forward data). Threaded into every
     # ModelConfig this task builds; validated in models.get_model.
     forward_model: str = "op_level"
+    moe_routing_mode: str = "auto"
+    moe_power_law_alpha: float | None = None
+    moe_model_revision: str | None = None
 
     # ====== 2. Agg worker spec (serving_mode='agg') ======
     model_path: str = ""
@@ -853,6 +856,9 @@ class Task:
     # =====================================================================
 
     def __post_init__(self) -> None:
+        from aiconfigurator_core.sdk.moe_routing import validate_routing_options
+
+        validate_routing_options(self.moe_routing_mode, self.moe_power_law_alpha)
         self.moe_backend = config.normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = config.normalize_kernel_backend(
             self.attention_backend,
@@ -2119,6 +2125,9 @@ class Task:
             attention_backend=self.attention_backend,
             wideep_num_slots=self.wideep_num_slots,
             forward_model=self.forward_model or "op_level",
+            moe_routing_mode=self.moe_routing_mode,
+            moe_power_law_alpha=self.moe_power_law_alpha,
+            moe_model_revision=self.moe_model_revision,
             moe_comm_backend=None,
             # Hardware fact, injected alongside the comm backend: the large-EP
             # ops take the comm node span at construction and would otherwise

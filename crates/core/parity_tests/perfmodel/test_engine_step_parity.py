@@ -935,6 +935,7 @@ def _case_database(case: EngineStepParityCase):
 
 def _case_model_config(case: EngineStepParityCase) -> config.ModelConfig:
     return config.ModelConfig(
+        moe_routing_mode="power-law",
         tp_size=case.tp_size,
         pp_size=case.pp_size,
         attention_dp_size=case.attention_dp_size,
@@ -1440,6 +1441,7 @@ class TestRustEngineHandleDatabasePolicyIdentity:
 
     def _build(self):
         cfg = config.ModelConfig(
+            moe_routing_mode="power-law",
             tp_size=1,
             pp_size=1,
             attention_dp_size=32,

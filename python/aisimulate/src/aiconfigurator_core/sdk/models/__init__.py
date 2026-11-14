@@ -202,7 +202,16 @@ def get_model(
         model_config = copy.copy(model_config)
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
+    # Keep model-family alpha selection in the existing builders. Only an
+    # explicit override replaces it; measured profiles are a separate payload.
+    if model_config.moe_routing_mode == "uniform":
+        model_config.workload_distribution = "uniform"
+    elif model_config.moe_routing_mode == "power-law" and model_config.moe_power_law_alpha is not None:
+        model_config.workload_distribution = f"power_law_{model_config.moe_power_law_alpha}"
     model = cls.create(model_info, model_config, backend_name)
+    from aiconfigurator_core.sdk.moe_routing import apply_routing
+
+    apply_routing(model, model_info)
     model.spec_scheme = build_spec_scheme(model_config, spec_config)
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)

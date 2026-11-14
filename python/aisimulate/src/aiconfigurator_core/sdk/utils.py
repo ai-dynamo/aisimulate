@@ -1167,7 +1167,7 @@ def _parse_hf_config_json(config: dict) -> dict:
             f"latent={extra_params.routed_expert_hidden_size}, shared={extra_params.num_shared_experts}, "
             f"vision={'enabled' if kimi_vision_config is not None else 'absent'}"
         )
-    elif architecture in {"DeepSeekForCausalLM", "DeepseekV3ForCausalLM"}:
+    elif architecture in {"DeepSeekForCausalLM", "DeepseekV2ForCausalLM", "DeepseekV3ForCausalLM"}:
         # DeepSeek V3 / R1 / Kimi K2: MLA latent geometry from config so the KV
         # cache size is data-driven instead of hardcoded. v_head_dim feeds the
         # vLLM standard-attention path in DeepSeekModel (head_size=128 for the
