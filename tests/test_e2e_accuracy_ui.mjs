@@ -25,7 +25,7 @@ const catalog = { schema_version: 1, default_branch: "main", branches: [
 ] };
 const response = (data, status = 200) => ({ ok: status === 200, status, json: async () => structuredClone(data) });
 
-function harness(fetch = async () => response(historical), url = "https://example.com/aisimulate/e2e-accuracy/") {
+function harness(fetch = async () => response(historical), url = "https://example.com/aisim/e2e-accuracy/") {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, {
@@ -47,7 +47,7 @@ function harness(fetch = async () => response(historical), url = "https://exampl
     document: { getElementById: element, querySelectorAll: () => [], documentElement: { dataset: {} } },
     localStorage: { setItem() {} }, location,
     history: { replaceState(_state, _title, next) { location.href = String(next); } },
-    fetch, URL, Intl, console,
+    fetch, URL, Intl, console, structuredClone,
   });
   vm.runInContext(source.replace(bootstrap, ""), context);
   return { element, context, location, run: (code) => vm.runInContext(code, context),
@@ -66,7 +66,7 @@ function withEvaluation() {
   const data = structuredClone(historical);
   data.snapshot.evaluated_revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.aic_commit_sha = "d".repeat(40);
-  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...data.snapshot.evaluated_revision };
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisim", ...data.snapshot.evaluated_revision };
   return data;
 }
 
@@ -82,9 +82,9 @@ function withTopology() {
   for (const item of [data.totals, model, workload, gpu]) {
     item.rows = 3;
     item.aic.points = 3;
-    item.aisimulate.points = 2;
-    item.aisimulate.coverage_pct = 200 / 3;
-    item.aisimulate.status_counts = { success: 2, unsupported: 0, failed: 1, unknown: 0 };
+    item.aisim.points = 2;
+    item.aisim.coverage_pct = 200 / 3;
+    item.aisim.status_counts = { success: 2, unsupported: 0, failed: 1, unknown: 0 };
     item.precisions = ["fp8"];
     if ("gpu_skus" in item) item.gpu_skus = [gpu.gpu];
   }
@@ -92,7 +92,7 @@ function withTopology() {
     concurrency, status: success ? "success" : "failed",
     measured: { ttft_relative: concurrency, tpot_relative: concurrency },
     aic: { ttft_relative: concurrency * 1.2, tpot_relative: concurrency * 1.1, ttft_error_pct: 20, tpot_error_pct: 10 },
-    aisimulate: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
+    aisim: { ttft_relative: success ? concurrency * 0.9 : null, tpot_relative: success ? concurrency : null,
       ttft_error_pct: success ? 10 : null, tpot_error_pct: success ? 0 : null },
   });
   gpu.topologies = [{ ...structuredClone(gpu),
@@ -224,7 +224,7 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   await app.run('loadBranch("main")');
   assert.match(app.element("provenance-content").innerHTML, /actions\/runs\/123/);
   assert.match(app.element("provenance-content").innerHTML, /Qualified e2e-accuracy-web artifact/);
-  assert.doesNotMatch(app.element("provenance-content").innerHTML, /aisimulate\/blob\//);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /aisim\/blob\//);
   assert.match(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
   assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
@@ -276,10 +276,16 @@ test("branch switching keeps multi-node scope in provenance", async () => {
 test("bundled AIC (legacy CLI) provenance links to AISim and rejects another repository or revision", async () => {
   const data = withEvaluation();
   const app = setup(async () => response(data));
+  for (const repository of ["https://github.com/ai-dynamo/aisim", "https://github.com/ai-dynamo/aisimulate"]) {
+    const retained = structuredClone(data);
+    retained.snapshot.aic_source.repository = repository;
+    app.set("retained", retained);
+    app.run("validateSummary(retained)");
+  }
   app.set("revisionFixture", data.snapshot.evaluated_revision);
   app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture})');
   await app.run('loadBranch("main")');
-  assert.match(app.element("provenance-content").innerHTML, /AIC \(legacy CLI\) source:.*aisimulate\/commit\/d{40}/);
+  assert.match(app.element("provenance-content").innerHTML, /AIC \(legacy CLI\) source:.*aisim\/commit\/d{40}/);
   assert.match(app.element("provenance-content").innerHTML, /bundled aiconfigurator CLI/);
   for (const change of [
     { repository: "https://github.com/ai-dynamo/aiconfigurator" },
@@ -370,8 +376,8 @@ test("topology curves retain missing-point gaps and expose normalized numeric de
   assert.match(html, /Operating points \(3\)/);
   assert.match(html, /1\.200×/);
   assert.match(html, /<td>failed \/ success<\/td>/);
-  assert.equal((html.match(/<line class="curve aisimulate"/g) ?? []).length, 0);
-  assert.equal((html.match(/<circle class="point aisimulate"/g) ?? []).length, 4);
+  assert.equal((html.match(/<line class="curve aisim"/g) ?? []).length, 0);
+  assert.equal((html.match(/<circle class="point aisim"/g) ?? []).length, 4);
 });
 
 test("changing topology updates the rendered points and shared selection in both directions", async () => {
@@ -386,8 +392,8 @@ test("changing topology updates the rendered points and shared selection in both
   for (const item of [data.totals, model, workload, gpu]) {
     item.rows *= 2;
     item.aic.points *= 2;
-    item.aisimulate.points *= 2;
-    for (const status of Object.keys(item.aisimulate.status_counts)) item.aisimulate.status_counts[status] *= 2;
+    item.aisim.points *= 2;
+    for (const status of Object.keys(item.aisim.status_counts)) item.aisim.status_counts[status] *= 2;
   }
   const app = setup(async () => response(data)); await app.run('loadBranch("main")');
   app.run('state.selection = JSON.stringify([state.data.models[0].model, state.data.models[0].workloads[0].identity, state.data.models[0].workloads[0].gpus[0].gpu]); renderDrilldown(); updateLocation()');
@@ -480,7 +486,7 @@ for (const [level, depth] of [["model", 1], ["workload", 2], ["GPU", 3], ["topol
     // Keep each aggregate and all ancestors internally consistent; only this child coverage is short.
     for (const parent of [invalid.totals, model, workload, gpu].slice(0, depth)) {
       parent.rows += 1;
-      parent.aisimulate.status_counts.unknown += 1;
+      parent.aisim.status_counts.unknown += 1;
     }
     const app = setup(); app.set("invalid", invalid);
     assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
@@ -495,9 +501,9 @@ test("summary validates the metadata, dimensions, and types required by renderin
       data.snapshot.measurement_source_url = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/123";
     }],
     ["release URL", (data) => { data.snapshot.measurement_source_url += "-other"; }],
-    ["packages", (data) => { data.snapshot.aisimulate_packages = []; }],
+    ["packages", (data) => { data.snapshot.aisim_packages = []; }],
     ["measurement date", (data) => { data.snapshot.measurement_date_through = 123; }],
-    ["completion date", (data) => { data.snapshot.aisimulate_completed_at = {}; }],
+    ["completion date", (data) => { data.snapshot.aisim_completed_at = {}; }],
     ["scope", (data) => { data.scope = []; }],
     ["multinode scope", (data) => { data.scope.multinode = "unknown"; }],
     ["excluded rows", (data) => { data.scope.excluded_multinode_rows = -1; }],
@@ -512,7 +518,7 @@ test("summary validates the metadata, dimensions, and types required by renderin
     ["GPU precisions", (data) => { data.models[0].workloads[0].gpus[0].precisions = []; }],
     ["topology ID", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].id = 1234567890123456; }],
     ["topology parallelism", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].parallelism = []; }],
-    ["topology statuses", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].aisimulate.status_counts.extra = 0; }],
+    ["topology statuses", (data) => { data.models[0].workloads[0].gpus[0].topologies[0].aisim.status_counts.extra = 0; }],
   ]) {
     const invalid = withTopology(); corrupt(invalid);
     app.set("invalid", invalid);
@@ -556,9 +562,9 @@ test("aggregate replay counts must match rows and successful points at every lev
     (data) => data.models[0].workloads[0].gpus[0].topologies[0],
   ]) {
     for (const corrupt of [
-      (item) => { item.aisimulate.status_counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 }; },
-      (item) => { item.aisimulate.points = item.aisimulate.status_counts.success + 1; },
-      (item) => { item.aisimulate.status_counts.failed += 1; },
+      (item) => { item.aisim.status_counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 }; },
+      (item) => { item.aisim.points = item.aisim.status_counts.success + 1; },
+      (item) => { item.aisim.status_counts.failed += 1; },
     ]) {
       const data = withTopology();
       corrupt(select(data));
@@ -572,8 +578,8 @@ test("topology point statuses must match otherwise consistent aggregate counts",
   const data = withTopology();
   const topology = data.models[0].workloads[0].gpus[0].topologies[0];
   // Keep points, successes, and rows consistent, but misclassify the failed point.
-  topology.aisimulate.status_counts.failed = 0;
-  topology.aisimulate.status_counts.unsupported = 1;
+  topology.aisim.status_counts.failed = 0;
+  topology.aisim.status_counts.unsupported = 1;
   const app = setup(async () => response(data));
   app.set("invalid", data);
   assert.throws(() => app.run("validateSummary(invalid)"), /schema/);
@@ -780,7 +786,7 @@ test("evaluated snapshots require matching legacy CLI provenance", () => {
 });
 
 test("baseline entry point is validated and displayed for both layouts", async () => {
-  for (const entry of ["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"]) {
+  for (const entry of ["aiconfigurator.main:main", "aisim.legacy_cli.entrypoint:main"]) {
     const data = withEvaluation();
     data.snapshot.aic_source.cli_entry_point = entry;
     const app = setup(async () => response(data));
@@ -839,7 +845,7 @@ test(`configuration assumptions stay labeled and count mismatches fail (${policy
   const revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.evaluated_revision = revision;
   data.snapshot.aic_commit_sha = revision.commit_sha;
-  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisimulate", ...revision };
+  data.snapshot.aic_source = { repository: "https://github.com/ai-dynamo/aisim", ...revision };
   const counts = {};
   for (const model of data.models) for (const workload of model.workloads) for (const gpu of workload.gpus) {
     for (const topology of gpu.topologies) for (const [index, point] of topology.points.entries()) {
@@ -883,13 +889,13 @@ test("tabs preserve selected topology and shareable exclusion settings", async (
 test("outlier filtering is per predictor and metric and keeps points visible", () => {
   const app = harness();
   const t = withTopology().models[0].workloads[0].gpus[0].topologies[0];
-  t.points[0].aisimulate.ttft_error_pct = 150;
-  t.points[0].aisimulate.tpot_error_pct = 100;
+  t.points[0].aisim.ttft_error_pct = 150;
+  t.points[0].aisim.tpot_error_pct = 100;
   app.set("topologyFixture", t);
   app.run('state.excludeOutliers = true');
   const stats = app.run('aggregateTopologies([topologyFixture])');
-  assert.equal(stats.aisimulate.ttft_mape_pct, t.points[2].aisimulate.ttft_error_pct);
-  assert.equal(stats.aisimulate.tpot_mape_pct, (100 + t.points[2].aisimulate.tpot_error_pct) / 2);
+  assert.equal(stats.aisim.ttft_mape_pct, t.points[2].aisim.ttft_error_pct);
+  assert.equal(stats.aisim.tpot_mape_pct, (100 + t.points[2].aisim.tpot_error_pct) / 2);
   assert.equal(stats.aic.points, 3);
   const chart = app.run('metricChart(topologyFixture, "ttft")');
   assert.match(chart, /#ec4899/);
@@ -923,8 +929,8 @@ test("hardware MAPE weights individual points across models and respects exclusi
   second.model = "Another model";
   const topology = second.workloads[0].gpus[0].topologies[0];
   topology.points = [topology.points[0]];
-  topology.points[0].aisimulate.tpot_error_pct = 60;
-  topology.points[0].aisimulate.ttft_error_pct = 160;
+  topology.points[0].aisim.tpot_error_pct = 60;
+  topology.points[0].aisim.ttft_error_pct = 160;
   topology.is_multinode = true;
   data.models.push(second);
   const app = harness();
@@ -946,8 +952,8 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   const hidden = structuredClone(data.models[0]);
   hidden.model = "hidden/model";
   hidden.hf_model_paths = [hidden.model];
-  hidden.aisimulate.points = 0;
-  hidden.aisimulate.status_counts = {success: 0, failed: 3, unsupported: 0, unknown: 0};
+  hidden.aisim.points = 0;
+  hidden.aisim.status_counts = {success: 0, failed: 3, unsupported: 0, unknown: 0};
   data.models.unshift(hidden);
   const app = harness();
   app.set("fixture", data);
@@ -959,7 +965,7 @@ test("model views omit zero-AISim models but retain failures in mixed-success mo
   assert.match(app.element("details-view").innerHTML, /Operating points \(3\)/);
   assert.match(app.element("details-view").innerHTML, /failed \/ success/);
   assert.equal(app.run("state.data.models.length"), 2);
-  app.run("state.data.models.forEach(model => { model.aisimulate.points = 0; model.aisimulate.status_counts.success = 0; }); renderMatrix(); renderView()");
+  app.run("state.data.models.forEach(model => { model.aisim.points = 0; model.aisim.status_counts.success = 0; }); renderMatrix(); renderView()");
   assert.match(app.element("matrix-body").innerHTML, /No models with successful AISim predictions/);
   assert.equal(app.element("detail-filters").innerHTML, "");
 });
@@ -1027,17 +1033,17 @@ test("models with only outlier predictions stay selectable and charted", async (
   const data = withTopology();
   for (const p of data.models[0].workloads[0].gpus[0].topologies[0].points) {
     if (p.status === "success") {
-      p.aisimulate.ttft_error_pct = 150;
-      p.aisimulate.tpot_error_pct = 150;
+      p.aisim.ttft_error_pct = 150;
+      p.aisim.tpot_error_pct = 150;
     }
   }
   const app = setup(async () => response(data));
   await app.run('loadBranch("main")');
   app.run('state.excludeOutliers = true; state.data = filterSnapshot(state.rawData); state.tab = "details"; renderView()');
-  assert.equal(app.run("state.data.models[0].aisimulate.points"), 0);
+  assert.equal(app.run("state.data.models[0].aisim.points"), 0);
   assert.equal(app.run("visibleModels().length"), 1);
   assert.ok(app.run("selectedGpu()"));
-  assert.match(app.element("details-view").innerHTML, /point aisimulate/);
+  assert.match(app.element("details-view").innerHTML, /point aisim/);
   assert.match(app.element("details-view").innerHTML, /role="group"/);
 });
 
@@ -1048,7 +1054,7 @@ test("decoding filter recomputes MAPE, keeps failures, and restores its URL", ()
   const mtp = structuredClone(gpu.topologies[0]);
   mtp.id = "fedcba9876543210";
   mtp.spec_method = "mtp";
-  for (const point of mtp.points) if (point.status === "success") point.aisimulate.tpot_error_pct = 25;
+  for (const point of mtp.points) if (point.status === "success") point.aisim.tpot_error_pct = 25;
   gpu.topologies.push(mtp);
   const app = harness();
   app.set("fixture", data);
@@ -1056,17 +1062,17 @@ test("decoding filter recomputes MAPE, keeps failures, and restores its URL", ()
   app.run('restoreView(new URL("https://example.com/?spec=mtp").searchParams)');
   app.run("state.data = filterSnapshot(state.rawData)");
   assert.equal(app.run("state.data.totals.rows"), 3);
-  assert.equal(app.run("state.data.totals.aisimulate.points"), 2);
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 25);
+  assert.equal(app.run("state.data.totals.aisim.points"), 2);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 25);
   assert.equal(app.run("state.data.models[0].workloads[0].gpus[0].topologies.length"), 1);
   assert.match(app.run("topologyLabel(state.data.models[0].workloads[0].gpus[0].topologies[0])"), /MTP/);
   app.run("updateLocation()");
   assert.equal(new URL(app.location.href).searchParams.get("spec"), "mtp");
   app.element("decoding-select").events.change({target: {value: "none"}});
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 0);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 0);
   app.element("decoding-select").events.change({target: {value: "all"}});
   assert.equal(app.run("state.data.totals.rows"), 6);
-  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 12.5);
+  assert.equal(app.run("state.data.totals.aisim.tpot_mape_pct"), 12.5);
 });
 
 for (const policy of ["hf-current-view-config-v1", "hf-current-view-config-v2"]) {
@@ -1165,7 +1171,7 @@ test("AgentX checklist separates silicon evidence from AISim settings", () => {
   const point = {id:"example", model:"GLM", config_summary:[{name:"Prefix caching",value:true}]};
   const missing = checklist(point);
   assert.equal((missing.match(/data-source="silicon"><span class="agentx-feature-status unknown"/g)||[]).length,8);
-  assert.match(featureCell(missing,"cache.g1_prefix","aisim"),/Legacy missing evidence/);
+  assert.match(featureCell(missing,"cache.g1_prefix","aisimulate"),/Legacy missing evidence/);
   assert.match(missing,/<th scope="col">Silicon<\/th><th scope="col">AISim<\/th>/);
   assert.doesNotMatch(missing,/agentx-feature-icon|On does not imply|Unrecorded means|Support has not been assessed/);
   assert.deepEqual([...missing.matchAll(/class="agentx-feature-name">([^<]+)</g)].map(m=>m[1]), [
@@ -1209,7 +1215,7 @@ test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   assert.equal((html.match(/Scope: Unrecorded/g)||[]).length,2);
   assert.match(html,/State-cache type: Unrecorded/);
   assert.match(featureCell(html,"speculation","silicon"),/Method: Unrecorded.*Draft length: Unrecorded/);
-  assert.match(featureCell(html,"speculation","aisim"),/Legacy missing evidence/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Legacy missing evidence/);
   for(const source of ["silicon"]) {
     assert.equal((featureCell(html,"speculation",source).match(/class="agentx-feature-badge"/g)||[]).length,2);
     assert.doesNotMatch(featureCell(html,"speculation",source),/class="agentx-feature-detail"/);
@@ -1220,7 +1226,7 @@ test("AgentX checklist keeps unrecorded silicon parameters unknown", () => {
   assert.equal(checklist(point),html);
   features.find(f=>f.id==="speculation").state="disabled";
   assert.doesNotMatch(featureCell(checklist(point),"speculation","silicon"),/Draft length:/);
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/Legacy missing evidence/);
+  assert.match(featureCell(checklist(point),"speculation","aisimulate"),/Legacy missing evidence/);
 });
 
 test("AISim features use structured effective settings and preserve role differences", () => {
@@ -1234,22 +1240,22 @@ test("AISim features use structured effective settings and preserve role differe
       feature("routing.kv_aware","not_applicable"),feature("speculation","enabled",{method:"dspark",draft_length:7,verify_width:8}),
     ]}],speculation_comparison:[]}};
   let html=checklist(point);
-  assert.match(featureCell(html,"cache.g1_prefix","aisim"),/prefill.*status off.*decode.*status on/);
-  assert.match(featureCell(html,"cache.g2","aisim"),/Scope: cluster_shared/);
-  assert.match(featureCell(html,"speculation","aisim"),/Method: DSPARK.*Draft length: 7.*Verify width: 8/);
-  assert.match(featureCell(html,"kv-aware-routing","aisim"),/status na/);
+  assert.match(featureCell(html,"cache.g1_prefix","aisimulate"),/prefill.*status off.*decode.*status on/);
+  assert.match(featureCell(html,"cache.g2","aisimulate"),/Scope: cluster_shared/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Method: DSPARK.*Draft length: 7.*Verify width: 8/);
+  assert.match(featureCell(html,"kv-aware-routing","aisimulate"),/status na/);
   assert.doesNotMatch(html,/Draft length: 99/);
   assert.doesNotMatch(html,/Observed use: unknown/);
   point.simulation_features.roles[1].features[0].observed={state:"exercised",count:3};
-  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisim"),/Observed use: exercised/);
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisimulate"),/Observed use: exercised/);
   point.simulation_features.roles[1].features[0].observed={state:"not_observed",count:0};
-  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisim"),/Observed use: not observed/);
+  assert.match(featureCell(checklist(point),"cache.g1_prefix","aisimulate"),/Observed use: not observed/);
   point.simulation_features.speculation_comparison=[{role:"decode",status:"unsupported",actual_draft_length:7,aisim_max:5}];
   html=checklist(point);
-  assert.match(featureCell(html,"speculation","aisim"),/Unsupported \(actual: 7, AISim max: 5\)/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/Unsupported \(actual: 7, AISim max: 5\)/);
   point.simulation_features.roles[1].features[3].state="failed_to_record";
   point.simulation_features.speculation_comparison=[];
-  assert.match(featureCell(checklist(point),"speculation","aisim"),/Recording failed/);
+  assert.match(featureCell(checklist(point),"speculation","aisimulate"),/Recording failed/);
   point.snapshot={commit_sha:"c".repeat(40),dataset_revision:"b".repeat(40)};
   assert.throws(()=>checklist(point),/identity mismatch/);
 });
@@ -1289,7 +1295,7 @@ test("curated silicon features expose recorded scopes, cache types and actual dr
   assert.match(featureCell(html,"cache.hybrid_state","silicon"),/State-cache type: recurrent_state/);
   assert.match(featureCell(html,"kv-aware-routing","silicon"),/agentx-feature-status on/);
   assert.match(featureCell(html,"speculation","silicon"),/Method: DSPARK.*Draft length: 7/);
-  assert.match(featureCell(html,"speculation","aisim"),/agentx-feature-status unknown/);
+  assert.match(featureCell(html,"speculation","aisimulate"),/agentx-feature-status unknown/);
 });
 
 
@@ -1306,4 +1312,47 @@ test("AgentX performance-model labels use recorded estimator and prediction data
   assert.equal(label([regression]),"FPM regression perf model (vllm 0.31.0)");
   const fpm={...run,config_summary:[{name:"Estimation",value:"fpm_interpolation"}]};
   assert.equal(label([run,fpm]),"Op-based perf model (vllm 0.31.0); FPM interpolation perf model (vllm 0.31.0)");
+});
+
+
+function legacyPublicSummary(data) {
+  let text = JSON.stringify(data).replaceAll('"aisim":{', '"aisimulate":{');
+  for (const suffix of ["completed_at", "method", "packages", "sot_sha256"]) {
+    text = text.replaceAll(`"aisim_${suffix}":`, `"aisimulate_${suffix}":`);
+  }
+  const result = JSON.parse(text);
+  result.schema_version = 1;
+  return result;
+}
+
+test("v1 and v2 accuracy summaries normalize without changing evidence or source", async () => {
+  const current = withTopology();
+  for (const data of [current, legacyPublicSummary(current)]) {
+    const original = structuredClone(data);
+    const app = harness(async () => response(data));
+    app.set("input", data);
+    const result = JSON.parse(app.run("JSON.stringify(validateSummary(input))"));
+    assert.deepEqual(result, current);
+    assert.deepEqual(data, original);
+    assert.deepEqual(result.snapshot.aisim_packages, current.snapshot.aisim_packages);
+  }
+});
+
+test("summary version readers reject unknown and mixed field contracts", () => {
+  const app = harness();
+  for (const version of [null, 0, 3, true, "2"]) {
+    const input = withTopology();
+    input.schema_version = version;
+    app.set("input", input);
+    assert.throws(() => app.run("validateSummary(input)"), /unsupported accuracy summary schema/);
+  }
+  for (const legacy of [false, true]) for (const location of ["totals", "snapshot", "point"]) {
+    const input = legacy ? legacyPublicSummary(withTopology()) : withTopology();
+    const wrong = legacy ? "aisim" : "aisimulate";
+    if (location === "snapshot") input.snapshot[`${wrong}_packages`] = {};
+    else if (location === "totals") input.totals[wrong] = {};
+    else input.models[0].workloads[0].gpus[0].topologies[0].points[0][wrong] = {};
+    app.set("input", input);
+    assert.throws(() => app.run("validateSummary(input)"), /unexpected field/);
+  }
 });

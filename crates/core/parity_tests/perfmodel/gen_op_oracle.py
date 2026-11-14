@@ -23,7 +23,7 @@ Output goes to ``src/operators/testdata/op_oracle.json``; the Rust
 tests read the two ``op`` slices of that one file, rebuild the same ops
 against the same shipped parquet files and assert a relative error <= 1e-9.
 
-Regenerate (from ``python/aisimulate``, after ``git lfs pull``):
+Regenerate (from ``python/aisim``, after ``git lfs pull``):
 
     .venv/bin/python aic-core/rust/aiconfigurator-core/parity_tests/gen_op_oracle.py
 
@@ -41,9 +41,9 @@ import sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
-from aisimulate_core.sdk.common import MoEQuantMode
-from aisimulate_core.sdk.operations.moe_comm import MoEAllToAll, MoEExpertCompute
-from aisimulate_core.sdk.perf_database import get_database
+from aisim_core.sdk.common import MoEQuantMode
+from aisim_core.sdk.operations.moe_comm import MoEAllToAll, MoEExpertCompute
+from aisim_core.sdk.perf_database import get_database
 
 OUT_PATH = os.path.join(os.path.dirname(__file__), "..", "src", "operators", "testdata", "op_oracle.json")
 
@@ -410,8 +410,7 @@ def main() -> None:
     header = {
         "_regenerate": (".venv/bin/python aic-core/rust/aiconfigurator-core/parity_tests/gen_op_oracle.py"),
         "_source": (
-            "MoEAllToAll(...)._engine_query / "
-            "MoEExpertCompute(...)._engine_query (shared_layer=False), SILICON mode"
+            "MoEAllToAll(...)._engine_query / MoEExpertCompute(...)._engine_query (shared_layer=False), SILICON mode"
         ),
         "_tuples": [f"{s}/{b}/{v}" for s, b, v in TUPLES],
     }

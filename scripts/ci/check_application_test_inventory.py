@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-APP = ROOT / "python/aisimulate"
+APP = ROOT / "python/aisim"
 EXCEPTIONS = ROOT / ".github/application-test-inventory.json"
 
 

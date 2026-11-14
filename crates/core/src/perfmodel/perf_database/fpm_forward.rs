@@ -6,7 +6,7 @@
 //! Whole-model `fpm_forward` perf tables (Python `forward_model="fpm"`).
 //!
 //! Rust port of the loader half of
-//! `python/aisimulate/src/aisimulate_core/sdk/operations/fpm_forward.py`: the formal
+//! `python/aisim/src/aisim_core/sdk/operations/fpm_forward.py`: the formal
 //! collector pair
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //! /data/reviewed-fpm.metadata.json
 //! ```
 //!
-//! The parquet may be supplied outside the AISimulate repository and is
+//! The parquet may be supplied outside the AISim repository and is
 //! validated (sidecar schema/sha256/row_count, per-row workload checks,
 //! duplicate physical row keys), healed of
 //! `kv_seed_regime == "fake_fallback"` values (fabricated-KV measurements

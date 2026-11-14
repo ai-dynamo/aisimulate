@@ -379,7 +379,7 @@ def recommended_regression_config():
 @pytest.mark.parametrize("dcp", [1, 8])
 @pytest.mark.parametrize("role", ["prefill", "decode", "aggregated"])
 def test_real_regression_uses_recommended_gym_config_only(tmp_path, dcp, role, recommended_regression_config):
-    sdk = pytest.importorskip("aisimulate_core.sdk")
+    sdk = pytest.importorskip("aisim_core.sdk")
     from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
     case = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8, dcp=dcp).measurement_case(CONFIGURATION_PATH)
@@ -415,7 +415,7 @@ def test_real_regression_uses_recommended_gym_config_only(tmp_path, dcp, role, r
     "grid_options,bins", [({}, [4, 1]), ({"bucket_count": 9}, [3, 3]), ({"bucket_shape": [2, 3]}, [2, 3])]
 )
 def test_real_regression_preserves_explicit_controls(case, grid_options, bins, recommended_regression_config):
-    pytest.importorskip("aisimulate_core.sdk")
+    pytest.importorskip("aisim_core.sdk")
     from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
     context = PredictorContext(
@@ -453,7 +453,7 @@ def test_real_regression_preserves_explicit_controls(case, grid_options, bins, r
     ],
 )
 def test_real_regression_preserves_explicit_canonical_sampling(case, sampling, recommended_regression_config):
-    sdk = pytest.importorskip("aisimulate_core.sdk")
+    sdk = pytest.importorskip("aisim_core.sdk")
     from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
     context = PredictorContext(
@@ -477,7 +477,7 @@ def test_real_regression_preserves_explicit_canonical_sampling(case, sampling, r
 
 @pytest.mark.parametrize("options", [{"bucket_count": 9}, {"bucket_shape": [3, 2]}])
 def test_real_regression_rejects_conflicting_canonical_and_legacy_grids(case, options):
-    pytest.importorskip("aisimulate_core.sdk")
+    pytest.importorskip("aisim_core.sdk")
     from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
     context = PredictorContext(
@@ -493,7 +493,7 @@ def test_real_regression_rejects_conflicting_canonical_and_legacy_grids(case, op
 
 
 def test_worker_regression_reports_resolved_native_grid(case):
-    pytest.importorskip("aisimulate_core.sdk")
+    pytest.importorskip("aisim_core.sdk")
     from scripts.fpm_accuracy.evaluate import create_predictor
     from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
@@ -508,7 +508,7 @@ def test_worker_regression_reports_resolved_native_grid(case):
 
 
 def test_worker_regression_preserves_canonical_sampling_and_explicit_options(case):
-    pytest.importorskip("aisimulate_core.sdk")
+    pytest.importorskip("aisim_core.sdk")
     from scripts.fpm_accuracy.evaluate import create_predictor
     from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
@@ -546,7 +546,7 @@ def test_predictor_uses_canonical_api_or_older_wheel_adapter(case, tmp_path, mon
     from scripts.fpm_accuracy.models.fpt_predictor import PredictorContext
 
     if canonical:
-        pytest.importorskip("aisimulate_core.sdk")
+        pytest.importorskip("aisim_core.sdk")
     else:
         monkeypatch.setattr(aic_predictors, "_canonical_config_type", lambda: None)
     calls = []
@@ -794,12 +794,10 @@ def test_learned_fit_uses_the_small_tree_hyperparameters(monkeypatch):
     # Stand-ins for the evaluated wheel and scikit-learn, which this job does not install.
     fpm_learned = SimpleNamespace(FEATURE_PRESETS={"fpm5": ("num_prefill_requests",)}, train=train)
     sdk = SimpleNamespace(fpm_learned=fpm_learned)
-    monkeypatch.setitem(sys.modules, "aisimulate_core", SimpleNamespace(sdk=sdk))
-    monkeypatch.setitem(sys.modules, "aisimulate_core.sdk", sdk)
-    monkeypatch.setitem(sys.modules, "aisimulate_core.sdk.fpm_learned", fpm_learned)
-    monkeypatch.setitem(
-        sys.modules, "aisimulate_core.sdk.rust_engine_step", SimpleNamespace(RustForwardPassPerfModel=None)
-    )
+    monkeypatch.setitem(sys.modules, "aisim_core", SimpleNamespace(sdk=sdk))
+    monkeypatch.setitem(sys.modules, "aisim_core.sdk", sdk)
+    monkeypatch.setitem(sys.modules, "aisim_core.sdk.fpm_learned", fpm_learned)
+    monkeypatch.setitem(sys.modules, "aisim_core.sdk.rust_engine_step", SimpleNamespace(RustForwardPassPerfModel=None))
     monkeypatch.setitem(sys.modules, "sklearn", SimpleNamespace())
     predictor = LearnedFpm5Predictor.fit(SimpleNamespace(worker_role="decode"), [])
     assert calls == [{"features": ("num_prefill_requests",), **HYPERPARAMETERS}]

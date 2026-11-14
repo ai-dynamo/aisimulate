@@ -1,0 +1,55 @@
+{
+  "runtime_source_commit": "d139f3646774dced5be67d3c20f3c51cde11ba72",
+  "rust": {
+    "passed": 2670,
+    "ignored": 1,
+    "features": [
+      "embed-python"
+    ],
+    "log": "/private/tmp/afd585-round2-3nkdmphi/rust-all-verified.log"
+  },
+  "python_related": {
+    "passed": 1415,
+    "log": "/private/tmp/afd585-round2-3nkdmphi/python-final.log"
+  },
+  "public_rust_api": {
+    "passed": 21,
+    "log": "/private/tmp/afd585-round2-3nkdmphi/public-api.log"
+  },
+  "python_contracts": {
+    "passed": 140,
+    "log": "/private/tmp/afd585-round2-3nkdmphi/contracts.log"
+  },
+  "parity": {
+    "afd_passed": 36,
+    "general_passed": 389,
+    "total_verified_across_runs": 425,
+    "afd_log": "/private/tmp/afd585-round2-3nkdmphi/afd-goldens-verified.log",
+    "general_log": "/private/tmp/afd585-round2-3nkdmphi/parity.log",
+    "note": "The initial combined run lacked the isolated .venv CLI entry point; its 29 failures were confined to AFD. General parity passed; all AFD cases were rerun after environment correction and two independently explained RNG-stream golden updates."
+  },
+  "goldens": {
+    "changed_cases": [
+      "qwen_tp1_mtp",
+      "qwen_tp2_mtp"
+    ],
+    "cause": "main 18d71dcd changes shared sampler StdRng to SmallRng; integrated baseline and candidate match exactly.",
+    "unchanged": "All six E2E and twelve other layout records."
+  },
+  "equivalent_signed_source_commit": "45f446825ddc34f1add75999a3fb009410fe79a6",
+  "source_tree": "ad8d1f0324ec2878c95fb1bb8d107c562661e94d",
+  "equivalence": "Only DCO commit metadata differs from the measured source commit; source tree is identical.",
+  "generator_request": {
+    "passed": 120,
+    "log": "/private/tmp/afd585-round2-3nkdmphi/generator.log"
+  },
+  "commands": {
+    "rust_lib": "PYTHONPATH=<checkout>/python/aisimulate/src:<venv-site-packages> PYO3_PYTHON=<venv>/bin/python cargo test -p aisimulate-core --features embed-python --lib --offline",
+    "public_rust": "PYTHONPATH=.:python/aisimulate/src PYO3_PYTHON=<venv>/bin/python cargo test --manifest-path crates/tests/public-api/Cargo.toml --features aisimulate-core/embed-python --offline",
+    "python_related": "PYTHONPATH=.:python/aisimulate/src <venv>/bin/python -m pytest -p no:timeout -c python/aisimulate/pytest.ini -o addopts= -q --tb=short python/aisimulate/tests/unit/sdk/test_afd_engine_materialize.py python/aisimulate/tests/unit/sdk/test_afd_readiness_precision.py python/aisimulate/tests/unit/sdk/test_afd_review2.py python/aisimulate/tests/unit/sdk/test_afd_memory.py python/aisimulate/tests/unit/sdk/test_afd_kv_budget.py python/aisimulate/tests/unit/sdk/test_afd_composition.py python/aisimulate/tests/unit/sdk/models/test_nvfp4_fallback.py python/aisimulate/tests/unit/sdk/models/test_gemma4_vision.py tests/test_afd_artifacts.py tests/test_afd_parity_generation.py tests/sweeper/test_afd_parallel.py tests/sweeper/test_afd_search_integration.py tests/test_runner.py tests/test_cli_config.py tests/test_epd_cli.py",
+    "generator_request": "PYTHONPATH=.:python/aisimulate/src <venv>/bin/python -m pytest -p no:timeout -c python/aisimulate/pytest.ini -o addopts= -q --tb=short python/aisimulate/tests/unit/generator/test_sweeper_request.py",
+    "contracts": "PYTHONPATH=.:python/aisimulate/src <venv>/bin/python -m pytest -p no:timeout -c python/aisimulate/pytest.ini -o addopts= -q --tb=short tests/test_runner.py::test_detokenization_rejects_afd python/aisimulate/tests/cross_package/test_import_contract.py python/aisimulate/tests/cross_package/test_single_oracle_contract.py",
+    "afd_parity": "PYTHONPATH=.:python/aisimulate/src <venv>/bin/python -m pytest -p no:timeout -c python/aisimulate/pytest.ini -o addopts= -q --tb=short crates/core/parity_tests/perfmodel/test_afd_parity.py crates/core/parity_tests/perfmodel/test_afd_execution_plan_parity.py",
+    "general_parity": "Same combined invocation also includes crates/core/parity_tests/perfmodel/test_compile_engine_parity.py crates/core/parity_tests/perfmodel/test_engine_step_parity.py; its 389 general cases passed before the corrected AFD-only rerun."
+  }
+}

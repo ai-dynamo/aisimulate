@@ -25,8 +25,8 @@ def _git(repo: Path, *args: str) -> str:
 def test_upstream_docs_require_manual_adaptation(tmp_path: Path) -> None:
     """An upstream doc change must not recreate the retired documentation tree."""
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
-    _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
+    _git(tmp_path, "config", "user.name", "AISim test")
+    _git(tmp_path, "config", "user.email", "aisim-test@nvidia.com")
     config = tomllib.loads(SYNC.LEDGER.read_text())
     for mapping in config["mirror"]:
         source = tmp_path / mapping["source"]
@@ -52,8 +52,8 @@ def test_upstream_docs_require_manual_adaptation(tmp_path: Path) -> None:
 
 def test_sync_source_validation_rejects_missing_mapped_path(tmp_path: Path) -> None:
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
-    _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
+    _git(tmp_path, "config", "user.name", "AISim test")
+    _git(tmp_path, "config", "user.email", "aisim-test@nvidia.com")
     source = tmp_path / "aic-core" / "src" / "aiconfigurator_core"
     source.mkdir(parents=True)
     (source / "__init__.py").write_text("")
@@ -63,13 +63,13 @@ def test_sync_source_validation_rejects_missing_mapped_path(tmp_path: Path) -> N
 
     SYNC._require_source_path(tmp_path, commit, "aic-core/src/aiconfigurator_core")
     with pytest.raises(ValueError, match="does not exist"):
-        SYNC._require_source_path(tmp_path, commit, "src/aisimulate_core")
+        SYNC._require_source_path(tmp_path, commit, "src/aisim_core")
 
 
 def test_manual_changes_require_and_populate_a_report(tmp_path: Path, monkeypatch) -> None:
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
-    _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
+    _git(tmp_path, "config", "user.name", "AISim test")
+    _git(tmp_path, "config", "user.email", "aisim-test@nvidia.com")
     mirror = tmp_path / "mirror"
     mirror.mkdir()
     (mirror / "value.txt").write_text("before\n")
@@ -116,8 +116,8 @@ reason = "adapt the combined wheel manifest"
 
 def test_render_prefixes_rename_metadata_with_the_mirror_target(tmp_path: Path, monkeypatch) -> None:
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
-    _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
+    _git(tmp_path, "config", "user.name", "AISim test")
+    _git(tmp_path, "config", "user.email", "aisim-test@nvidia.com")
     mirror = tmp_path / "mirror"
     mirror.mkdir()
     (mirror / "old.txt").write_text("stable\n")
@@ -164,18 +164,18 @@ def test_repository_ledger_maps_original_packages_without_restoring_old_names(tm
     import tomllib
 
     _git(tmp_path, "init")
-    _git(tmp_path, "config", "user.name", "AISimulate test")
-    _git(tmp_path, "config", "user.email", "aisimulate-test@nvidia.com")
+    _git(tmp_path, "config", "user.name", "AISim test")
+    _git(tmp_path, "config", "user.email", "aisim-test@nvidia.com")
     ledger = tomllib.loads(SYNC.LEDGER.read_text())
     for mapping in ledger["mirror"]:
         root = tmp_path / mapping["source"]
         root.mkdir(parents=True, exist_ok=True)
         (root / "fixture.txt").write_text("base\n")
     paths = {
-        "aic-core/src/aiconfigurator_core/sdk/engine.py": "python/aisimulate/src/aisimulate_core/sdk/engine.py",
-        "src/aiconfigurator/sdk/task_v2.py": "python/aisimulate/src/aisimulate/sdk/task_v2.py",
-        "src/aiconfigurator/generator/api.py": "python/aisimulate/src/aisimulate/generator/api.py",
-        "src/aiconfigurator/cli/main.py": "python/aisimulate/src/aisimulate/legacy_cli/main.py",
+        "aic-core/src/aiconfigurator_core/sdk/engine.py": "python/aisim/src/aisim_core/sdk/engine.py",
+        "src/aiconfigurator/sdk/task_v2.py": "python/aisim/src/aisim/sdk/task_v2.py",
+        "src/aiconfigurator/generator/api.py": "python/aisim/src/aisim/generator/api.py",
+        "src/aiconfigurator/cli/main.py": "python/aisim/src/aisim/legacy_cli/main.py",
     }
     for source in paths:
         path = tmp_path / source
@@ -197,5 +197,5 @@ def test_repository_ledger_maps_original_packages_without_restoring_old_names(tm
     patch = SYNC.render(tmp_path, base, target, manual_report=report)
     for destination in paths.values():
         assert f"+++ b/{destination}".encode() in patch
-    assert b"python/aisimulate/src/aiconfigurator" not in patch
+    assert b"python/aisim/src/aiconfigurator" not in patch
     assert "src/aiconfigurator/main.py" in report.read_text()

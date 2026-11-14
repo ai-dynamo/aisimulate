@@ -222,10 +222,10 @@ def _read_metadata(path: Path) -> dict[str, Any]:
 
 def _prepare_system_overlay(systems_root: Path, engine_config: Mapping[str, Any]) -> Path:
     try:
-        from aisimulate_core.sdk import perf_database
+        from aisim_core.sdk import perf_database
     except ImportError as exc:
         raise DependencyError(
-            "AISim FPM prediction requires aisimulate; install the AISim checkout in this environment"
+            "AISim FPM prediction requires aisim; install the AISim checkout in this environment"
         ) from exc
 
     system_name = str(engine_config["system_name"])

@@ -32,9 +32,9 @@ def test_import_sweeper_has_no_jax_process_side_effects():
         logging.getLogger("jax._src.xla_bridge").setLevel(logging.WARNING)
         logging.getLogger("absl").setLevel(logging.WARNING)
 
-        import aisimulate.sweeper as sweeper
+        import aisim.sweeper as sweeper
 
-        assert sweeper.__name__ == "aisimulate.sweeper"
+        assert sweeper.__name__ == "aisim.sweeper"
         assert "JAX_PLATFORMS" not in os.environ
         assert logging.getLogger("jax._src.xla_bridge").level == logging.WARNING
         assert logging.getLogger("absl").level == logging.WARNING
@@ -49,7 +49,7 @@ def test_configure_vizier_runtime_is_explicit_opt_in():
         import os
 
         os.environ.pop("JAX_PLATFORMS", None)
-        from aisimulate.sweeper._quiet import configure_vizier_runtime
+        from aisim.sweeper._quiet import configure_vizier_runtime
 
         configure_vizier_runtime()
 

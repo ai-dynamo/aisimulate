@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "AISim Replay Parity"
+  short_description: "Detect engine replay semantic regressions"
+  default_prompt: "Use $aisim-replay-parity to compare this AISim replay change against a pinned baseline."

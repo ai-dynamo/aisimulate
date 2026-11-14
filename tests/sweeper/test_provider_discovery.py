@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from aisimulate.sweeper.discovery import (
+from aisim.sweeper.discovery import (
     DuplicateProviderError,
     ProviderABIError,
     ProviderFactoryError,
@@ -17,7 +17,7 @@ from aisimulate.sweeper.discovery import (
     ProviderNotFoundError,
     resolve_providers,
 )
-from aisimulate.sweeper.provider import (
+from aisim.sweeper.provider import (
     API_VERSION,
     AdapterReplaySpec,
     AdapterSearchPlan,
