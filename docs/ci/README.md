@@ -251,6 +251,9 @@ marked it N/A.
 16 frozen queries on B200: eight vLLM 0.24.0 queries for dense Qwen3-32B and
 MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
 SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
+These collections are frozen data coordinates outside the queryable version
+slots; the script admits them for its own queries, so promoting a newer
+collection does not move the expected values or the baseline commit.
 The [manifest](../../.github/prediction-numerical-sentinels.json)
 records a full baseline commit that must resolve in the checkout. Fast CI and
 the numerical-check job explicitly fetch that SHA from `origin` if missing;
