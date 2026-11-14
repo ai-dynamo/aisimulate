@@ -1240,7 +1240,7 @@ impl TraceRequestStats {
 
 impl TraceCollector {
     /// Batch runs may retire terminal state after runtime completion callbacks.
-    /// Steppable SDK runtimes retain their existing request-query semantics.
+    /// Until then, terminal request state stays queryable on the collector.
     pub(crate) fn begin_batch_reporting(&mut self) {
         self.batch_reporting = true;
         if !self.capture_per_request && !self.defer_token_timeline_finalization {
@@ -1310,6 +1310,7 @@ impl TraceCollector {
         self.committed_prefill_tokens += tokens;
     }
 
+    #[cfg(test)]
     pub(crate) fn contains_request(&self, uuid: Uuid) -> bool {
         self.requests.contains_key(&uuid)
     }
@@ -1904,8 +1905,9 @@ impl TraceCollector {
     }
 
     /// Drain measurements while retaining the configuration that applies to
-    /// each reporting epoch of a reusable runtime. The absolute report boundary
-    /// includes idle time in this epoch and starts the next one.
+    /// each reporting epoch, such as an agentic run's preparation epoch before
+    /// its profile. The absolute report boundary includes idle time in this
+    /// epoch and starts the next one.
     pub(crate) fn take_report(&mut self, report_end_ms: f64) -> ReplayReport {
         debug_assert!(report_end_ms.is_finite() && report_end_ms >= self.report_start_ms);
         let mut next = Self {
