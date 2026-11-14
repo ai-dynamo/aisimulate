@@ -1,16 +1,39 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! Original implementation of the feature formulas documented in the AISimulate
-//! design at https://github.com/ai-dynamo/aisimulate/blob/6aa40ae50a75dcfd03f23d45b25a73b3a2b69b2b/python/aisimulate/docs/fpm_ml/design.md
+//! Original implementation of the feature formulas documented in the AISim
+//! design at https://github.com/ai-dynamo/aisim/blob/6aa40ae50a75dcfd03f23d45b25a73b3a2b69b2b/python/aisimulate/docs/fpm_ml/design.md
 //! No upstream implementation was copied. Canonical aggregate scores remain separate.
+//! `longest_split` and `eager` are original formulas for the kernel and CUDA
+//! graph rules cited in `docs/perf-model/methods/online-regression.md`.
 
-use super::super::estimator::RegressionFeatureAxis;
+use super::super::estimator::{RegressionFeatureAxis, RegressionFitConfig};
 use crate::{AicError, ForwardPassMetrics};
+
+/// The `fit.linear` constants of `longest_split` and `eager`, zero when
+/// absent; configuration requires the one each selected axis reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct AxisConstants {
+    max_kv_splits: u32,
+    max_cudagraph_capture_size: u32,
+}
+
+impl AxisConstants {
+    pub(super) fn of(fit: &RegressionFitConfig) -> Self {
+        let linear = fit.linear.as_ref();
+        Self {
+            max_kv_splits: linear.and_then(|l| l.max_kv_splits).unwrap_or(0),
+            max_cudagraph_capture_size: linear
+                .and_then(|l| l.max_cudagraph_capture_size)
+                .unwrap_or(0),
+        }
+    }
+}
 
 pub(super) fn project(
     scores: [f64; 2],
     metrics: &[ForwardPassMetrics],
     axes: &[RegressionFeatureAxis],
+    constants: AxisConstants,
 ) -> Result<[f64; 12], AicError> {
     use RegressionFeatureAxis::*;
     let invalid = |message: &str| AicError::InvalidForwardPassMetrics(message.into());
@@ -35,6 +58,7 @@ pub(super) fn project(
     }
     let (mut n, mut e, mut p, mut e2, mut p2, mut f) = (0.0_f64, 0.0, 0.0, 0.0, 0.0, 0.0);
     let (mut max_e, mut max_p, mut min_p) = (0.0_f64, 0.0_f64, f64::INFINITY);
+    let (mut longest_split, mut eager) = (0.0_f64, false);
     for metric in metrics {
         let scheduled = &metric.scheduled_requests;
         let count =
@@ -57,6 +81,7 @@ pub(super) fn project(
                 "request feature list length differs from scheduled request count",
             ));
         }
+        let (mut longest, mut tokens) = (0.0_f64, 0.0);
         for (&extend, &past) in extend.iter().zip(past) {
             let (x, y) = (extend as f64, past as f64);
             n += 1.0;
@@ -68,7 +93,13 @@ pub(super) fn project(
             max_e = max_e.max(x);
             max_p = max_p.max(y);
             min_p = min_p.min(y);
+            longest = longest.max(x + y);
+            tokens += x;
         }
+        // Each attention-DP rank runs its own attention kernel and CUDA graph.
+        let splits = (u64::from(constants.max_kv_splits) / count).max(1);
+        longest_split = longest_split.max(longest / splits as f64);
+        eager |= tokens > f64::from(constants.max_cudagraph_capture_size);
     }
     if n == 0.0 {
         return Err(invalid(
@@ -109,6 +140,8 @@ pub(super) fn project(
             LogCount => n.ln_1p(),
             CountSquared => n * n,
             LogPast => p.ln_1p(),
+            LongestPerSplit => longest_split,
+            EagerPass => f64::from(u8::from(eager)),
         };
     }
     if out.iter().any(|v| !v.is_finite() || *v < 0.0) {

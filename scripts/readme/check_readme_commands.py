@@ -155,16 +155,16 @@ def run_profile(profile: str, workspace: Path, output: Path, blocks: dict, manif
     env["HF_TOKEN_PATH"] = str(workspace / ".huggingface/token")
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    env["AISIMULATE_REF"] = sha
+    env["AISIM_REF"] = sha
     # Clone exactly the checked-out tree, including commits on a not-yet-merged PR.
     # The README command itself remains unchanged; no network fetch of mutable main.
     env.update(
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0=f"url.{ROOT}.insteadOf",
-        GIT_CONFIG_VALUE_0="https://github.com/ai-dynamo/aisimulate.git",
+        GIT_CONFIG_VALUE_0="https://github.com/ai-dynamo/aisim.git",
     )
     source = profile in {"source", "macos", "development"}
-    cwd = workspace / "aisimulate" if source else workspace
+    cwd = workspace / "aisim" if source else workspace
     environment = cwd / ".venv"
     if not source:
         venv.create(environment, with_pip=True)

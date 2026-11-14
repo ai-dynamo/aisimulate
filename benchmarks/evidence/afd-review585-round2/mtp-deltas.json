@@ -1,0 +1,22 @@
+{
+  "qwen_tp1_mtp": {
+    "duration_ms": {
+      "before": 46.764711000000005,
+      "after": 58.088271000000006
+    },
+    "mean_tpot_ms": {
+      "before": 4.8529542857142856,
+      "after": 5.66178
+    }
+  },
+  "qwen_tp2_mtp": {
+    "duration_ms": {
+      "before": 43.45337,
+      "after": 53.665239
+    },
+    "mean_tpot_ms": {
+      "before": 4.3765152857142855,
+      "after": 5.1059345
+    }
+  }
+}

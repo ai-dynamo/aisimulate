@@ -11,13 +11,13 @@ commands.
 
 ## Dashboard server-knob taxonomy
 
-`aisimulate/config_adapter/config/server_knob_groups.yaml` is the presentation
+`aisim/config_adapter/config/server_knob_groups.yaml` is the presentation
 source of truth for normalized dashboard knobs across vLLM, SGLang, and
 TRT-LLM. The three backends share one group taxonomy. Backend flag support
 remains separate in
-`aisimulate/generator/config/backend_config_mapping.yaml`.
+`aisim/generator/config/backend_config_mapping.yaml`.
 
-The YAML also lists knobs that the current AISimulate replay API cannot carry.
+The YAML also lists knobs that the current AISim replay API cannot carry.
 Dashboard consumers must show those knobs as unavailable instead of inventing
 an `auto` default.
 
@@ -27,13 +27,13 @@ external recipes into AIC estimate requests; it does not register a Replay runne
 
 ## Public API
 
-Import the API from `aisimulate.sdk.config_adapter`:
+Import the API from `aisim.sdk.config_adapter`:
 
 ```python
 from pathlib import Path
 
-from aisimulate.legacy_cli.api import cli_estimate
-from aisimulate.sdk.config_adapter import (
+from aisim.legacy_cli.api import cli_estimate
+from aisim.sdk.config_adapter import (
     AdapterOverrides,
     DynamoRecipeSource,
     InferenceXSource,
@@ -84,10 +84,14 @@ Helm, expand templates, or execute recipe shell. An unrendered
 
 ### 2. Generate and inspect the adaptation report
 
-Run this command from the AISimulate repository root:
+Use an active AISim development environment with the `dev` extra installed
+(`uv pip install -e './python/aisim[dev]'` from the repository root). The helper
+requires `jsonschema`, which is not included in the base install.
+
+Run this command from the AISim repository root:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo \
   --deploy /path/to/recipe/deploy.yaml \
   --perf /path/to/recipe/perf.yaml \
@@ -115,7 +119,7 @@ recipe owner or benchmark record, then pass only those confirmed values through
 `--overrides`. For example:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo \
   --deploy /path/to/recipe/deploy.yaml \
   --perf /path/to/recipe/perf.yaml \
@@ -140,7 +144,7 @@ Once every intended point is adapted and its canonical request is correct, add
 `--run-estimate` to the same command:
 
 ```bash
-uv run python .agents/skills/adapt-server-config/scripts/adapt_config.py \
+uv run python python/aisim/.agents/skills/adapt-server-config/scripts/adapt_config.py \
   --format dynamo \
   --deploy /path/to/recipe/deploy.yaml \
   --perf /path/to/recipe/perf.yaml \
@@ -153,6 +157,10 @@ The helper validates each canonical request against the packaged JSON Schema,
 lowers adapted requests through `to_cli_estimate_kwargs`, and writes returned
 estimates under `estimates`. It never executes commands embedded in the Dynamo
 files.
+
+The JSON output sets each estimate's `summary` to `null`, while preserving its
+serializable metric, metadata, `raw`, and per-operation fields. The public API
+result, including its live summary object, is unchanged.
 
 ## Request groups
 
@@ -246,7 +254,7 @@ quantization, context limits, and per-role memory fractions. Replay consumes the
 same deployment's scheduler, cache, chunked-prefill, and workload settings through
 `ReplaySpec`; its result is independent of baseline success.
 
-The [resolution strategy](../../python/aisimulate/src/aisimulate/sdk/config_adapter/README.md#resolution-strategy-source-to-replay)
+The [resolution strategy](../../python/aisim/src/aisim/sdk/config_adapter/README.md#resolution-strategy-source-to-replay)
 explains source resolution, replay configuration, provenance, and validation.
 The [accuracy audit](../../pages/e2e-accuracy/README.md#source-resolved-policy-follow-up)
 records differential evidence and remaining engine/evidence limits. Historical
@@ -306,8 +314,8 @@ programmatic adapter never evaluates template expressions or executes commands.
 
 ## Agent workflow
 
-The repo-local `.agents/skills/adapt-server-config` skill wraps the SDK for known
-formats. For an unknown format it must show inferred fields and obtain user
+The repo-local `python/aisim/.agents/skills/adapt-server-config` skill wraps the SDK
+for known formats. For an unknown format it must show inferred fields and obtain user
 confirmation before constructing canonical JSON. The skill validates every
 request against the packaged schema and runs estimates only when explicitly
 requested.

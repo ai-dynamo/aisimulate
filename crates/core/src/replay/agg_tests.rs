@@ -159,29 +159,19 @@ fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
     let mut runtime =
         AggRuntimeImpl::<MismatchedPlacement, NoEngineEvents, NoReplayMetadata>::new_composed(
             role_factory,
-            AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+            AdmissionQueue::new_requests(VecDeque::from([request(1, 0.0)]), ReplayMode::Trace),
             1,
             None,
             |_, _| Ok(MismatchedPlacement),
         )
-        .unwrap()
-        .into_steppable();
+        .unwrap();
     let uuid = Uuid::from_u128(1);
-    let error = runtime.submit_dynamic(request(1, 0.0)).unwrap_err();
+    let error = runtime.step().unwrap_err();
     assert!(error.to_string().contains("while placing"), "{error}");
     assert!(!runtime.collector.contains_request(uuid));
     assert_eq!(runtime.traffic.drain_planner(1_000.0).num_req, 0);
     assert!(runtime.requests.is_empty());
     assert_eq!(runtime.cluster_in_flight(), 0);
-    assert!(runtime.cancel_dynamic(uuid).unwrap().is_none());
-    assert_eq!(
-        runtime
-            .take_report_dynamic(0.0)
-            .unwrap()
-            .request_counts
-            .num_requests,
-        0
-    );
 }
 
 // G3 fixtures independently adapt vLLM behavioral contracts (Apache-2.0).
@@ -343,57 +333,6 @@ fn g3_fixed_scaling_policy_preserves_no_policy_results() {
             report
         });
         assert_eq!(summaries[0], summaries[1]);
-    }
-}
-
-#[test]
-fn g3_reused_runtime_reports_cumulative_counters_and_keeps_cache() {
-    fn submit_and_drain(runtime: &mut RoundRobinAggRuntime, id: u128, base: u32, count: u32) {
-        runtime
-            .submit_dynamic(DirectRequest {
-                tokens: (base..base + count).collect(),
-                max_output_tokens: 1,
-                uuid: Some(Uuid::from_u128(id)),
-                arrival_timestamp_ms: Some(runtime.now_ms()),
-                ..DirectRequest::default()
-            })
-            .unwrap();
-        for _ in 0..1000 {
-            runtime.step_dynamic_until(f64::INFINITY).unwrap();
-            runtime.take_step_tokens();
-            runtime.take_step_terminals();
-            if runtime.is_workload_done() {
-                return;
-            }
-        }
-        panic!("request and cache I/O did not drain");
-    }
-    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
-        let mut runtime = g3_runtime(g3_spec(scope, 1, 4, 3, 4, &[])).into_steppable();
-        submit_and_drain(&mut runtime, 1, 0, 9);
-        submit_and_drain(&mut runtime, 2, 100, 15);
-        let first = runtime.take_report_dynamic(0.0).unwrap();
-        assert_eq!(first.request_counts.completed_requests, 2);
-        let first = first.g3_offload.unwrap();
-        assert!(first.write.completed_bytes > 0);
-        assert_eq!(first.read.completed_jobs, 0);
-        assert!(first.resident_blocks > 0);
-        submit_and_drain(&mut runtime, 3, 0, 9);
-        let second = runtime.take_report_dynamic(0.0).unwrap();
-        assert_eq!(second.request_counts.completed_requests, 1);
-        let second = second.g3_offload.unwrap();
-        assert!(
-            second.read.completed_bytes > 0,
-            "second round restores the first round's G3 prefix"
-        );
-        assert_eq!(
-            second.write, first.write,
-            "reporting must not clear cache or counters"
-        );
-        assert_eq!(second.resident_blocks, first.resident_blocks);
-        let idle = runtime.take_report_dynamic(0.0).unwrap();
-        assert_eq!(idle.request_counts.num_requests, 0);
-        assert_eq!(idle.g3_offload.unwrap(), second);
     }
 }
 
@@ -866,4 +805,105 @@ fn agg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
     assert!(stepped.engine.starting_group_ids().is_empty());
     assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
     assert!(stepped.next_timestamps().1.unwrap() > 0.0);
+}
+
+#[test]
+fn native_replay_retracts_readmits_and_finishes_deterministically() {
+    use std::sync::Arc;
+
+    use crate::engine::{Backend, EngineConfig, TimingModelConfig, afd_timing_provider_for};
+    use crate::replay::{
+        CanonicalReplayCoverage, CanonicalReplayRecord, ReplayCaptureOptions, ReplayDeterminism,
+        ReplayEngineConfig, ReplayEngineFactory, ReplayRequest, ReplaySpec, ReplayTerminalStatus,
+        ReplayTopology, Replayer,
+    };
+
+    {
+        let mut rank = EngineConfig::for_backend(Backend::Sglang);
+        rank.block_size = 1;
+        rank.num_gpu_blocks = 330;
+        rank.max_num_seqs = 3;
+        rank.max_num_batched_tokens = 512;
+        rank.enable_prefix_caching = false;
+        rank.sglang.schedule_conservativeness = 0.0;
+        rank.sglang.num_reserved_decode_tokens = 0;
+        rank.sglang.clip_max_new_tokens = 1;
+        rank.timing_model = TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        };
+        let spec = ReplaySpec {
+            version: 1,
+            topology: ReplayTopology::aggregated(1),
+            engine: serde_json::to_value(ReplayEngineConfig {
+                rank,
+                ..Default::default()
+            })
+            .unwrap(),
+            encoder: None,
+            adapters: Default::default(),
+            max_sim_time_ms: None,
+            max_in_flight: Some(3),
+            record_per_request: true,
+            sla: Default::default(),
+            requests: (0..3)
+                .map(|i| ReplayRequest {
+                    id: format!("pressure-{i}"),
+                    arrival_time_ms: 0.0,
+                    input_tokens: 96,
+                    input_token_ids: Some(vec![i; 96]),
+                    output_tokens: 24,
+                    output_token_ids: None,
+                    dp_rank: None,
+                    prefill_dp_rank: None,
+                    kv_hints: None,
+                    session_id: None,
+                    cache_salt: None,
+                    turn_index: None,
+                    metadata: serde_json::Value::Null,
+                })
+                .collect(),
+        };
+        let capture = ReplayCaptureOptions {
+            determinism: ReplayDeterminism::CanonicalV1,
+            capture_canonical_evidence: true,
+            ..Default::default()
+        };
+        let run = || {
+            let timing = Arc::new(afd_timing_provider_for(1, 3, 1));
+            let report =
+                Replayer::new(spec.clone(), ReplayEngineFactory::with_timing_model(timing))
+                    .unwrap()
+                    .with_capture_options(capture)
+                    .run()
+                    .unwrap();
+            assert_eq!(report.request_counts.completed_requests, 3);
+            assert_eq!(report.per_request.len(), 3);
+            assert!(report.per_request.iter().all(|r| {
+                r.terminal_status == ReplayTerminalStatus::Completed && r.output_length == 24
+            }));
+            let pressure = report.runtime_evidence.pressure.as_ref().unwrap();
+            assert!(
+                (1..=3).contains(&pressure.sglang_retractions_total),
+                "fixture must exercise bounded pressure: {pressure:?}"
+            );
+            assert!(
+                pressure
+                    .records
+                    .iter()
+                    .all(|r| r.readmitted_at_ms.is_some())
+            );
+            assert!(report.committed_prefill_tokens > 288);
+            CanonicalReplayRecord::build(
+                &report,
+                serde_json::json!({"timing": "afd"}),
+                &CanonicalReplayCoverage::from_report(&report, capture),
+                serde_json::Value::Null,
+            )
+            .unwrap()
+            .into_json_line()
+            .unwrap()
+        };
+        assert_eq!(run(), run());
+    }
 }

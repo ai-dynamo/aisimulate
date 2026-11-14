@@ -12,10 +12,10 @@ Use the compiler rather than translating fields between them by hand.
 ## Public configuration to runner
 
 ```python
-from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.runner import EngineReplayRunnerFactory
-from aisimulate.sweeper.replay import ReplayOutputRequirements
+from aisim.compiler import prediction_to_replay_spec
+from aisim.config.cli import CorePredictionConfig
+from aisim.runner import EngineReplayRunnerFactory
+from aisim.sweeper.replay import ReplayOutputRequirements
 
 config = CorePredictionConfig.from_yaml("prediction.yaml")
 spec = prediction_to_replay_spec(config)
@@ -44,7 +44,6 @@ prediction_to_replay_spec(
     config: CorePredictionConfig,
     *,
     adapter_specs: dict[str, AdapterReplaySpec] | None = None,
-    afd_performance_model: AFDPerformanceModel | None = None,
     execution_mode: str = "offline",
 ) -> ReplaySpec
 ```
@@ -95,7 +94,7 @@ simulation dashboard. Python callers can render an already captured report:
 
 ```python
 from pathlib import Path
-from aisimulate.replay.dashboard import render_replay_dashboard, write_replay_dashboard
+from aisim.replay.dashboard import render_replay_dashboard, write_replay_dashboard
 
 # Existing CLI output with prediction.json and the three telemetry JSONL files.
 path = render_replay_dashboard(Path("./agentic-telemetry"))
@@ -119,7 +118,7 @@ callers own their resource budgets. See the
 ## Lifecycle and errors
 
 One runner is reusable within one worker. The production Engine factory loads
-`aisimulate._runtime` lazily and has no Dynamo dependency. A missing extension
+`aisim._runtime` lazily and has no Dynamo dependency. A missing extension
 raises `RunnerUnavailableError`; an invalid runtime or unsupported runtime
 combination raises the runner's validation error. `close()` is currently a
 no-op for this built-in runner; consumers must still call it for other runners.
@@ -131,6 +130,14 @@ handling, especially for long agentic profiles. Use
 through the CLI or guarded Sweeper. The native JSON bridge and private runner
 lowering helpers are implementation interfaces, not replacements for this API.
 
-Source: [compiler](../../../python/aisimulate/src/aisimulate/compiler.py),
-[runner](../../../python/aisimulate/src/aisimulate/runner.py), and
-[contract definitions](../../../python/aisimulate/src/aisimulate/sweeper/replay.py).
+`run_replay_json` reads a payload with one `spec` key that holds a replay, or a
+configured key such as `capture_telemetry` or `traffic`, as a configured
+payload. A field error in a configured payload is reported, never replaced by
+a bare `ReplaySpec` run. Any other payload is a bare `ReplaySpec`, whose extra
+keys (also non-replay `spec` keys) are ignored. Repeated `spec` keys are
+refused when one holds a replay. The Engine runner always sends a configured
+payload.
+
+Source: [compiler](../../../python/aisim/src/aisim/compiler.py),
+[runner](../../../python/aisim/src/aisim/runner.py), and
+[contract definitions](../../../python/aisim/src/aisim/sweeper/replay.py).

@@ -8,7 +8,7 @@ from scripts.readme.readme_report import PROFILES, summarize, transition
 RUN = {
     "id": 123,
     "head_sha": "abc",
-    "html_url": "https://github.com/ai-dynamo/aisimulate/actions/runs/123",
+    "html_url": "https://github.com/ai-dynamo/aisim/actions/runs/123",
 }
 
 
