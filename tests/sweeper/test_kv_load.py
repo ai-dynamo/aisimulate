@@ -187,6 +187,60 @@ def test_disagg_kv_capacity_uses_role_hardware(monkeypatch):
     assert seen == ["prefill_sku", "decode_sku"]
 
 
+def test_disagg_kv_capacity_sizes_each_role_with_its_own_context_length(monkeypatch):
+    role = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    sample = _sample("disagg")
+    sample.update(context_length=2048, prefill_context_length=1024, decode_context_length=512)
+    seen = {}
+
+    def fake_capacity(*args, worker_type, context_length, **kwargs):
+        seen[worker_type] = context_length
+        return 100_000
+
+    monkeypatch.setattr("aisim.sweeper.kv_load._per_rank_capacity_tokens", fake_capacity)
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=1000, osl=1000, kv_load_ratio=1.0, num_request_ratio=10),
+        parallel_config=DisaggParallelConfig(prefill=role, decode=role),
+        ratio=1.0,
+        backend_version="v",
+    )
+
+    assert seen == {"prefill": 1024, "decode": 512}
+
+
+@pytest.mark.parametrize(
+    ("mode", "fields", "expected"),
+    [
+        ("disagg", {"context_length": 2048, "prefill_context_length": 1024}, {"prefill": 1024, "decode": 2048}),
+        ("agg", {"context_length": 2048, "agg_context_length": 1024}, {"aggregated": 1024}),
+        ("agg", {"context_length": 2048}, {"aggregated": 2048}),
+        ("agg", {}, {"aggregated": None}),
+    ],
+)
+def test_kv_capacity_reads_the_role_context_before_the_global_one(monkeypatch, mode, fields, expected):
+    role = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    parallel = DisaggParallelConfig(prefill=role, decode=role) if mode == "disagg" else role
+    sample = _sample(mode)
+    sample.update(fields)
+    seen = {}
+
+    def fake_capacity(*args, worker_type, context_length, **kwargs):
+        seen[worker_type] = context_length
+        return 100_000
+
+    monkeypatch.setattr("aisim.sweeper.kv_load._per_rank_capacity_tokens", fake_capacity)
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=1000, osl=1000, kv_load_ratio=1.0, num_request_ratio=10),
+        parallel_config=parallel,
+        ratio=1.0,
+        backend_version="v",
+    )
+
+    assert seen == expected
+
+
 def test_zero_ratio_maps_to_one_request(monkeypatch):
     config = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
     monkeypatch.setattr(

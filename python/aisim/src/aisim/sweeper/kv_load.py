@@ -142,7 +142,8 @@ def _role_capacity_tokens(
             ),
             fpm_profile_json=json.dumps(profile, sort_keys=True) if profile is not None else None,
             worker_type="aggregated" if role == "agg" else role,
-            context_length=sample.get("context_length"),
+            # The role's own context first, then the global one, as its deployment resolves max_model_len.
+            context_length=sample.get(f"{role}_context_length") or sample.get("context_length"),
             nextn=int(resolved.get("nextn", sample.get("aic_nextn")) or 0),
             model_controls=tuple(model_controls.items()),
         )
