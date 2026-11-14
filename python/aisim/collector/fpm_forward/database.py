@@ -485,6 +485,13 @@ def validate_formal_database_commit(
             f"parquet={parquet.metadata.num_rows}, metadata={row_count!r}"
         )
     rows = parquet.read().to_pylist()
+    if payload["schema_version"] == 8 and any(
+        row.get("measurement_policy") != POWER_WINDOW_MEASUREMENT_POLICY for row in rows
+    ):
+        raise ValueError(
+            f"committed schema-8 FPM database has rows without measurement_policy="
+            f"{POWER_WINDOW_MEASUREMENT_POLICY!r}: {parquet_path}"
+        )
     _validate_kv_seed_classification(payload, rows)
     identities = _run_identities_by_cell(rows, source="committed")
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -793,10 +800,17 @@ def write_formal_database(
                     "identity; database left unchanged"
                 )
                 return parquet_path, metadata_path, tuple(skipped_cells)
-        # Any power-window row makes the whole pair schema 8. The sidecar policy
-        # is authoritative; every other row keeps its own row policy and
-        # publishes power_w as null.
-        powered = any(row.get("measurement_policy") == POWER_WINDOW_MEASUREMENT_POLICY for row in [*merged, *rows])
+        # Schema 8 binds every row to the power-window policy, so one pair
+        # cannot hold power-window and latency-only rows. Refuse the merge
+        # before anything is written; the existing pair stays as committed.
+        policies = {row.get("measurement_policy") for row in [*merged, *rows]}
+        powered = POWER_WINDOW_MEASUREMENT_POLICY in policies
+        if powered and policies != {POWER_WINDOW_MEASUREMENT_POLICY}:
+            raise ValueError(
+                "cannot mix power-window and latency-only FPM rows in one database: schema 8 requires every "
+                f"row to carry measurement_policy={POWER_WINDOW_MEASUREMENT_POLICY!r}. Publish to a clean "
+                f"destination, or collect every cell with the same --fpm-measure-power setting: {parquet_path}"
+            )
         if powered:
             for row in [*merged, *rows]:
                 row.setdefault("power_w", None)

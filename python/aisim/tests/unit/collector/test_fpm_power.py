@@ -509,44 +509,47 @@ def _seal_as_schema_6(metadata_path, parquet_path):
     metadata_path.write_text(json.dumps(sidecar))
 
 
+def _sealed(metadata, parquet):
+    return metadata.read_bytes(), parquet.read_bytes()
+
+
 @pytest.mark.parametrize("existing_schema", [6, 7])
-def test_powered_run_republishes_an_existing_pair_as_schema_eight(tmp_path, existing_schema):
+def test_powered_run_cannot_merge_into_a_latency_only_pair(tmp_path, existing_schema):
     systems_root = tmp_path / "systems"
     old_plan, old_cell, old_dir = _write_cell(tmp_path / "old", phase="prefill", dp=2, schema_version=2)
     old_rows = aggregate_cell(old_plan, old_cell, old_dir, expected_attempt_id="attempt")
     parquet, metadata, _ = write_formal_database(old_plan, old_rows, systems_root=systems_root)
     if existing_schema == 6:
         _seal_as_schema_6(metadata, parquet)
+    before = _sealed(metadata, parquet)
 
     plan, cell, cell_dir = _tp2_decode(tmp_path / "new")
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
-    # The same prefill cell republished by another attempt stays first-publisher-owned.
-    rerun = [dict(old_rows[0], collector_attempt_id="attempt-2", runtime_run_id="run-2")]
-    parquet, metadata, skipped = write_formal_database(plan, rows + rerun, systems_root=systems_root)
+    with pytest.raises(ValueError, match="cannot mix power-window and latency-only FPM rows"):
+        write_formal_database(plan, rows, systems_root=systems_root)
+    assert _sealed(metadata, parquet) == before
 
-    assert skipped == (old_cell.cell_id,)
+
+def test_latency_only_run_cannot_merge_into_a_power_window_pair(tmp_path):
+    systems_root = tmp_path / "systems"
+    plan, cell, cell_dir = _tp2_decode(tmp_path / "powered")
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    parquet, metadata, _ = write_formal_database(plan, rows, systems_root=systems_root)
     sidecar = json.loads(metadata.read_text())
-    assert sidecar["schema_version"] == 8
-    assert sidecar["measurement_policy"] == POWER_WINDOW_MEASUREMENT_POLICY
-    assert sidecar["measurement_repeats"] == 1
-    table = pq.read_table(parquet)
-    assert table.schema.field("power_w").type == pa.float64()
-    published = {row["cell_id"]: row for row in table.to_pylist()}
-    assert published[old_cell.cell_id]["power_w"] is None
-    assert published[old_cell.cell_id]["measurement_policy"] == SINGLE_SAMPLE_MEASUREMENT_POLICY
-    assert published[old_cell.cell_id]["collector_attempt_id"] == "attempt"
-    assert published[cell.cell_id]["power_w"] == pytest.approx(310.0)
+    assert (sidecar["schema_version"], sidecar["measurement_policy"]) == (8, POWER_WINDOW_MEASUREMENT_POLICY)
+    assert {row["measurement_policy"] for row in pq.read_table(parquet).to_pylist()} == {
+        POWER_WINDOW_MEASUREMENT_POLICY
+    }
+    before = _sealed(metadata, parquet)
 
-    # A latency-only run merged later keeps the pair at schema 8.
     later_plan, later_cell, later_dir = _write_cell(tmp_path / "later", phase="decode", schema_version=2)
     later_rows = [
         dict(row, cell_id="fpm-power-later")
         for row in aggregate_cell(later_plan, later_cell, later_dir, expected_attempt_id="attempt")
     ]
-    parquet, metadata, _ = write_formal_database(later_plan, later_rows, systems_root=systems_root)
-    assert json.loads(metadata.read_text())["schema_version"] == 8
-    later = [row for row in pq.read_table(parquet).to_pylist() if row["cell_id"] == "fpm-power-later"]
-    assert {row["power_w"] for row in later} == {None}
+    with pytest.raises(ValueError, match="cannot mix power-window and latency-only FPM rows"):
+        write_formal_database(later_plan, later_rows, systems_root=systems_root)
+    assert _sealed(metadata, parquet) == before
 
 
 @pytest.mark.parametrize("plan_power", [False, None])
@@ -639,19 +642,26 @@ def test_commit_validation_accepts_schema_seven_and_eight(tmp_path):
 
     plan, cell, cell_dir = _tp2_decode(tmp_path / "new")
     parquet, metadata, _ = write_formal_database(
-        plan, aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt"), systems_root=systems_root
+        plan, aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt"), systems_root=tmp_path / "powered"
     )
     assert validate_formal_database_commit(parquet, metadata, plan)["schema_version"] == 8
-    # A checkpoint sealed against the schema-7 pair still validates after the
-    # republish: its rows gained only a null power_w.
-    resumed = validate_formal_database_commit(
-        parquet,
-        metadata,
-        old_plan,
-        expected_cell_rows=sealed["cell_rows"],
-        expected_attempt_ids={old_cell.cell_id: "attempt"},
+
+
+def test_commit_validation_rejects_schema_eight_rows_without_the_power_policy(tmp_path):
+    plan, cell, cell_dir = _tp2_decode(tmp_path)
+    parquet, metadata, _ = write_formal_database(
+        plan, aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt"), systems_root=tmp_path / "systems"
     )
-    assert resumed["cell_rows"] == sealed["cell_rows"]
+    table = pq.read_table(parquet)
+    policies = pa.array([SINGLE_SAMPLE_MEASUREMENT_POLICY] * table.num_rows)
+    table = table.set_column(table.schema.get_field_index("measurement_policy"), "measurement_policy", policies)
+    pq.write_table(table, parquet)
+    sidecar = json.loads(metadata.read_text())
+    sidecar["parquet_sha256"] = hashlib.sha256(parquet.read_bytes()).hexdigest()
+    metadata.write_text(json.dumps(sidecar))
+
+    with pytest.raises(ValueError, match="rows without measurement_policy"):
+        validate_formal_database_commit(parquet, metadata, plan)
 
 
 def test_commit_validation_requires_the_power_column_in_schema_eight(tmp_path):
