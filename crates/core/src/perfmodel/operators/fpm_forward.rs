@@ -371,7 +371,7 @@ impl FpmForwardOp {
         // support (important for MiniMax-M3's currently unported MSA family).
         let no_sol = |_coords: &[f64]| f64::NAN;
         let cfg = interp_config(FpmPhase::Decode, &no_sol);
-        let row_floor = |row: u32| -> Result<f64, AicError> {
+        let row_floor = |row: u32| -> Result<(f64, f64), AicError> {
             let (kv_floor, _) = cell.decode_curve_bounds.get(&row).ok_or_else(|| {
                 data_err(format!(
                     "FPM decode baseline row {row} has no collected KV curve."
@@ -379,11 +379,11 @@ impl FpmForwardOp {
             })?;
             index
                 .resolve_value(&cfg, &[row as f64, *kv_floor as f64])
-                .map(|value| value.latency)
+                .map(|value| (value.latency, value.power))
         };
 
         let batch = batch_size as f64;
-        let latency = if let Some((lo_row, hi_row)) = Self::decode_bracket_rows(cell, batch) {
+        let floor = if let Some((lo_row, hi_row)) = Self::decode_bracket_rows(cell, batch) {
             // Drop a bracket row from the baseline exactly when
             // `decode_bracket` drops it from the paired query. Blending a row
             // the query could not use leaves part of the shared-pass cost in
@@ -406,7 +406,7 @@ impl FpmForwardOp {
                     } else {
                         let hi_value = row_floor(hi_row)?;
                         let weight = (batch - lo_row as f64) / (hi_row as f64 - lo_row as f64);
-                        lo_value + (hi_value - lo_value) * weight
+                        blend_pair(lo_value, hi_value, weight)
                     }
                 }
             }
@@ -419,12 +419,13 @@ impl FpmForwardOp {
             let kv_floor = batch_size.max(domain[1].0);
             return self.resolve(db, cell, &[batch, kv_floor as f64]);
         };
+        let (latency, power) = floor;
         if !latency.is_finite() || latency <= 0.0 {
             return Err(data_err(format!(
                 "FPM decode baseline interpolation produced an invalid latency ({latency}) at batch_size={batch_size}."
             )));
         }
-        Ok(PerformanceResult::new(latency, Source::Silicon))
+        Ok(powered_result(latency, power))
     }
 
     /// Domain gate + ScatteredSites resolution, mirroring `FPMForwardOp._resolve`.
@@ -546,18 +547,20 @@ impl FpmForwardOp {
         };
         let cfg = interp_config(self.phase, &sol);
         if self.phase == FpmPhase::Decode {
-            if let Some(latency) = self.decode_bracket(cell, coords, index, &cfg)? {
+            if let Some((latency, power)) = self.decode_bracket(cell, coords, index, &cfg)? {
                 if !latency.is_finite() || latency <= 0.0 {
                     return Err(data_err(format!(
                         "FPM decode bracket interpolation produced an invalid latency ({latency}) at {coords:?}."
                     )));
                 }
-                return Ok(PerformanceResult::new(latency, Source::Silicon));
+                return Ok(powered_result(latency, power));
             }
         }
-        let latency = index
+        // Power is intensive: the clamp rescales latency only, so energy
+        // follows the scaled latency.
+        let (latency, power) = index
             .resolve_value(&cfg, coords)
-            .map(|value| value.latency * clamp_scale)
+            .map(|value| (value.latency * clamp_scale, value.power))
             .map_err(|err| match sol_failure.borrow_mut().take() {
                 Some(sol_err) => data_err(format!("{err}; SOL roofline unavailable: {sol_err}")),
                 None => err,
@@ -568,8 +571,8 @@ impl FpmForwardOp {
                 self.phase.as_str()
             )));
         }
-        // Latency-only dataset; scale_factor is fixed 1.0 in Python.
-        Ok(PerformanceResult::new(latency, Source::Silicon))
+        // scale_factor is fixed 1.0 in Python.
+        Ok(powered_result(latency, power))
     }
 
     fn query_direct_with_coverage(
@@ -936,7 +939,7 @@ impl FpmForwardOp {
         coords: &[f64],
         index: &crate::perf_database::perf_interp::SiteIndex,
         cfg: &OpInterpConfig,
-    ) -> Result<Option<f64>, AicError> {
+    ) -> Result<Option<(f64, f64)>, AicError> {
         let (batch, kv) = (coords[0], coords[1]);
         let Some((lo_row, hi_row)) = Self::decode_bracket_rows(cell, batch) else {
             return Ok(None);
@@ -951,13 +954,13 @@ impl FpmForwardOp {
                 cell.decode_curve_bounds[&lo_row], cell.decode_curve_bounds[&hi_row]
             )));
         }
-        let row_value = |row: u32| -> Result<f64, AicError> {
+        let row_value = |row: u32| -> Result<(f64, f64), AicError> {
             // Own-curve evaluation (coverage pre-checked): the engine's
             // bisect on that row's own curve — cross-batch transfer never
             // runs.
             index
                 .resolve_value(cfg, &[row as f64, kv])
-                .map(|value| value.latency)
+                .map(|value| (value.latency, value.power))
         };
         if !(lo_ok && hi_ok) {
             let row = if lo_ok { lo_row } else { hi_row };
@@ -969,7 +972,7 @@ impl FpmForwardOp {
         }
         let hi_value = row_value(hi_row)?;
         let weight = (batch - lo_row as f64) / (hi_row as f64 - lo_row as f64);
-        Ok(Some(lo_value + (hi_value - lo_value) * weight))
+        Ok(Some(blend_pair(lo_value, hi_value, weight)))
     }
 
     /// Return the padded-graph bracket rows for an off-lattice decode batch.
@@ -1014,6 +1017,26 @@ impl FpmForwardOp {
             cell.model_path
         ))
     }
+}
+
+/// Blend `(latency, power)` pairs along the batch axis with one weight.
+fn blend_pair((lo_ms, lo_w): (f64, f64), (hi_ms, hi_w): (f64, f64), weight: f64) -> (f64, f64) {
+    (
+        lo_ms + (hi_ms - lo_ms) * weight,
+        lo_w + (hi_w - lo_w) * weight,
+    )
+}
+
+/// SOL-path result with `energy = power * latency` (W·ms). Power that is not
+/// finite and positive (a latency-only v6/v7 leaf, or a resolution that
+/// touched an unpowered v8 row; AISIM-1973 D8) yields energy 0: uncovered.
+fn powered_result(latency: f64, power: f64) -> PerformanceResult {
+    let energy = if power.is_finite() && power > 0.0 {
+        power * latency
+    } else {
+        0.0
+    };
+    PerformanceResult::with_energy(latency, energy, Source::Silicon)
 }
 
 fn fpm_coordinates(phase: FpmPhase, coords: &[f64]) -> FpmCoordinates {
@@ -2770,5 +2793,339 @@ mod tests {
                 .to_string()
                 .contains("No FPM cell matches")
         );
+    }
+
+    // ---- schema-8 energy (AISIM-1973 D8, P1) ----
+    //
+    // Expected energies are the fixtures' written cells: power in W times the
+    // resolved latency in ms. Blended expectations restate the documented
+    // weights (`decode_bracket`, `perf_interp.rs` IDW and in-curve lerp)
+    // with the same weight applied to latency and power.
+
+    use crate::perf_database::fpm_forward::FPM_FORWARD_POWER_MEASUREMENT_POLICY;
+    use crate::perf_database::fpm_forward::tests::{PowerCell, RowSpec};
+
+    /// The same rows as a v8 pair: `power(index)` W per row, `None` = null.
+    fn with_power(rows: Vec<RowSpec>, power: impl Fn(usize) -> Option<f64>) -> Vec<RowSpec> {
+        rows.into_iter()
+            .enumerate()
+            .map(|(index, row)| RowSpec {
+                power_w: Some(PowerCell::Double(power(index))),
+                ..row
+            })
+            .collect()
+    }
+
+    /// Writes `rows` as a pair. Schema 8 binds every row to the sidecar
+    /// policy, so powered rows carry the power-window row policy.
+    fn db_for(rows: impl IntoIterator<Item = RowSpec>) -> (tempfile::TempDir, PerfDatabase) {
+        let rows: Vec<RowSpec> = rows
+            .into_iter()
+            .map(|row| RowSpec {
+                measurement: row
+                    .power_w
+                    .is_some()
+                    .then_some((FPM_FORWARD_POWER_MEASUREMENT_POLICY, 1)),
+                ..row
+            })
+            .collect();
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        (tmp, db)
+    }
+
+    fn close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() <= 1e-9 * expected.abs().max(1.0),
+            "{actual} != {expected}"
+        );
+    }
+
+    fn decode_row(batch_size: u32, kv: u32, latency_ms: f64) -> RowSpec {
+        RowSpec {
+            batch_size,
+            total_kv_read_tokens: kv,
+            latency_ms,
+            ..RowSpec::default()
+        }
+    }
+
+    /// Default rows at 200 W + 50 W * row index: prefill (1, 2048, 2048) is
+    /// row 3 (350 W), decode (8, 8) / (8, 4096) / (8, 65536) are rows 5-7
+    /// (450 / 500 / 550 W).
+    fn default_power(index: usize) -> Option<f64> {
+        Some(200.0 + 50.0 * index as f64)
+    }
+
+    #[test]
+    fn v8_energy_is_power_times_latency_and_v6_energy_is_zero() {
+        let (_v8, powered) = db_for(with_power(default_rows(), default_power));
+        let (_v6, legacy) = db_for(default_rows());
+        let (decode, prefill) = (op(FpmPhase::Decode), op(FpmPhase::Prefill));
+        let w = (2048.0 - 8.0) / (4096.0 - 8.0);
+        for (db, is_powered) in [(&powered, true), (&legacy, false)] {
+            let exact = decode.query(db, &ctx(8, 512, 0)).unwrap();
+            let prefix = prefill.query(db, &ctx(1, 2048, 2048)).unwrap();
+            let lerp = decode.query(db, &ctx(8, 256, 0)).unwrap();
+            let floor = decode.query_pass_baseline(db, 8, 4096.0).unwrap();
+            assert_eq!(
+                [exact.latency_ms, prefix.latency_ms, floor.latency_ms],
+                [7.0, 24.0, 6.0]
+            );
+            close(lerp.latency_ms, 6.0 + w);
+            if is_powered {
+                assert_eq!(exact.energy_wms, 500.0 * 7.0);
+                assert_eq!(prefix.energy_wms, 350.0 * 24.0);
+                assert_eq!(floor.energy_wms, 450.0 * 6.0);
+                close(lerp.energy_wms, (450.0 + 50.0 * w) * (6.0 + w));
+            } else {
+                for result in [&exact, &prefix, &lerp, &floor] {
+                    assert_eq!(result.energy_wms, 0.0);
+                }
+            }
+        }
+        let latency = |db: &PerfDatabase| decode.query(db, &ctx(8, 256, 0)).unwrap().latency_ms;
+        assert_eq!(latency(&powered).to_bits(), latency(&legacy).to_bits());
+    }
+
+    /// D8: a resolution that touches an unpowered row has energy 0 with the
+    /// fully powered latency; queries on powered rows of the same cell keep
+    /// their energy.
+    #[test]
+    fn unpowered_row_zeroes_energy_of_hits_and_lerps_that_touch_it() {
+        let (_full, full) = db_for(with_power(default_rows(), default_power));
+        // Row 6 is decode (8, 4096).
+        let (_partial, partial) = db_for(with_power(default_rows(), |index| {
+            (index != 6).then(|| default_power(index).unwrap())
+        }));
+        let decode = op(FpmPhase::Decode);
+        for query in [ctx(8, 512, 0), ctx(8, 256, 0)] {
+            let powered = decode.query(&full, &query).unwrap();
+            let unpowered = decode.query(&partial, &query).unwrap();
+            assert!(powered.energy_wms > 0.0);
+            assert_eq!(unpowered.energy_wms, 0.0);
+            assert_eq!(unpowered.latency_ms.to_bits(), powered.latency_ms.to_bits());
+        }
+        let top = decode.query(&partial, &ctx(8, 8192, 0)).unwrap();
+        assert_eq!(top.energy_wms, 550.0 * 9.0);
+        let floor = decode.query_pass_baseline(&partial, 8, 4096.0).unwrap();
+        assert_eq!(floor.energy_wms, 450.0 * 6.0);
+    }
+
+    #[test]
+    fn decode_bracket_blends_power_with_the_latency_weight() {
+        let power = |batch: u32| match batch {
+            496 => 300.0,
+            497 => 400.0,
+            512 => 500.0,
+            513 => 600.0,
+            _ => 800.0,
+        };
+        // decode_bracket_resolution_and_coverage_guard's rows.
+        let rows = |unpowered: Option<(u32, u32)>| {
+            let mut rows = Vec::new();
+            for (b, base) in [(496u32, 9.5), (497, 10.0), (512, 10.5)] {
+                for (i, kv) in [1024u32, 2048, 4096].into_iter().enumerate() {
+                    rows.push(decode_row(b, kv, base + i as f64));
+                }
+            }
+            for (i, kv) in [1024u32, 2048, 4096].into_iter().enumerate() {
+                rows.push(decode_row(513, kv, 31.0 + 3.0 * i as f64));
+            }
+            for (i, kv) in [8192u32, 16384].into_iter().enumerate() {
+                rows.push(decode_row(1024, kv, 62.0 + 3.0 * i as f64));
+            }
+            rows.into_iter()
+                .map(|row| {
+                    let key = (row.batch_size, row.total_kv_read_tokens);
+                    let watts = (Some(key) != unpowered).then(|| power(key.0));
+                    RowSpec {
+                        power_w: Some(PowerCell::Double(watts)),
+                        ..row
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let dec = op(FpmPhase::Decode);
+        let (_full, full) = db_for(rows(None));
+        // Both sides: bracket {497, 512} at weight (500 - 497) / 15 = 0.2.
+        let both = dec.query_totals(&full, &[500.0, 2048.0]).unwrap();
+        close(both.latency_ms, 11.0 + 0.5 * 0.2);
+        close(both.energy_wms, (400.0 + 100.0 * 0.2) * (11.0 + 0.5 * 0.2));
+        // One side: only row 513 covers kv 2048 for b = 600.
+        let one = dec.query_totals(&full, &[600.0, 2048.0]).unwrap();
+        assert_eq!((one.latency_ms, one.energy_wms), (34.0, 600.0 * 34.0));
+
+        // D8: the hi side (512, 2048) unpowered.
+        let (_partial, partial) = db_for(rows(Some((512, 2048))));
+        let dropped = dec.query_totals(&partial, &[500.0, 2048.0]).unwrap();
+        assert_eq!(dropped.energy_wms, 0.0);
+        assert_eq!(dropped.latency_ms.to_bits(), both.latency_ms.to_bits());
+        let other = dec.query_totals(&partial, &[500.0, 1024.0]).unwrap();
+        close(other.energy_wms, (400.0 + 100.0 * 0.2) * (10.0 + 0.5 * 0.2));
+
+        // lo == hi: rungs {8, 9}; b = 8.5 brackets {9, 9}.
+        let rows: Vec<RowSpec> = [(8u32, 4.0, 100.0), (9, 6.0, 200.0), (10, 8.0, 300.0)]
+            .into_iter()
+            .flat_map(|(b, latency, watts)| {
+                [(1024u32, latency), (2048, latency + 1.0)].map(|(kv, latency)| RowSpec {
+                    power_w: Some(PowerCell::Double(Some(watts))),
+                    ..decode_row(b, kv, latency)
+                })
+            })
+            .collect();
+        let (_same, same) = db_for(rows);
+        let single = dec.query_totals(&same, &[8.5, 1024.0]).unwrap();
+        assert_eq!((single.latency_ms, single.energy_wms), (6.0, 200.0 * 6.0));
+    }
+
+    #[test]
+    fn pass_baseline_blends_floor_power_with_the_latency_weight() {
+        // pass_baseline_holds_each_curve_floor_then_interpolates_batch's rows.
+        let rows = |floor_16_power: Option<f64>| {
+            [
+                (1u32, 2u32, 2.0, Some(100.0)),
+                (1, 64, 3.0, Some(100.0)),
+                (2, 4, 2.5, Some(150.0)),
+                (2, 64, 3.5, Some(150.0)),
+                (8, 16, 4.0, Some(200.0)),
+                (8, 64, 5.0, Some(200.0)),
+                (9, 18, 5.0, Some(300.0)),
+                (9, 64, 6.0, Some(300.0)),
+                (16, 32, 9.0, floor_16_power),
+                (16, 64, 10.0, Some(500.0)),
+                (17, 34, 10.0, Some(600.0)),
+                (17, 64, 11.0, Some(600.0)),
+            ]
+            .map(|(b, kv, latency, watts)| RowSpec {
+                power_w: Some(PowerCell::Double(watts)),
+                ..decode_row(b, kv, latency)
+            })
+        };
+        let dec = op(FpmPhase::Decode);
+        let (_full, full) = db_for(rows(Some(500.0)));
+        // Bracket {9, 16} floors (9, 18) and (16, 32) at weight 6/7.
+        let w = (15.0 - 9.0) / (16.0 - 9.0);
+        let both = dec.query_pass_baseline(&full, 15, 40.0).unwrap();
+        close(both.latency_ms, 5.0 + 4.0 * w);
+        close(both.energy_wms, (300.0 + 200.0 * w) * (5.0 + 4.0 * w));
+        let exact = dec.query_pass_baseline(&full, 16, 40.0).unwrap();
+        assert_eq!((exact.latency_ms, exact.energy_wms), (9.0, 500.0 * 9.0));
+
+        let (_partial, partial) = db_for(rows(None));
+        let dropped = dec.query_pass_baseline(&partial, 15, 40.0).unwrap();
+        assert_eq!(dropped.energy_wms, 0.0);
+        assert_eq!(dropped.latency_ms.to_bits(), both.latency_ms.to_bits());
+    }
+
+    /// SOL transfer: power is the IDW mean of the neighbour sites' power with
+    /// the weights that transfer latency; one unpowered neighbour leaf makes
+    /// the blend uncovered.
+    #[test]
+    fn sol_transfer_blends_neighbour_power_and_drops_unpowered_neighbours() {
+        // decode_pairless_batch_resolves_through_the_dsa_sol_transfer's rows.
+        let rows = |unpowered: (u32, u32)| {
+            [
+                (8u32, 65536u32, 20.0, 400.0),
+                (8, 131072, 22.0, 500.0),
+                (16, 131072, 30.0, 700.0),
+                (16, 262144, 33.0, 900.0),
+            ]
+            .map(|(b, kv, latency, watts)| RowSpec {
+                power_w: Some(PowerCell::Double(((b, kv) != unpowered).then_some(watts))),
+                ..decode_row(b, kv, latency)
+            })
+        };
+        let mut decode = op(FpmPhase::Decode);
+        decode.sol_ops = glm_dsa_sol_ops("generation_attention");
+        // (16, 262144) is not a leaf of the b = 12 transfer at kv 131072.
+        let (_full, full) = db_for(rows((16, 262144)));
+        let got = decode.query_totals(&full, &[12.0, 131072.0]).unwrap();
+        let (w_lo, w_hi) = (idw_weight(8.0, 12.0), idw_weight(16.0, 12.0));
+        let power = (w_lo * 500.0 + w_hi * 700.0) / (w_lo + w_hi);
+        close(got.energy_wms, power * got.latency_ms);
+
+        let (_partial, partial) = db_for(rows((16, 131072)));
+        let dropped = decode.query_totals(&partial, &[12.0, 131072.0]).unwrap();
+        assert_eq!(dropped.energy_wms, 0.0);
+        assert_eq!(dropped.latency_ms.to_bits(), got.latency_ms.to_bits());
+        // An exact hit on a powered row of the same cell keeps its energy.
+        let exact = decode.query_totals(&partial, &[8.0, 65536.0]).unwrap();
+        assert_eq!(exact.energy_wms, 400.0 * 20.0);
+    }
+
+    /// The high-pressure prefill clamp rescales latency by the SOL ratio and
+    /// leaves power unchanged, so energy scales with the latency.
+    #[test]
+    fn prefill_clamp_scales_latency_and_energy_but_not_power() {
+        // clamp_tiers_on_the_kv_pressure_ceiling's rows, at 400 W.
+        let mut rows = Vec::new();
+        for (b, bump) in [(1u32, 1.0), (2, 1.02), (4, 1.04)] {
+            for (total, lat) in [(1024u32, 10.0), (2048, 20.0), (4096, 40.0)] {
+                for (kv, scale) in [(0, 1.0), (total, 1.2), (4 * total, 1.8)] {
+                    rows.push(RowSpec {
+                        workload_kind: "prefill",
+                        batch_size: b,
+                        total_prefill_tokens: total,
+                        total_kv_read_tokens: kv,
+                        latency_ms: lat * bump * scale,
+                        power_w: Some(PowerCell::Double(Some(400.0))),
+                        ..RowSpec::default()
+                    });
+                }
+            }
+        }
+        let (_tmp, db) = db_for(rows);
+        let mut prefill = op(FpmPhase::Prefill);
+        prefill.sol_ops = glm_dsa_sol_ops("context_attention");
+        // Restated back-mapping (see the DSA transfer test above).
+        let sol = |batch: f64, total_prefill: f64, total_kv: f64| {
+            crate::operators::fpm_sol::op_sol_latency_ms(
+                &prefill.sol_ops[0],
+                &db,
+                total_prefill,
+                batch,
+                (total_prefill / batch).max(1.0),
+                total_kv / batch,
+            )
+            .unwrap()
+        };
+        let scale = (sol(16.0, 4096.0, 16384.0) / sol(4.0, 4096.0, 16384.0)).min(1.0);
+        assert!(scale < 1.0, "{scale}");
+        let got = prefill.query_totals(&db, &[16.0, 4096.0, 16384.0]).unwrap();
+        let ceiling = 40.0 * 1.04 * 1.8;
+        close(got.latency_ms, ceiling * scale);
+        close(got.energy_wms, 400.0 * ceiling * scale);
+    }
+
+    /// P1: `method: direct` stays latency-only on a fully powered v8 pair,
+    /// with and without a coverage sink.
+    #[test]
+    fn direct_method_is_latency_only_on_a_powered_pair() {
+        let (_v8, powered) = db_for(with_power(default_rows(), default_power));
+        let (_v6, legacy) = db_for(default_rows());
+        let mut decode = op(FpmPhase::Decode);
+        decode.interpolation = FpmInterpolation::Direct;
+        let mut prefill = op(FpmPhase::Prefill);
+        prefill.interpolation = FpmInterpolation::Direct;
+        for (op, coords) in [
+            (&decode, vec![8.0, 4096.0]),
+            (&decode, vec![8.0, 2048.0]),
+            (&prefill, vec![1.0, 2048.0, 2048.0]),
+        ] {
+            let expected = op.query_totals(&legacy, &coords).unwrap().latency_ms;
+            let plain = op.query_totals(&powered, &coords).unwrap();
+            let mut coverage = FpmQueryCoverage::default();
+            let covered = op
+                .query_totals_with_coverage(&powered, &coords, Some(&mut coverage))
+                .unwrap();
+            for result in [plain, covered] {
+                assert_eq!(result.energy_wms, 0.0, "{coords:?}");
+                assert_eq!(result.latency_ms.to_bits(), expected.to_bits());
+            }
+        }
+        let floor = decode.query_pass_baseline(&powered, 8, 4096.0).unwrap();
+        assert_eq!((floor.latency_ms, floor.energy_wms), (6.0, 0.0));
     }
 }

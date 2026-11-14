@@ -1065,6 +1065,75 @@ fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
     );
 }
 
+/// AISIM-1973: power needs no new configuration field. A packed snapshot of
+/// an FPM-interpolation model over a powered schema-8 pair restores a model
+/// that prices FPM energy from the packed copy of that pair.
+#[test]
+fn packed_snapshot_over_a_powered_fpm_pair_restores_energy() {
+    use crate::perf_database::FpmForwardTable;
+    use crate::perf_database::fpm_forward::FPM_FORWARD_BASENAME;
+    use crate::perf_database::fpm_forward::tests::{PowerCell, RowSpec, default_rows, write_pair};
+    use crate::perfmodel::engine::runtime::tests::build_fpm_engine_over;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("systems");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("b200_sxm.yaml"), "data_dir: data/b200_sxm\n").unwrap();
+    let measured = dir.path().join("measured");
+    std::fs::create_dir_all(&measured).unwrap();
+    let rows: Vec<RowSpec> = default_rows()
+        .into_iter()
+        .map(|row| RowSpec {
+            measurement: Some((
+                crate::perf_database::fpm_forward::FPM_FORWARD_POWER_MEASUREMENT_POLICY,
+                1,
+            )),
+            power_w: Some(PowerCell::Double(Some(500.0))),
+            ..row
+        })
+        .collect();
+    write_pair(&measured, &rows);
+    let mut config = native_config(&root, CorrectionMode::Fixed);
+    config.estimation_mode = EstimationMode::FpmInterpolation;
+    config.estimator_config.fpm_interpolation.fpm_parquet_path =
+        Some(measured.join(FPM_FORWARD_BASENAME));
+    // Native selection over the configured pair, so a restore reads the
+    // pinned (packed) parquet rather than a shared engine.
+    let select = |config: ForwardPassPerfModelConfig, registered: Option<bool>| {
+        let parquet = config
+            .estimator_config
+            .fpm_interpolation
+            .fpm_parquet_path
+            .clone()
+            .unwrap();
+        let table = FpmForwardTable::from_parquet_path(parquet, "b200_sxm", "vllm", "0.25.1")?;
+        native_select(Arc::new(build_fpm_engine_over(table)?))(config, registered)
+    };
+    // Decode (8, 4096): 7 ms at the fixture's 500 W.
+    let energy = |model: &ForwardPassPerfModel| {
+        let values = model
+            .native_engine()
+            .unwrap()
+            .evaluate_generation_ops(&[0], 8, 512, 1.0, 0, None)
+            .unwrap();
+        (values[0].1, values[0].2)
+    };
+    let model = select(config.resolve().unwrap(), None).unwrap();
+    assert_eq!(energy(&model), (7.0, 3500.0));
+    let pinned = model
+        .save_state_snapshot(
+            dir.path().join("packed"),
+            &StateSnapshotOptions {
+                include_perf_db: true,
+            },
+        )
+        .unwrap();
+    std::fs::remove_dir_all(&measured).unwrap();
+    let (pinned, registered) = pinned.resolve_with_registration().unwrap();
+    let restored = restore(pinned, registered, &select).unwrap();
+    assert_eq!(energy(&restored), (7.0, 3500.0));
+}
+
 /// Rewrite a snapshot in the path-pinned version 1 form, which recorded the
 /// owned inputs of its identity as absolute paths below the save location,
 /// with the matching `config.json`.

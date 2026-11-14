@@ -2562,6 +2562,10 @@ impl Engine {
                     batch as f64 * prefix as f64,
                 ],
             )?;
+            // Aggregate FPM energy is out of V1 (AISIM-1973 D10, AISIM-2001):
+            // the marginal decode below subtracts an unpowered KV-floor
+            // baseline, so the mixed step reports no whole-model FPM energy.
+            result.energy_wms = 0.0;
             on_op(
                 MixedPass::SharedNonAttention,
                 &self.context_ops[0],
@@ -2648,6 +2652,9 @@ impl Engine {
                     .query_pass_baseline(&self.db, baseline_batch, baseline_kv)?
                     .latency_ms;
                 target.latency_ms = (target.latency_ms - baseline_ms).max(0.0);
+                // D10 (AISIM-2001): no marginal FPM energy over an uncovered
+                // baseline. Draft work keeps its op-level energy.
+                target.energy_wms = 0.0;
             }
             // Draft work has no twin in the prefill pass and must survive
             // even when the target's marginal cost clamps to zero.
@@ -6678,15 +6685,22 @@ pub(crate) mod tests {
         tmp: &std::path::Path,
         rows: &[crate::perf_database::fpm_forward::tests::RowSpec],
     ) -> Result<Engine, AicError> {
-        use crate::perf_database::fpm_forward::tests::{default_identity, write_pair};
-        write_pair(tmp, rows);
-        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+        crate::perf_database::fpm_forward::tests::write_pair(tmp, rows);
+        build_fpm_engine_over(crate::perf_database::FpmForwardTable::new(
             tmp.to_path_buf(),
             "b200_sxm",
             "vllm",
             "0.25.1",
-        ));
+        ))
+    }
+
+    /// [`build_fpm_engine_with_rows`] over an already-written table.
+    pub(crate) fn build_fpm_engine_over(
+        table: crate::perf_database::FpmForwardTable,
+    ) -> Result<Engine, AicError> {
+        use crate::perf_database::fpm_forward::tests::default_identity;
+        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+        db.set_fpm_forward_for_test(table);
         let fpm_op = |phase: FpmPhase| {
             Op::FpmForward(FpmForwardOp {
                 interpolation: Default::default(),
@@ -8171,6 +8185,102 @@ pub(crate) mod tests {
         assert!((draft.1 - expected).abs() < 1e-12);
         assert_eq!(draft.3, "empirical");
         assert_eq!(target.1, 0.0);
+    }
+
+    /// AISIM-1973 D10 (aggregate FPM power is AISIM-2001): on a fully powered
+    /// v8 pair the operator prices energy, but the mixed step reports energy 0
+    /// for its FPM prefill and marginal-decode components. Every per-op value
+    /// matches the latency-only v6 pair bit for bit, so latencies are
+    /// unchanged and the draft tails keep their op-level energy.
+    #[test]
+    fn fpm_mixed_step_zeroes_fpm_energy_and_keeps_draft_energy() {
+        use crate::perf_database::fpm_forward::tests::{
+            PowerCell, RowSpec, default_rows, write_pair,
+        };
+        let run = |powered: bool| {
+            let tmp = tempfile::tempdir().unwrap();
+            let (spec, _) = fpm_hybrid_spec(
+                tmp.path(),
+                Some(7),
+                8,
+                generation_ops()
+                    .into_iter()
+                    .filter(Op::is_generation_attention)
+                    .collect(),
+                context_ops()
+                    .into_iter()
+                    .filter(Op::is_context_attention)
+                    .collect(),
+            );
+            // The b200 vLLM 0.22.0 attention tables carry measured power, so
+            // the draft tails have nonzero op-level energy.
+            let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.22.0").unwrap();
+            db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                "vllm",
+                "0.25.1",
+            ));
+            if powered {
+                let rows: Vec<RowSpec> = default_rows()
+                    .into_iter()
+                    .map(|row| RowSpec {
+                        measurement: Some((
+                            crate::perf_database::fpm_forward::FPM_FORWARD_POWER_MEASUREMENT_POLICY,
+                            1,
+                        )),
+                        power_w: Some(PowerCell::Double(Some(500.0))),
+                        ..row
+                    })
+                    .collect();
+                write_pair(tmp.path(), &rows);
+            }
+            let engine = Engine::build(spec, Arc::new(db)).unwrap();
+            // The step's whole-model prefill query: (1, 2048 + 8 widened
+            // decode tokens, 0).
+            let Op::FpmForward(prefill) = &engine.context_ops[0] else {
+                unreachable!()
+            };
+            let query = prefill
+                .query_totals(&engine.db, &[1.0, 2056.0, 0.0])
+                .unwrap();
+            let (shared, _, decode) = engine
+                .mixed_step_breakdown_per_op(2048, 1, 2048, 2, 0, 1.0, 1.0)
+                .unwrap();
+            let values: Vec<_> = shared
+                .into_iter()
+                .chain(decode)
+                .map(|(name, latency, energy, source)| {
+                    (name, latency.to_bits(), energy.to_bits(), source)
+                })
+                .collect();
+            (query, values)
+        };
+        let (legacy_query, legacy) = run(false);
+        let (query, values) = run(true);
+        assert_eq!(legacy_query.energy_wms, 0.0);
+        assert_eq!(
+            query.latency_ms.to_bits(),
+            legacy_query.latency_ms.to_bits()
+        );
+        // Fixture power 500 W on both lerp anchors.
+        assert_eq!(query.energy_wms, 500.0 * query.latency_ms);
+        assert_eq!(values, legacy);
+        let names: Vec<&str> = values.iter().map(|value| value.0.as_str()).collect();
+        for name in ["fpm_forward_prefill", "fpm_forward_decode"] {
+            let value = values.iter().find(|value| value.0 == name).unwrap();
+            assert_eq!(f64::from_bits(value.2), 0.0, "{name}: {names:?}");
+        }
+        let drafts: Vec<f64> = values
+            .iter()
+            .filter(|value| value.0.starts_with("draft_"))
+            .map(|value| f64::from_bits(value.2))
+            .collect();
+        // Both draft tails keep their op-level (measured) energy.
+        assert!(
+            drafts.len() == 2 && drafts.iter().all(|&energy| energy > 0.0),
+            "{names:?} {drafts:?}"
+        );
     }
 
     #[test]
