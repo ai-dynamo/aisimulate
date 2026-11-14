@@ -22,6 +22,10 @@ pub enum ReplayError {
     #[error("telemetry observer error: {0}")]
     Telemetry(String),
 
+    /// An external `ReplayWorkloadSource` failed or broke its contract.
+    #[error("workload source error: {0}")]
+    WorkloadSource(String),
+
     #[error("replay reached quiescence with {unfinished_requests} unfinished request(s)")]
     Deadlock { unfinished_requests: usize },
 
@@ -42,6 +46,10 @@ pub(crate) fn scaling_boundary(error: anyhow::Error) -> anyhow::Error {
 
 pub(crate) fn telemetry_boundary(error: anyhow::Error) -> anyhow::Error {
     ReplayError::Telemetry(format!("{error:#}")).into()
+}
+
+pub(crate) fn workload_source_boundary(error: anyhow::Error) -> anyhow::Error {
+    ReplayError::WorkloadSource(format!("{error:#}")).into()
 }
 
 pub(crate) fn engine_boundary(error: anyhow::Error) -> anyhow::Error {
