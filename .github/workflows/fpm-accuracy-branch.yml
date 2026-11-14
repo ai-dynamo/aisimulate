@@ -28,6 +28,7 @@ permissions:
 
 jobs:
   wheel:
+    environment: automated-release
     name: Prepare exact accuracy wheel
     runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 120
@@ -70,11 +71,17 @@ jobs:
           if [ ! -f "${builder}" ]; then builder=source/scripts/build_manylinux_wheel.py; fi
           python "${builder}" --output-dir "${RUNNER_TEMP}/accuracy-wheel"
           test -z "$(git -C source status --porcelain)"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/wheel-storage
         if: inputs.nightly_run != ''
         with:
+          mode: download
           name: nightly-dist-amd64
           path: ${{ runner.temp }}/accuracy-wheel
+          source-sha: ${{ inputs.sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
           run-id: ${{ inputs.nightly_run }}
           github-token: ${{ github.token }}
       - name: Verify wheel checksum and nightly producer revision
@@ -107,16 +114,20 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
               stream.write(f'sha256={digest}\n')
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: ./.github/actions/wheel-storage
         with:
+          mode: upload
           name: fpm-accuracy-wheel-${{ inputs.artifact_key }}
           path: ${{ runner.temp }}/accuracy-wheel/*.whl
-          overwrite: true
-          if-no-files-found: error
-          compression-level: 0
+          source-sha: ${{ inputs.sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
           retention-days: 7
 
   campaign:
+    environment: automated-release
     name: Qualify FPM accuracy (${{ inputs.artifact_key }})
     needs: wheel
     runs-on: prod-aisim-default-amd64-v1
@@ -136,10 +147,16 @@ jobs:
       - name: Install the CPU campaign environment
         run: |
           /opt/python/cp312-cp312/bin/python -m venv /tmp/fpm-accuracy-venv
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/wheel-storage
         with:
+          mode: download
           name: fpm-accuracy-wheel-${{ inputs.artifact_key }}
           path: ${{ runner.temp }}/accuracy-wheel
+          source-sha: ${{ inputs.sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Install the exact wheel shared by all predictors
         env:
           WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}

@@ -42,6 +42,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       comparison-base: ${{ steps.comparison-base.outputs.sha }}
+      pr-number: ${{ steps.pr-target.outputs.number }}
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RUN_SHA: ${{ github.sha }}
@@ -51,6 +52,11 @@ jobs:
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -z "${EXPECTED_SHA}" ]]; then
             echo "::error::manual Full CI requires a nonempty expected_sha"
+            exit 1
+          fi
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" &&
+                ! "${GITHUB_REF}" =~ ^refs/heads/(main|release/[A-Za-z0-9][A-Za-z0-9._-]*|pull-request/[1-9][0-9]*)$ ]]; then
+            echo "::error::manual Full CI requires main, release/<version>, or pull-request/<number>; use /ok to test <sha> for trusted PR CI"
             exit 1
           fi
           if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
@@ -84,7 +90,7 @@ jobs:
             echo "::error::PR comparison base must resolve to a full commit SHA"
             exit 1
           fi
-          printf 'base=%s\n' "${pr_base}" >> "${GITHUB_OUTPUT}"
+          printf 'base=%s\nnumber=%s\n' "${pr_base}" "${pr_number}" >> "${GITHUB_OUTPUT}"
       - name: Resolve immutable comparison base
         id: comparison-base
         shell: bash
@@ -120,6 +126,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
+      pr-number: ${{ needs.verify-target.outputs.pr-number }}
       run_all: ${{ steps.plan.outputs.run_all }}
       readme_commands: ${{ steps.plan.outputs.readme_commands }}
       platform_wheels: ${{ steps.plan.outputs.platform_wheels }}
@@ -397,6 +404,7 @@ jobs:
       - run: cargo test --manifest-path crates/tests/public-api/Cargo.toml
 
   application-wheel:
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Application Wheel (${{ matrix.arch }})
     needs: [fast-ci, select-full-ci, application-test-wheel, python-compliance]
     if: >-
@@ -427,10 +435,18 @@ jobs:
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ needs.select-full-ci.outputs.pr-number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ needs.select-full-ci.outputs.pr-number }}
+          mode: download
           name: application-test-wheel-${{ matrix.arch }}
           path: dist
+          source-sha: ${{ github.sha }}
+          architecture: ${{ matrix.arch }}
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Verify exact staged wheel
         run: python python/aisim/tools/verify_release_wheels.py dist
       - name: Smoke-test exact staged wheel
@@ -440,12 +456,6 @@ jobs:
           staged-wheel-smoke/bin/python -c \
             "import aisim, aisim_core; \
             assert aisim_core._build_smoke() > 0"
-      - name: Preserve wheel for trusted staging
-        if: github.event_name == 'push'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: application-wheel-${{ matrix.arch }}
-          path: dist/*.whl
 
   stage-application-wheel:
     name: Stage Application Wheel (${{ matrix.arch }})
@@ -468,10 +478,20 @@ jobs:
         HOME: /__w/aisim/aisim
         USER: runner
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          name: application-wheel-${{ matrix.arch }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/wheel-storage
+        with:
+          mode: download
+          name: application-test-wheel-${{ matrix.arch }}
           path: dist
+          source-sha: ${{ github.sha }}
+          architecture: ${{ matrix.arch }}
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Stage wheel in Artifactory
         shell: bash
         env:
@@ -587,6 +607,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   application-test-wheel:
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Application Test Wheel (${{ matrix.arch }})
     needs: [fast-ci, select-full-ci]
     if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
@@ -628,13 +649,21 @@ jobs:
           # Reports are root files; extracted payloads live in files/.
           path: ${{ runner.temp }}/bundled-configs-application/*.*
           if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ needs.select-full-ci.outputs.pr-number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ needs.select-full-ci.outputs.pr-number }}
+          mode: upload
           name: application-test-wheel-${{ matrix.arch }}
           path: application-test-dist/*.whl
-          if-no-files-found: error
+          source-sha: ${{ github.sha }}
+          architecture: ${{ matrix.arch }}
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
 
   application-tests:
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Application Tests (${{ matrix.arch }}, ${{ matrix.shard.suite }}, ${{ matrix.shard.group }})
     needs: [fast-ci, select-full-ci, application-test-wheel]
     if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
@@ -670,10 +699,18 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ needs.select-full-ci.outputs.pr-number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ needs.select-full-ci.outputs.pr-number }}
+          mode: download
           name: application-test-wheel-${{ matrix.arch }}
           path: application-test-dist
+          source-sha: ${{ github.sha }}
+          architecture: ${{ matrix.arch }}
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Install the prebuilt application and test dependencies
         shell: bash
         run: |

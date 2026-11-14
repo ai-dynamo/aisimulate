@@ -5,6 +5,10 @@ name: FPE Support Matrix
 on:
   workflow_call:
     inputs:
+      pr_number:
+        description: Explicit PR identity for an isolated PR qualification
+        type: string
+        default: ""
       expected_sha:
         required: true
         type: string
@@ -19,6 +23,10 @@ on:
         default: ""
   workflow_dispatch:
     inputs:
+      pr_number:
+        description: Explicit PR identity for an isolated PR qualification
+        type: string
+        default: ""
       expected_sha:
         description: Exact source commit to qualify
         required: true
@@ -34,6 +42,7 @@ env:
 
 jobs:
   prepare-wheel:
+    environment: ${{ inputs.pr_number == '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Prepare exact FPE wheel
     runs-on: prod-aisim-default-amd64-v1
     timeout-minutes: 30
@@ -46,6 +55,21 @@ jobs:
     outputs:
       wheel-sha256: ${{ steps.digest.outputs.sha256 }}
     steps:
+      - name: Validate wheel storage context
+        shell: bash
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${PR_NUMBER}" && ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::pr_number must be an explicit positive PR number"
+            exit 1
+          fi
+          if [[ "${GITHUB_REF}" == refs/heads/pull-request/* &&
+                "${PR_NUMBER}" != "${GITHUB_REF#refs/heads/pull-request/}" ]]; then
+            echo "::error::Set pr_number to the matching trusted copied-PR number"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
@@ -69,11 +93,19 @@ jobs:
           builder=scripts/release/build_manylinux_wheel.py
           if [ ! -f "${builder}" ]; then builder=scripts/build_manylinux_wheel.py; fi
           python "${builder}" --output-dir ../fpe-wheel
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/wheel-storage
         if: inputs.wheel_artifact != ''
         with:
+          scope: ${{ inputs.pr_number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ inputs.pr_number }}
+          mode: download
           name: ${{ inputs.wheel_artifact }}
           path: fpe-wheel
+          source-sha: ${{ inputs.expected_sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Verify nightly artifact checksums and source
         if: inputs.wheel_artifact != ''
         env:
@@ -103,17 +135,24 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"sha256={digest}\n")
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ inputs.pr_number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ inputs.pr_number }}
+          mode: upload
           name: fpe-qualified-wheel
           path: |
             fpe-wheel/*.whl
             fpe-wheel/provenance.json
-          if-no-files-found: error
-          compression-level: 0
+          source-sha: ${{ inputs.expected_sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
           retention-days: 7
 
   discover-shards:
+    environment: ${{ inputs.pr_number == '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Discover matrix shards
     needs: prepare-wheel
     runs-on: ubuntu-24.04
@@ -133,10 +172,18 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ inputs.pr_number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ inputs.pr_number }}
+          mode: download
           name: fpe-qualified-wheel
           path: fpe-wheel
+          source-sha: ${{ inputs.expected_sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Install the exact wheel for live inventory discovery
         env:
           FPE_WHEEL_SHA256: ${{ needs.prepare-wheel.outputs.wheel-sha256 }}
@@ -148,6 +195,7 @@ jobs:
         run: python scripts/fpe/run_release_fpe.py discover --wheel-dir fpe-wheel
 
   generate:
+    environment: ${{ inputs.pr_number == '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: FPE matrix (${{ matrix.shard.system }}, ${{ matrix.shard.backend }})
     needs: [discover-shards, prepare-wheel]
     runs-on: prod-aisim-default-amd64-v1
@@ -178,10 +226,18 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ inputs.pr_number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ inputs.pr_number }}
+          mode: download
           name: fpe-qualified-wheel
           path: fpe-wheel
+          source-sha: ${{ inputs.expected_sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Verify and install the qualified wheel
         run: |
           echo "${FPE_WHEEL_SHA256}  $(echo fpe-wheel/*.whl)" | sha256sum --check --strict
@@ -217,6 +273,7 @@ jobs:
           retention-days: 7
 
   build-web-matrix:
+    environment: ${{ inputs.pr_number == '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'automated-release' || 'pr-wheel-staging' }}
     name: Qualify and build FPE support matrix
     needs: [generate, discover-shards, prepare-wheel]
     runs-on: ubuntu-24.04
@@ -234,10 +291,18 @@ jobs:
         with:
           pattern: fpe-support-matrix-*
           path: fpe-support-matrix
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: ./.github/actions/wheel-storage
         with:
+          scope: ${{ inputs.pr_number != '' && 'pr' || ((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && 'official' || 'preview') }}
+          pr-number: ${{ inputs.pr_number }}
+          mode: download
           name: fpe-qualified-wheel
           path: fpe-wheel
+          source-sha: ${{ inputs.expected_sha }}
+          architecture: amd64
+          url: ${{ vars.WHEEL_STORAGE_URL }}
+          repo: ${{ vars.WHEEL_STORAGE_REPO }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
       - name: Require complete same-wheel reports and native sentinels
         env:
           EXPECTED_SHARDS: ${{ needs.discover-shards.outputs.shards }}

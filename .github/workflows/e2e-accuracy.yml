@@ -78,6 +78,7 @@ jobs:
             let sha = process.env.EXPECTED_SHA;
             let branch = process.env.EVALUATED_BRANCH;
             let nightlyRun = '';
+            let prNumber = '';
             const preview = process.env.PREVIEW === 'true';
             if (process.env.AGENTX_REVISION && (!preview || !/^[0-9a-f]{40}$/.test(process.env.AGENTX_REVISION))) {
               throw new Error('Candidate AgentX revisions require an immutable SHA and a trusted preview');
@@ -91,6 +92,7 @@ jobs:
               if (context.eventName !== 'workflow_dispatch' || !match || sha !== context.sha) {
                 throw new Error('Preview requires an exact trusted pull-request/* copy');
               }
+              prNumber = match[1];
               const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: Number(match[1])});
               if (pr.state !== 'open' || pr.head.sha !== sha || pr.head.ref !== branch ||
                   pr.head.repo.full_name !== context.repo.owner + '/' + context.repo.repo) {
@@ -122,7 +124,7 @@ jobs:
                 const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
                   ...context.repo, run_id: run.id, per_page: 100,
                 });
-                if (artifacts.some(artifact => artifact.name === 'nightly-dist-amd64' && !artifact.expired)) {
+                if (artifacts.some(artifact => artifact.name === 'nightly-dist-amd64-manifest' && !artifact.expired)) {
                   nightlyRun = String(run.id);
                   break;
                 }
@@ -130,7 +132,7 @@ jobs:
               core.notice(nightlyRun ? `Reuse the exact wheel from nightly ${nightlyRun}.` :
                 'No reusable wheel for this main SHA; build the exact revision.');
             }
-            const entries = [{branch, sha, nightly_run: nightlyRun, ...(preview ? {preview: true} : {})}];
+            const entries = [{branch, sha, nightly_run: nightlyRun, ...(preview ? {preview: true, pr_number: prNumber} : {})}];
             if (context.eventName === 'schedule') {
               const branches = await github.paginate(github.rest.repos.listBranches, {
                 ...context.repo, per_page: 100,
@@ -202,4 +204,5 @@ jobs:
       agentx_revision: ${{ inputs.agentx_revision || '' }}
       agentx_campaign_catalog: ${{ inputs.agentx_campaign_catalog || '' }}
       preview: ${{ matrix.preview || false }}
+      pr_number: ${{ matrix.pr_number || '' }}
       configuration_mode: ${{ inputs.configuration_mode || 'estimated' }}

@@ -108,6 +108,7 @@ areas:
       - benchmarks/
       - tests/test_aic_sync.py
       - tests/test_ci_workflow_contracts.py
+      - tests/test_artifactory_wheel_handoff.py
       - tests/test_ci_qualification.py
       - tests/test_pages_site.py
       - tests/test_release_fpe.py

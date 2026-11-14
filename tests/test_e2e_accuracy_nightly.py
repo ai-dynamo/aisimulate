@@ -774,8 +774,12 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_keeps_preview_
         == "e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}"
     )
     assert shard_uploads[2]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence-encrypted/"
-    wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
-    assert wheel_upload["with"]["overwrite"] == "true"
+    wheel_upload = next(
+        s
+        for s in workflow["jobs"]["wheel"]["steps"]
+        if s.get("uses", "").endswith("/wheel-storage") and s["with"]["mode"] == "upload"
+    )
+    assert wheel_upload["with"]["mode"] == "upload"
     assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"
     # The container hook remaps one directory, not multiline absolute paths.
     assert uploads[0]["with"]["path"] == "${{ runner.temp }}/accuracy-public/"
