@@ -84,7 +84,7 @@ New profiles use version 2. The profile JSON has these fields:
 | `schema_version` | `2` for the common forward-pass API; `1` retains the legacy direct-phase contract. |
 | `basis` | The complete ordinary compiled `EngineSpec` used to qualify the profile. Both operation lists and every engine identity field must match the current compiler output; only `engine.systems_path` is excluded from comparison. |
 | `worker_type` | `prefill`, `decode`, or `aggregated`, matching the caller. `aggregated` requires version 2. |
-| `ops` | Replacement operations for the selected phase, or the prefill graph for `aggregated`, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. |
+| `ops` | Replacement operations for the selected phase, or the prefill graph for `aggregated`, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. Operation names are unique within an operation list, except that the DeepSeek-V4 CSA and HCA attention modules of a phase share its attention name. |
 | `generation_ops` | Required for `aggregated`; absent for other roles. Replacement decode graph, with resident weight bytes matching the original decode graph. |
 | `retained_files` | Bundle-relative `path`, lowercase `sha256`, and `size_bytes` for every required hardware YAML, source/version metadata file and retained operation table. |
 
