@@ -22,6 +22,8 @@ from collector.fpm_forward.native_artifact import (
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.runtime_memory import validate_saved_plan
 
+from aisim.fpm_contract import FPM_POWER_MIN_WINDOW_S
+
 from .test_fpm_measurement_evidence import _add_measurement_protocol, _remove_execution_protocol
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _native_payload, _write_provenance
@@ -1324,6 +1326,24 @@ def test_saved_loader_roundtrips_without_model_or_hardware_resolution(campaign):
     plan, source, _checkpoint = campaign
     assert repeatability.load_repeatability_source(source).to_dict() == plan.to_dict()
     assert repeatability.load_repeatability_deployment(source) == with_kv_warmup_defaults({})
+
+
+def test_repeat_plans_keep_the_source_power_window(campaign, tmp_path):
+    plan, _source, _checkpoint = campaign
+    selected = {"cell_id": plan.cells[0].cell_id, "benchmark_points": json.loads(plan.options.benchmark_points_json)}
+    powered = repeatability._subset_plan(replace(plan, options=replace(plan.options, measure_power=True)), selected)
+    unpowered = repeatability._subset_plan(replace(plan, options=replace(plan.options, measure_power=False)), selected)
+    source = tmp_path / "powered"
+    _write_campaign(source, tmp_path / "powered-checkpoint.json", powered)
+
+    loaded = repeatability.load_repeatability_source(source)
+    repeat = repeatability._subset_plan(loaded, selected)
+
+    assert loaded.sha256 == powered.sha256 != unpowered.sha256
+    assert repeat.options.measure_power is True
+    # Each repeat attempt runs its own window; repeats compare latency only.
+    args = runner._cell_generator_overrides(repeat, repeat.cells[0], {})["params"]["agg"]["extra_cli_args"]
+    assert args[args.index("--benchmark-power-window-s") + 1] == str(FPM_POWER_MIN_WINDOW_S)
 
 
 def test_cli_preview_uses_saved_plan_without_model_or_gpu_arguments(campaign, tmp_path, monkeypatch, capsys):

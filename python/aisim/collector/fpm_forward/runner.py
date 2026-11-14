@@ -40,6 +40,8 @@ from aisim.fpm_contract import (
     FPM_ENV_FILENAME,
     FPM_FINALIZATION_TIMEOUT_ENV,
     FPM_MANIFEST_FILENAME,
+    FPM_POWER_MIN_WINDOW_S,
+    FPM_POWER_WINDOW_FLAG,
     FPM_RESULTS_DIR,
     FPM_RUN_ID_ENV,
     FPM_RUN_SCRIPT_FILENAME,
@@ -62,6 +64,10 @@ logger = logging.getLogger(__name__)
 CHECKPOINT_SCHEMA = "aic-fpm-collector-checkpoint-v3"
 RUNTIME_ENV_FILENAME = "collector-runtime-env.sh"
 READINESS_TIMEOUT_ENV = "FPM_READINESS_TIMEOUT_SECONDS"
+# Dynamo's environment spelling of --benchmark-power-window-s, and the marker
+# that makes runtime/preflight.py require a power-capable self-benchmark.
+POWER_WINDOW_ENV = "DYN_BENCHMARK_POWER_WINDOW_S"
+POWER_WINDOW_REQUIRED_ENV = "FPM_POWER_WINDOW_REQUIRED"
 DEFAULT_READINESS_TIMEOUT_SECONDS = 900
 # KV warm-up dominates a decode cell's wall clock (~80 min for a tep4 decode
 # sweep on MiniMax M2.7); one hour would kill the engine mid-warm-up. 10800
@@ -1465,6 +1471,20 @@ def _cell_generator_overrides(
         if existing is not None and existing != item:
             raise ValueError(f"conflicting FPM environment value for {name}")
         resolved_env[name] = copy.deepcopy(item)
+    # Only the frozen plan decides the power window; Dynamo would otherwise read
+    # DYN_BENCHMARK_POWER_WINDOW_S as the flag.
+    if {POWER_WINDOW_ENV, POWER_WINDOW_REQUIRED_ENV} & set(resolved_env):
+        raise ValueError("the power window must be supplied through --fpm-measure-power")
+    # The V4.1 real-KV and GLM-5.3-Flash prefix-seed adapters run their pinned
+    # pre-power Dynamo overlay, which has no power window (AISIM-1973 P2).
+    pinned_adapter = any(
+        resolved_env.get(name, {}).get("value") == "1"
+        for name in ("DYN_FPM_DSV41_REAL_KV", "DYN_FPM_GLM53FLASH_REAL_KV")
+    )
+    measure_power = bool(getattr(plan.options, "measure_power", False)) and not pinned_adapter
+    if measure_power:
+        # Every pod of the plan, smoke included, preflights the image for the window.
+        resolved_env[POWER_WINDOW_REQUIRED_ENV] = {"name": POWER_WINDOW_REQUIRED_ENV, "value": "1"}
     if architecture == "DeepseekV41ForCausalLM":
         # Image layout belongs to this source-pinned adapter. An explicitly
         # configured path uses the existing deployment environment interface;
@@ -1515,6 +1535,11 @@ def _cell_generator_overrides(
         raise ValueError("eager execution must be supplied through --fpm-enforce-eager")
     if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
         raise ValueError("benchmark points must be supplied through --fpm-benchmark-points-file")
+    if any(str(arg).split("=", 1)[0] == FPM_POWER_WINDOW_FLAG for arg in policy_args):
+        raise ValueError("the power window must be supplied through --fpm-measure-power")
+    # Smoke runs share the formal plan but never measure power.
+    if measure_power and not smoke:
+        scheduler_args.extend([FPM_POWER_WINDOW_FLAG, str(FPM_POWER_MIN_WINDOW_S)])
     if cell.workload_kind == "decode":
         prefix_caching = _decode_prefix_caching_mode(cell)
         policy_disables = any(
@@ -1608,6 +1633,7 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         *FPM_KV_WARMUP_DEFAULTS,
         READINESS_TIMEOUT_ENV,
         FPM_FINALIZATION_TIMEOUT_ENV,
+        POWER_WINDOW_REQUIRED_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
         "DYN_FPM_INPUT_TEXT",

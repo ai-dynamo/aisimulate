@@ -224,7 +224,9 @@ import sys
 
 start_rank = int(sys.argv[1])
 expected_mode = sys.argv[2]
-expected_schema_version = int(sys.argv[3])
+# Comma-separated accepted envelope versions; every file of one launch shares one.
+expected_schema_versions = {int(value) for value in sys.argv[3].split(",")}
+schema_version = None
 allowed_point_types = {"prefill", "decode"} if expected_mode == "agg" else {expected_mode}
 pending_status = 10
 
@@ -250,7 +252,7 @@ run_identity = None
 for offset, path in enumerate(paths):
     value = read_result(path)
     expected_rank = start_rank + offset
-    if (value.get("schema_version") != expected_schema_version or value.get("status") != "complete"
+    if (value.get("schema_version") not in expected_schema_versions or value.get("status") != "complete"
             or value.get("valid") is not True):
         invalid(path,
                 f"schema_version={value.get('schema_version')!r} "
@@ -298,6 +300,9 @@ for offset, path in enumerate(paths):
     if run_identity is not None and identity != run_identity:
         invalid(path, "run_id or grid_digest differs across local ranks")
     run_identity = identity
+    if schema_version is not None and value["schema_version"] != schema_version:
+        invalid(path, "schema_version differs across local ranks")
+    schema_version = value["schema_version"]
 
 # Rank files precede the launcher's merge and optional post-run worker probe.
 # Signal a separate finalization deadline once all local ranks are complete.
@@ -308,7 +313,7 @@ first_path = paths[0]
 merged_path = first_path.with_name(f"{first_path.stem}_merged{first_path.suffix}")
 merged = read_result(merged_path)
 if (merged.get("artifact_type") != "merged"
-        or merged.get("schema_version") != expected_schema_version
+        or merged.get("schema_version") != schema_version
         or merged.get("status") != "complete" or merged.get("valid") is not True):
     invalid(merged_path, "merged result is not complete and valid with the expected schema")
 if (merged.get("run_id"), merged.get("grid_digest")) != run_identity:

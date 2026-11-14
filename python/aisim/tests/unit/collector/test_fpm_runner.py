@@ -1925,7 +1925,7 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     assert last_line.startswith("exec python3 -c")
     assert "os.setsid(); os.execvp" in last_line
     env_script = (tmp_path / "fpm_env.sh").read_text()
-    assert "export FPM_RESULT_SCHEMA_VERSION=2" in env_script
+    assert "export FPM_RESULT_SCHEMA_VERSION=2,3\n" in env_script
     assert "export FPM_BENCHMARK_MODE=prefill" in env_script
     subprocess.run(["bash", "-n", str(tmp_path / "run.sh")], check=True)
     subprocess.run(["bash", "-n", str(tmp_path / "fpm_env.sh")], check=True)
@@ -3331,6 +3331,108 @@ def test_runtime_default_path_is_adapter_owned():
     adapter = Path(fpm_runner.__file__).parent / "runtime/dsv41/runtime-paths.json"
     assert env["PYTHONPATH"] == "/tmp/fpm-bench:" + json.loads(adapter.read_text())["python_path"]
     assert env["FPM_READINESS_TIMEOUT_SECONDS"] == "900"
+
+
+@pytest.mark.parametrize(
+    ("producer", "phase", "measure_power", "smoke", "expected"),
+    [
+        ("generic", "prefill", True, False, True),
+        ("generic", "decode", True, False, True),
+        ("generic", "decode", False, False, False),
+        # Smoke shares the formal plan but never measures power.
+        ("generic", "decode", True, True, False),
+        # Both Dynamo-subclass adapters run their pinned pre-power overlay.
+        ("dsv41", "decode", True, False, False),
+        ("glm53flash", "prefill", True, False, False),
+    ],
+)
+def test_power_window_flag_renders_only_for_power_capable_producers(producer, phase, measure_power, smoke, expected):
+    cell = _cell(phase=phase, strategy="tp")
+    plan = _plan(cell)
+    plan.options.measure_power = measure_power
+    base = {}
+    if producer == "dsv41":
+        plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+        plan.options.decoder_replay = False
+    elif producer == "glm53flash":
+        base = {"K8sConfig": {"extra_env": [{"name": "DYN_FPM_GLM53FLASH_REAL_KV", "value": "1"}]}}
+
+    args = _cell_generator_overrides(plan, cell, base, smoke=smoke)["params"]["agg"]["extra_cli_args"]
+
+    if expected:
+        assert args[args.index("--benchmark-power-window-s") + 1] == "2.0"
+        assert args.count("--benchmark-power-window-s") == 1
+    else:
+        assert "--benchmark-power-window-s" not in args
+
+
+@pytest.mark.parametrize(
+    ("producer", "measure_power", "smoke", "expected"),
+    [
+        ("generic", True, False, True),
+        # Smoke omits the window but must still reject an incapable image.
+        ("generic", True, True, True),
+        ("generic", False, False, False),
+        ("dsv41", True, False, False),
+        ("glm53flash", True, False, False),
+    ],
+)
+def test_power_capable_runtime_is_required_in_every_pod_including_smoke(
+    tmp_path, producer, measure_power, smoke, expected
+):
+    cell = _cell(phase="decode", strategy="tp")
+    plan = _plan(cell)
+    plan.options.measure_power = measure_power
+    base = {}
+    if producer == "dsv41":
+        plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+        plan.options.decoder_replay = False
+    elif producer == "glm53flash":
+        base = {"K8sConfig": {"extra_env": [{"name": "DYN_FPM_GLM53FLASH_REAL_KV", "value": "1"}]}}
+
+    overrides = _cell_generator_overrides(plan, cell, base, smoke=smoke)
+    fpm_runner._write_runtime_environment(tmp_path, overrides)
+
+    env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    assert (env.get("FPM_POWER_WINDOW_REQUIRED") == "1") is expected
+    # The preflight reads it from the Collector startup file in Kubernetes and Slurm.
+    startup = (tmp_path / fpm_runner.RUNTIME_ENV_FILENAME).read_text()
+    assert ("export FPM_POWER_WINDOW_REQUIRED=1\n" in startup) is expected
+
+
+@pytest.mark.parametrize("name", ["DYN_BENCHMARK_POWER_WINDOW_S", "FPM_POWER_WINDOW_REQUIRED"])
+@pytest.mark.parametrize("source", ["deployment", "policy"])
+def test_power_window_cannot_be_set_through_the_environment(name, source):
+    # Dynamo maps DYN_BENCHMARK_POWER_WINDOW_S to the flag; only the plan decides.
+    entry = {"K8sConfig": {"extra_env": [{"name": name, "value": "1.0"}]}}
+    cell = _cell()
+    base = {}
+    if source == "deployment":
+        base = entry
+    else:
+        cell = dataclasses.replace(cell, backend_policy=BackendPolicy("power-env", entry, {}))
+
+    with pytest.raises(ValueError, match="--fpm-measure-power"):
+        _cell_generator_overrides(_plan(cell), cell, base)
+
+
+def test_historical_plans_without_measure_power_render_no_power_window():
+    cell = _cell()
+    args = _cell_generator_overrides(_plan(cell), cell, {})["params"]["agg"]["extra_cli_args"]
+
+    assert "--benchmark-power-window-s" not in args
+
+
+def test_power_window_flag_cannot_come_from_a_backend_policy():
+    cell = dataclasses.replace(
+        _cell(),
+        backend_policy=BackendPolicy(
+            "power", {"params": {"agg": {"extra_cli_args": ["--benchmark-power-window-s=2.0"]}}}, {}
+        ),
+    )
+
+    with pytest.raises(ValueError, match="--fpm-measure-power"):
+        _cell_generator_overrides(_plan(cell), cell, {})
 
 
 @pytest.mark.parametrize("transport", ["kubernetes", "slurm"])

@@ -150,6 +150,8 @@ def validate_saved_plan(payload: dict[str, Any]) -> None:
 class _SavedOptions:
     warmup_iterations: int
     benchmark_points_json: str | None
+    # Saved (and hashed) only when enabled, so plans without the key read False.
+    measure_power: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +202,7 @@ def saved_plan_identity(payload: dict[str, Any]) -> SavedCollectionIdentity:
         options=_SavedOptions(
             warmup_iterations=payload["options"]["global_warmup_iterations"],
             benchmark_points_json=json.dumps(points["payload"]) if points is not None else None,
+            measure_power=payload["options"].get("measure_power") is True,
         ),
         cells=tuple(cell_from_dict(item) for item in payload["cells"]),
         capability=_SavedCapability(

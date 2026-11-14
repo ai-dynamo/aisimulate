@@ -30,6 +30,7 @@ from aisim.fpm_contract import (
     FPM_ENV_EXPORTED_VARS,
     FPM_FINALIZATION_TIMEOUT_ENV,
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
+    FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS,
     fpm_expected_result_paths,
 )
 
@@ -37,6 +38,8 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FPM_EXEC = REPO_ROOT / "collector/fpm_forward/runtime/fpm_exec.sh"
+# The Generator's fpm_env.sh export of every accepted envelope version.
+CONTRACT_SCHEMA_VERSIONS = ",".join(map(str, sorted(FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS)))
 
 # The stubbed etcd binary keeps the pid visible for liveness assertions and
 # listens on the staged per-test client port so the readiness probe passes
@@ -253,7 +256,7 @@ def _stage(
         "FPM_BENCHMARK_MODE": "prefill",
         "FPM_BENCHMARK_OUTPUT_PATH": str(results / "benchmark.json"),
         "FPM_WAIT_TIMEOUT_SECONDS": 30,
-        "FPM_RESULT_SCHEMA_VERSION": FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
+        "FPM_RESULT_SCHEMA_VERSION": CONTRACT_SCHEMA_VERSIONS,
         "FPM_NODE_RANK": 0,
         "FPM_MASTER_ADDR": "127.0.0.1",
     }
@@ -377,7 +380,7 @@ def test_fpm_exec_accepts_schema_v2_for_supported_benchmark_modes(tmp_path, benc
 @pytest.mark.parametrize(
     ("case", "expected_message"),
     [
-        ("schema", "schema_version=3"),
+        ("schema", "schema_version=4"),
         ("mode", "benchmark mode 'decode' != 'prefill'"),
         ("coverage", "invalid coverage"),
         ("result_count", "results count 0 != 1"),
@@ -390,7 +393,7 @@ def test_fpm_exec_rejects_invalid_schema_v2_result(tmp_path, case, expected_mess
     result = _benchmark_result()
     payload: object = result
     if case == "schema":
-        result["schema_version"] = 3
+        result["schema_version"] = 4
     elif case == "mode":
         result["config"]["mode"] = "decode"
     elif case == "coverage":
@@ -934,7 +937,7 @@ def _check_artifacts(paths: list[str], *, start_rank: int = 0):
     """Exercise the shipped checker directly, without GPU or engine startup."""
     checker = FPM_EXEC.read_text().split("check_result_files() {", 1)[1].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
     return subprocess.run(
-        ["python3", "-", str(start_rank), "prefill", str(FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION), *paths],
+        ["python3", "-", str(start_rank), "prefill", CONTRACT_SCHEMA_VERSIONS, *paths],
         input=checker,
         text=True,
         capture_output=True,
@@ -978,6 +981,21 @@ def test_completion_checker_preserves_legacy_and_fail_soft_probe_results(tmp_pat
         assert json.loads(Path(list(artifacts)[-1]).read_text())["merged"]["resolution"] == resolution
 
 
+@pytest.mark.parametrize("schema_version", [2, 3], ids=["latency-only", "power-window"])
+def test_completion_checker_accepts_every_contract_schema(tmp_path, schema_version):
+    # Dynamo writes schema 3 only with the power window on, schema 2 otherwise;
+    # the pinned V4.1/GLM adapters and the SGLang client always write 2.
+    paths = fpm_expected_result_paths(str(tmp_path / "benchmark.json"), 0, 2)
+    ranks = {
+        path: _benchmark_result(dp_rank=offset, schema_version=schema_version) for offset, path in enumerate(paths)
+    }
+    _write_artifacts(_finalized_artifacts(ranks))
+
+    result = _check_artifacts(paths)
+
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize(
     "defect",
     [
@@ -996,6 +1014,8 @@ def test_completion_checker_preserves_legacy_and_fail_soft_probe_results(tmp_pat
         "probe-merged-path",
         "probe-rank-binding",
         "probe-top-level",
+        "rank-schema",
+        "merged-schema",
     ],
 )
 def test_completion_checker_rejects_malformed_or_stale_bindings(tmp_path, defect):
@@ -1034,6 +1054,11 @@ def test_completion_checker_rejects_malformed_or_stale_bindings(tmp_path, defect
         probe["ranks"]["2"]["rank_file"] = paths[1]
     elif defect == "probe-top-level":
         artifacts[probe_path] = []
+    elif defect == "rank-schema":
+        # Both versions are accepted, but one launch writes only one of them.
+        artifacts[paths[1]]["schema_version"] = 3
+    elif defect == "merged-schema":
+        merged["schema_version"] = 3
     _write_artifacts(artifacts)
 
     result = _check_artifacts(paths, start_rank=2)

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,8 @@ def main() -> None:
     ).lower() in {"on", "1", "true"}
     dsv41_adapter = os.environ.get("DYN_FPM_DSV41_REAL_KV") == "1"
     glm53flash_adapter = os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1"
+    # Set by the runner for every pod of a power-measuring plan, smoke included.
+    power_window_required = os.environ.get("FPM_POWER_WINDOW_REQUIRED") == "1"
     # The audit artifact exists precisely to document a rejected image, so an
     # image whose runtime module is missing entirely (pre-PR11509) must still
     # produce it before this process fails the pod.
@@ -92,6 +95,13 @@ def main() -> None:
 
     fields = set(getattr(BenchmarkPoint, "__dataclass_fields__", {}))
     missing_fields = sorted(GRAPH_AWARE_FIELDS - fields)
+    if power_window_required:
+        # Dynamo adds BenchmarkConfig.power_window_s with --benchmark-power-window-s;
+        # an older self-benchmark would reject the flag only after model loading.
+        native = importlib.import_module("dynamo.vllm.instrumented_scheduler")
+        config_fields = getattr(getattr(native, "BenchmarkConfig", None), "__dataclass_fields__", {})
+        if "power_window_s" not in config_fields:
+            missing_fields.append("BenchmarkConfig.power_window_s")
     required_methods = set(GRAPH_AWARE_METHODS)
     if real_prefill_requested and not (dsv41_adapter or glm53flash_adapter):
         # Native cached-prefill seeding is separate from decode warm-up:
@@ -107,6 +117,7 @@ def main() -> None:
         "missing_fields": missing_fields,
         "missing_methods": missing_methods,
         "prefill_real_seed_requested": real_prefill_requested,
+        "power_window_required": power_window_required,
         "prefill_real_seed_implementation": (
             "dsv41_adapter" if dsv41_adapter else "glm53flash_adapter" if glm53flash_adapter else "dynamo_native"
         ),

@@ -105,6 +105,8 @@ def fpm_cli_args(
         command.extend(("--fpm-max-prefill-cudagraph-size", str(request.collection.max_prefill_cudagraph_size)))
     if request.collection.gpu_memory_utilization is not None:
         command.extend(("--fpm-gpu-memory-utilization", str(request.collection.gpu_memory_utilization)))
+    if not request.collection.measure_power:
+        command.append("--no-fpm-measure-power")
     if profile is not None:
         command.extend(
             (

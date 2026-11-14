@@ -390,8 +390,15 @@ def test_publication_enrichment_needs_only_the_fpm_measurement(monkeypatch, tmp_
     s._glm_input = {"source": "seeded_tokens", "seed": 53}
     s._glm_context_policy = {"measured_context_limit": 131072}
     s._glm_identity = {"model_config_sha256": "test"}
+    # The pinned native overlay writes the latency-only schema-2 envelope.
     output = {
-        "results": [{"point": {"point_type": "prefill", "total_kv_read_tokens": 0, "benchmark_id": 1}}],
+        "schema_version": 2,
+        "results": [
+            {
+                "point": {"point_type": "prefill", "total_kv_read_tokens": 0, "benchmark_id": 1},
+                "fpms": [{"counter_id": 1, "dp_rank": 0, "wall_time": 0.01}],
+            }
+        ],
         "iteration_groups": [],
     }
     s._glm_enrich(output, tmp_path / "benchmark.json")
@@ -399,3 +406,6 @@ def test_publication_enrichment_needs_only_the_fpm_measurement(monkeypatch, tmp_
     assert output["input_provenance"]["repetition_evidence_manifest"]["records"] == s._glm_evidence_count
     assert output["producer"]["vllm_package_version"] == "0.31.0"
     assert output["results"][0]["kv_seed_regime"] == "not_applicable"
+    # Enrichment keeps the native envelope: no schema bump, no power block (AISIM-1973 P2).
+    assert output["schema_version"] == 2
+    assert all("power" not in fpm for row in output["results"] for fpm in row["fpms"])

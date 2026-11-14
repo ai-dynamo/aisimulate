@@ -16,7 +16,12 @@ from typing import Any
 
 from aisim.fpm_contract import (
     FPM_BENCHMARK_RESULT_GLOB,
+    FPM_NATIVE_BENCHMARK_POWER_RESULT_SCHEMA_VERSION,
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
+    FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS,
+    FPM_POWER_MAX_KV_DRIFT_FRAC,
+    FPM_POWER_MIN_WINDOW_S,
+    FPM_POWER_WINDOW_REL_TOL,
 )
 from aisim_core.sdk.fpm_identity import EXECUTION_COLUMNS
 
@@ -35,6 +40,9 @@ class NativePointMeasurement:
     # Keep native row provenance for diagnostics, without reinterpreting the
     # formal database's historical prefill kv_seed_regime contract.
     kv_seed_regime: str | None = None
+    # Mean power per GPU (W) over the point's power window; None when the
+    # window is unavailable, gated, or absent (schema-2 artifacts).
+    power_w: float | None = None
 
 
 # Distinguishes "no artifact seen yet" from a legitimately absent (legacy)
@@ -120,6 +128,8 @@ class NativeCollection:
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | None = None
+    # Envelope schema shared by every rank artifact; 3 carries power blocks.
+    artifact_schema_version: int = FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION
 
 
 def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> NativePointMeasurement | None:
@@ -448,7 +458,102 @@ def _expected_scheduled(point: dict[str, Any]) -> dict[str, int]:
     raise ValueError(f"unknown native point type: {phase!r}")
 
 
-def _validate_fpm(point: dict[str, Any], fpm: object, *, rank: int) -> float:
+_POWER_KEYS = frozenset(
+    {"status", "unavailable_reason", "gpu_energy", "window_s", "window_iterations", "kv_drift_tokens"}
+)
+
+
+def _validate_power(point: dict[str, Any], power: object) -> dict[str, Any] | None:
+    """Validate one rank's schema-3 power block; None is a well-formed failure report."""
+    if not isinstance(power, dict) or set(power) != _POWER_KEYS:
+        raise ValueError(f"native FPM power block must have exactly the keys {sorted(_POWER_KEYS)}: {power!r}")
+    window = (power["window_s"], power["window_iterations"], power["kv_drift_tokens"])
+    if power["status"] == "unavailable":
+        reason = power["unavailable_reason"]
+        if not isinstance(reason, str) or not reason.strip() or power["gpu_energy"] != [] or window != (None,) * 3:
+            raise ValueError(f"native FPM power block is a malformed unavailable report: {power!r}")
+        return None
+    if power["status"] != "measured" or power["unavailable_reason"] is not None:
+        raise ValueError(f"native FPM power block has an invalid status: {power!r}")
+    energy = power["gpu_energy"]
+    if not isinstance(energy, list) or not energy:
+        raise ValueError(f"native FPM measured power has no GPU energy: {power!r}")
+    for entry in energy:
+        value = entry.get("energy_wms") if isinstance(entry, dict) else None
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"gpu_uuid", "energy_wms"}
+            or not isinstance(entry["gpu_uuid"], str)
+            or not entry["gpu_uuid"]
+            or isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(f"native FPM power has an invalid GPU energy entry: {entry!r}")
+    window_s, iterations, drift = window
+    if (
+        isinstance(window_s, bool)
+        or not isinstance(window_s, int | float)
+        or not math.isfinite(window_s)
+        or window_s < FPM_POWER_MIN_WINDOW_S
+    ):
+        raise ValueError(f"native FPM measured power window must be at least {FPM_POWER_MIN_WINDOW_S}s: {power!r}")
+    if type(iterations) is not int or iterations < 1:
+        raise ValueError(f"native FPM power window_iterations must be a positive integer: {power!r}")
+    if type(drift) is not int or drift < 0 or (point["point_type"] == "prefill" and drift != 0):
+        raise ValueError(f"native FPM power kv_drift_tokens is invalid for {point['point_type']}: {power!r}")
+    return power
+
+
+def _point_power_w(
+    cell: FPMCell, point: dict[str, Any], powers: list[dict[str, Any] | None]
+) -> tuple[float | None, str]:
+    """Combine every rank's power block of one synchronized point.
+
+    Returns ``(power_w, status)``: W per GPU averaged over all GPUs, or None
+    with the reason. Malformed cross-rank evidence raises.
+    """
+    benchmark_id = point["benchmark_id"]
+    measured = [power for power in powers if power is not None]
+    if len(measured) < len(powers):
+        if measured:
+            logger.warning(
+                "FPM %s benchmark_id=%s: %d of %d ranks measured power; the point has no power",
+                cell.cell_id,
+                benchmark_id,
+                len(measured),
+                len(powers),
+            )
+        return None, "unavailable"
+    uuids = [entry["gpu_uuid"] for power in measured for entry in power["gpu_energy"]]
+    if len(set(uuids)) != len(uuids):
+        raise ValueError(f"native power reports a GPU twice for benchmark_id={benchmark_id}: {sorted(uuids)}")
+    if len(uuids) != cell.topology.total_gpus:
+        raise ValueError(
+            f"native power covers {len(uuids)} GPUs, expected {cell.topology.total_gpus} "
+            f"for benchmark_id={benchmark_id}"
+        )
+    # Every rank ran the same synchronized window (D1); disagreement is a
+    # broken contract, never averaged away.
+    if len({power["window_iterations"] for power in measured}) != 1:
+        raise ValueError(f"native power window_iterations differ across ranks for benchmark_id={benchmark_id}")
+    window_s = max(power["window_s"] for power in measured)
+    if any(not math.isclose(power["window_s"], window_s, rel_tol=FPM_POWER_WINDOW_REL_TOL) for power in measured):
+        raise ValueError(f"native power window_s differs across ranks for benchmark_id={benchmark_id}")
+    # Decode repeats append KV (D2): a large drift keeps latency without power.
+    if any(
+        power["kv_drift_tokens"] > FPM_POWER_MAX_KV_DRIFT_FRAC * point["total_kv_read_tokens"] for power in measured
+    ):
+        return None, "kv_drift"
+    energy_wms = sum(entry["energy_wms"] for power in measured for entry in power["gpu_energy"])
+    return energy_wms / cell.topology.total_gpus / (window_s * 1000.0), "measured"
+
+
+def _validate_fpm(
+    point: dict[str, Any], fpm: object, *, rank: int, schema_version: int
+) -> tuple[float, dict[str, Any] | None]:
+    """Return the FPM's wall time and, for schema 3, its measured power block."""
     if not isinstance(fpm, dict):
         raise TypeError("native FPM sample must be a mapping")
     benchmark_id = _require_int(point, "benchmark_id")
@@ -468,7 +573,13 @@ def _validate_fpm(point: dict[str, Any], fpm: object, *, rank: int) -> float:
     mismatches = {key: (scheduled.get(key), value) for key, value in expected.items() if scheduled.get(key) != value}
     if mismatches:
         raise ValueError(f"native FPM workload mismatch: {mismatches}")
-    return wall_time
+    if schema_version != FPM_NATIVE_BENCHMARK_POWER_RESULT_SCHEMA_VERSION:
+        if "power" in fpm:
+            raise ValueError(f"native FPM carries power in a schema-{schema_version} artifact")
+        return wall_time, None
+    if "power" not in fpm:
+        raise ValueError("native FPM lacks its power block in a schema-3 artifact")
+    return wall_time, _validate_power(point, fpm["power"])
 
 
 def _rank_artifacts(raw_root: Path) -> list[tuple[Path, dict[str, Any]]]:
@@ -518,13 +629,20 @@ def validate_native_collection(
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
     seed_regimes: dict[int, str | None] = {}
     rank_timings: list[tuple[int, float, float]] = []
+    schema_version: int | None = None
 
     for path, payload in rank_payloads:
+        version = payload.get("schema_version")
         if (
-            payload.get("schema_version") != FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION
+            type(version) is not int
+            or version not in FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS
             or payload.get("artifact_type") != "rank"
         ):
             raise ValueError(f"result is not a PR11509 native rank artifact: {path}")
+        if schema_version is None:
+            schema_version = version
+        elif version != schema_version:
+            raise ValueError(f"native DP ranks have different artifact schema versions: {path}")
         if (
             payload.get("status") != "complete"
             or payload.get("valid") is not True
@@ -637,7 +755,7 @@ def validate_native_collection(
             fpms = row.get("fpms")
             if not isinstance(fpms, list) or len(fpms) != 1:
                 raise ValueError(f"native point must contain exactly one local FPM: {path}")
-            _validate_fpm(point, fpms[0], rank=rank)
+            _validate_fpm(point, fpms[0], rank=rank, schema_version=version)
             seed_regime = _validate_seed_regime(row, path)
             if (
                 seed_regime == "real_kv"
@@ -671,9 +789,11 @@ def validate_native_collection(
     if seen_ranks != set(expected_ranks):
         raise ValueError(f"native DP rank set mismatch: actual={sorted(seen_ranks)} expected={expected_ranks}")
     assert canonical_points is not None and canonical_groups is not None and run_identity is not None
+    assert schema_version is not None
 
     measurements = []
     measured_iteration_seconds = 0.0
+    power_statuses: dict[str, int] = {}
     # iteration_groups are written in execution order too; canonicalize by
     # benchmark_id so the positional pairing with the ID-sorted points holds.
     for group in canonical_groups:
@@ -699,15 +819,21 @@ def validate_native_collection(
         ):
             raise ValueError(f"native iteration group rank mismatch for benchmark_id={benchmark_id}")
         wall_times = []
+        powers = []
         for rank_result in rank_results:
             rank = int(rank_result["dp_rank"])
             fpms = rank_result.get("fpms")
             if not isinstance(fpms, list) or len(fpms) != 1:
                 raise ValueError(f"native iteration group has invalid FPM count for rank={rank}")
-            wall_time = _validate_fpm(point, fpms[0], rank=rank)
+            wall_time, power = _validate_fpm(point, fpms[0], rank=rank, schema_version=schema_version)
             if fpms[0] != local_fpms[(benchmark_id, rank)]:
                 raise ValueError(f"native local result differs from synchronized group for rank={rank}")
             wall_times.append((rank, wall_time))
+            powers.append(power)
+        power_w = None
+        if schema_version == FPM_NATIVE_BENCHMARK_POWER_RESULT_SCHEMA_VERSION:
+            power_w, power_status = _point_power_w(cell, point, powers)
+            power_statuses[power_status] = power_statuses.get(power_status, 0) + 1
         group_wall_time = float(group.get("wall_time", -1))
         expected_wall_time = max(value for _, value in wall_times)
         if not math.isfinite(group_wall_time) or not math.isclose(
@@ -717,13 +843,27 @@ def validate_native_collection(
         measured_iteration_seconds += group_wall_time
         measurements.append(
             NativePointMeasurement(
-                point=dict(point), rank_wall_times=tuple(wall_times), kv_seed_regime=seed_regimes[benchmark_id]
+                point=dict(point),
+                rank_wall_times=tuple(wall_times),
+                kv_seed_regime=seed_regimes[benchmark_id],
+                power_w=power_w,
             )
         )
 
+    # Power-window iterations are not latency samples: each rank's measured
+    # time must still be exactly the sum of the latency-sample group walls.
     for rank, _elapsed, measured in rank_timings:
         if not math.isclose(measured, measured_iteration_seconds, rel_tol=1e-9, abs_tol=1e-12):
             raise ValueError(f"native measured timing mismatch for rank={rank}")
+    if power_statuses:
+        logger.info(
+            "FPM %s: power measured for %d of %d points (%d unavailable, %d above the KV drift bound)",
+            cell.cell_id,
+            power_statuses.get("measured", 0),
+            len(measurements),
+            power_statuses.get("unavailable", 0),
+            power_statuses.get("kv_drift", 0),
+        )
     return NativeCollection(
         points=tuple(measurements),
         rank_timings=tuple(sorted(rank_timings)),
@@ -733,4 +873,5 @@ def validate_native_collection(
         runtime_grid_digest=run_identity[1],
         kvwarm_meta=kvwarm_meta,
         input_provenance=input_provenance,
+        artifact_schema_version=schema_version,
     )

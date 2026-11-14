@@ -6,6 +6,10 @@
 The supported allocation representation is one HBM pool shared by full-history
 or sliding-window groups. Runtime mappings are evidence: the importer rechecks
 raw geometry, configuration, physical views, and pool accounting itself.
+
+Two allocation plans are audited. vLLM 0.27/0.28 name the layers sharing each
+allocation slot (``shared_by``). vLLM 0.32 places a group's layers in one backing
+buffer at ``offset + layer * layer_stride + block * block_stride``.
 """
 
 from __future__ import annotations
@@ -45,6 +49,14 @@ _SEMANTICS = {
     "offload": False,
     "speculative": False,
 }
+# Runtime versions whose allocation evidence uses the layer-strided plan. At vLLM
+# 0.32.0 (5df63a7203cdb9328d824a27b682e77c7b9928be) v1/kv_cache_interface.py
+# KVCacheTensor (L1409-L1429) replaced shared_by with layers/layer_stride, and
+# v1/worker/utils.py:allocate_kv_cache (L564-L627) allocates one buffer of the
+# common KVCacheTensor.size, binding each layer the 4D [B, H, N, C] view from
+# v1/kv_cache_interface.py:create_kv_cache_views (L377-L441).
+_LAYER_STRIDED_VERSIONS = frozenset({"0.32.0"})
+_VIEW_FIELDS = ("shape", "stride_bytes", "element_size_bytes", "block_axis", "kernel_block_size_tokens")
 
 
 def _same(actual: Any, expected: Any, label: str) -> None:
@@ -441,7 +453,7 @@ def _validate_alias_ownership(views: list[tuple[dict[str, Any], int]], count: in
 
 
 def _physical_views(
-    cache: dict[str, Any], scheduled: dict[str, Any], precision: str
+    cache: dict[str, Any], scheduled: dict[str, Any], precision: str, runtime_version: str
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     _same(cache.get("semantics"), _SEMANTICS, "supported allocation semantics")
     accounting = runtime_memory.validate_shared_pool_accounting(cache, scheduled)
@@ -494,26 +506,119 @@ def _physical_views(
         or not allocations
     ):
         raise ValueError("physical layer tensor/allocation coverage is incomplete")
-    covered, used_storage = set(), set()
+    if runtime_version in _LAYER_STRIDED_VERSIONS:
+        covered, used_storage = _layer_strided_allocations(
+            allocations, storages, tensors, layer_groups, count=count, precision=precision
+        )
+    else:
+        covered, used_storage = _shared_slot_allocations(
+            allocations, storages, tensors, layer_groups, count=count, precision=precision
+        )
+    if covered != set(layer_groups) or used_storage != set(storages):
+        raise ValueError("allocation plan does not account for every layer and backing storage")
+    return groups, accounting
+
+
+def _allocation_storage(allocation: dict[str, Any], storages: dict[str, dict[str, Any]]) -> str:
+    storage_id = allocation.get("storage_id")
+    if (
+        storage_id not in storages
+        or allocation.get("size") != storages[storage_id]["size_bytes"]
+        or type(allocation.get("size")) is not int
+    ):
+        raise ValueError("allocation plan differs from actual backing storage")
+    return storage_id
+
+
+def _allocation_layers(
+    allocation: dict[str, Any], field: str, layer_groups: dict[str, Any], covered: set[str]
+) -> list[str]:
+    names = allocation.get(field)
+    if (
+        not isinstance(names, list)
+        or not names
+        or any(not isinstance(name, str) or name not in layer_groups for name in names)
+        or len(set(names)) != len(names)
+        or covered.intersection(names)
+    ):
+        raise ValueError("allocation plan has missing, duplicate or unknown layers")
+    return names
+
+
+def _affine_span(shape: list[int], strides: list[int], item_size: int) -> int:
+    """Byte extent of a strided view; raises when two of its elements could overlap.
+
+    Sufficient affine non-overlap check for the dense/permuted/strided views
+    produced by the audited runtimes; no enumeration of blocks.
+    """
+    span = item_size
+    for byte_stride, dimension in sorted(zip(strides, shape, strict=True)):
+        if dimension > 1:
+            if byte_stride < span:
+                raise ValueError("physical tensor dimensions overlap")
+            span += (dimension - 1) * byte_stride
+    return span
+
+
+def _checked_view(view: dict[str, Any], group: dict[str, Any], count: int, precision: str) -> tuple[int, int]:
+    """Validate one layer view against its pool geometry; return its kernel ratio and byte span."""
+    shape, strides = view.get("shape"), view.get("stride_bytes")
+    item_size = _positive(view.get("element_size_bytes"), "tensor element bytes")
+    if not isinstance(shape, list) or not shape or not isinstance(strides, list) or len(shape) != len(strides):
+        raise ValueError("physical tensor shape and strides are incomplete")
+    for dimension in shape:
+        _positive(dimension, "tensor dimension")
+    for value in strides:
+        _nonnegative(value, "tensor byte stride")
+        if value % item_size:
+            raise ValueError("tensor byte strides must align to its element size")
+    axis = _nonnegative(view.get("block_axis"), "tensor block axis")
+    kernel = _positive(view.get("kernel_block_size_tokens"), "kernel block tokens")
+    if (
+        axis >= len(shape)
+        or group["block_size_tokens"] % kernel
+        or shape[axis] != count * (group["block_size_tokens"] // kernel)
+    ):
+        raise ValueError("kernel tensor block coverage contradicts pool block geometry")
+    span = _affine_span(shape, strides, item_size)
+    logical = math.prod(shape) * item_size
+    if logical > count * group["spec_page_size_bytes"]:
+        raise ValueError("tensor logical bytes exceed source cache spec page bytes")
+    expected_item_size = {"bfloat16": 2, "half": 2, "fp8": 1}.get(precision)
+    if expected_item_size is not None and item_size != expected_item_size:
+        raise ValueError("tensor element size contradicts cache dtype")
+    return group["block_size_tokens"] // kernel, span
+
+
+def _within_block(view: dict[str, Any]) -> int:
+    """Bytes one kernel block of a view spans, excluding the block axis itself."""
+    axis = view["block_axis"]
+    return view["element_size_bytes"] + sum(
+        (dimension - 1) * stride
+        for index, (dimension, stride) in enumerate(zip(view["shape"], view["stride_bytes"], strict=True))
+        if index != axis
+    )
+
+
+def _shared_slot_allocations(
+    allocations: list[dict[str, Any]],
+    storages: dict[str, dict[str, Any]],
+    tensors: dict[str, dict[str, Any]],
+    layer_groups: dict[str, tuple[int, dict[str, Any]]],
+    *,
+    count: int,
+    precision: str,
+) -> tuple[set[str], set[str]]:
+    """vLLM 0.27/0.28 plan: each allocation slot is shared by layers of distinct groups."""
+    covered: set[str] = set()
+    used_storage: set[str] = set()
     intervals: dict[str, list[tuple[int, int]]] = {}
     packing: dict[str, int] = {}
     for allocation in allocations:
-        storage_id = allocation.get("storage_id")
-        if (
-            storage_id not in storages
-            or allocation.get("size") != storages[storage_id]["size_bytes"]
-            or type(allocation.get("size")) is not int
-        ):
-            raise ValueError("allocation plan differs from actual backing storage")
-        names = allocation.get("shared_by")
-        if (
-            not isinstance(names, list)
-            or not names
-            or any(not isinstance(name, str) or name not in layer_groups for name in names)
-            or len(set(names)) != len(names)
-            or covered.intersection(names)
-        ):
-            raise ValueError("allocation plan has missing, duplicate or unknown layers")
+        if "layers" in allocation:
+            raise ValueError("shared-slot allocation evidence cannot use the layer-strided plan")
+        storage_id = _allocation_storage(allocation, storages)
+        names = _allocation_layers(allocation, "shared_by", layer_groups, covered)
         if len({layer_groups[name][0] for name in names}) != len(names):
             raise ValueError("layers in one cache group cannot alias the same allocation slot")
         stride = _nonnegative(allocation.get("block_stride"), "allocation block stride")
@@ -538,56 +643,98 @@ def _physical_views(
             observed_offset = _nonnegative(view.get("storage_offset_bytes"), "tensor storage byte offset")
             if view.get("storage_id") != storage_id or observed_offset != offset:
                 raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
-            shape, strides = view.get("shape"), view.get("stride_bytes")
-            item_size = _positive(view.get("element_size_bytes"), "tensor element bytes")
-            if not isinstance(shape, list) or not shape or not isinstance(strides, list) or len(shape) != len(strides):
-                raise ValueError("physical tensor shape and strides are incomplete")
-            for dimension in shape:
-                _positive(dimension, "tensor dimension")
-            for value in strides:
-                _nonnegative(value, "tensor byte stride")
-                if value % item_size:
-                    raise ValueError("tensor byte strides must align to its element size")
-            axis = _nonnegative(view.get("block_axis"), "tensor block axis")
-            kernel = _positive(view.get("kernel_block_size_tokens"), "kernel block tokens")
-            if (
-                axis >= len(shape)
-                or group["block_size_tokens"] % kernel
-                or shape[axis] != count * (group["block_size_tokens"] // kernel)
-            ):
-                raise ValueError("kernel tensor block coverage contradicts pool block geometry")
-            ratio = group["block_size_tokens"] // kernel
-            if stride and (ratio != 1 or strides[axis] != stride):
+            ratio, span = _checked_view(view, group, count, precision)
+            if stride and (ratio != 1 or view["stride_bytes"][view["block_axis"]] != stride):
                 raise ValueError("packed kernel tensor block stride is unsupported")
-            # Sufficient affine non-overlap check for the dense/permuted/strided
-            # views produced by the audited runtime; no enumeration of blocks.
-            span = item_size
-            for byte_stride, dimension in sorted(zip(strides, shape, strict=True)):
-                if dimension > 1:
-                    if byte_stride < span:
-                        raise ValueError("physical tensor dimensions overlap")
-                    span += (dimension - 1) * byte_stride
             if offset + span > storages[storage_id]["size_bytes"]:
                 raise ValueError("physical tensor byte bounds exceed its backing storage")
-            logical = math.prod(shape) * item_size
-            if logical > count * group["spec_page_size_bytes"]:
-                raise ValueError("tensor logical bytes exceed source cache spec page bytes")
-            if stride:
-                within_page = item_size + sum(
-                    (d - 1) * s for index, (d, s) in enumerate(zip(shape, strides, strict=True)) if index != axis
-                )
-                if within_page > group["spec_page_size_bytes"]:
-                    raise ValueError("packed tensor exceeds its declared per-slot page interval")
-            expected_item_size = {"bfloat16": 2, "half": 2, "fp8": 1}.get(precision)
-            if expected_item_size is not None and item_size != expected_item_size:
-                raise ValueError("tensor element size contradicts cache dtype")
+            if stride and _within_block(view) > group["spec_page_size_bytes"]:
+                raise ValueError("packed tensor exceeds its declared per-slot page interval")
             views.append((view, ratio))
         _validate_alias_ownership(views, count)
         covered.update(names)
         used_storage.add(storage_id)
-    if covered != set(layer_groups) or used_storage != set(storages):
-        raise ValueError("allocation plan does not account for every layer and backing storage")
-    return groups, accounting
+    return covered, used_storage
+
+
+def _layer_strided_allocations(
+    allocations: list[dict[str, Any]],
+    storages: dict[str, dict[str, Any]],
+    tensors: dict[str, dict[str, Any]],
+    layer_groups: dict[str, tuple[int, dict[str, Any]]],
+    *,
+    count: int,
+    precision: str,
+) -> tuple[set[str], set[str]]:
+    """vLLM 0.32 plan: layer ``layers[l]``'s block ``b`` starts at ``offset + l*layer_stride + b*block_stride``.
+
+    At vLLM 0.32.0 v1/core/kv_cache_utils.py:get_kv_cache_config_from_groups
+    (L1631-L1678) emits one tensor per same-spec layer set of one group, and
+    every group starts from byte 0 ("Groups alias from byte 0"). Tensors at the
+    same offset are aliasing groups and must agree on which pool block owns each
+    byte. Tensors at different offsets must not overlap; vLLM interleaves them
+    only for mixed-spec groups, which have no audited mapping here.
+    """
+    covered: set[str] = set()
+    used_storage: set[str] = set()
+    alias_sets: dict[tuple[str, int], list[tuple[int, dict[str, Any], int, int]]] = {}
+    for allocation in allocations:
+        if "shared_by" in allocation:
+            raise ValueError("layer-strided allocation evidence cannot use the shared_by plan")
+        storage_id = _allocation_storage(allocation, storages)
+        if allocation.get("host_resident") is not False:
+            raise ValueError("host-resident cache allocations are unsupported")
+        names = _allocation_layers(allocation, "layers", layer_groups, covered)
+        if len({layer_groups[name][0] for name in names}) != 1:
+            raise ValueError("one layer-strided allocation must hold layers of one cache group")
+        group_id, group = layer_groups[names[0]]
+        layer_stride = _positive(allocation.get("layer_stride"), "allocation layer stride")
+        block_stride = _positive(allocation.get("block_stride"), "allocation block stride")
+        offset = _nonnegative(allocation.get("offset"), "allocation byte offset")
+        first = tensors[names[0]]
+        ratio, _span = _checked_view(first, group, count, precision)
+        for index, name in enumerate(names):
+            view = tensors[name]
+            observed_offset = _nonnegative(view.get("storage_offset_bytes"), "tensor storage byte offset")
+            if view.get("storage_id") != storage_id or observed_offset != offset + index * layer_stride:
+                raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
+            if any(view.get(field) != first.get(field) for field in _VIEW_FIELDS):
+                raise ValueError("layers of one layer-strided allocation have different physical views")
+        axis, strides = first["block_axis"], first["stride_bytes"]
+        # create_kv_cache_views divides the manager block stride evenly among
+        # kernel blocks (kv_cache_interface.py L396-L414 at 0.32.0).
+        if strides[axis] * ratio != block_stride:
+            raise ValueError("layer tensor block stride contradicts the allocation plan")
+        # The allocation as one [L, B, H, N, C] tensor: proves every layer page
+        # of every block is disjoint and inside the backing storage for each
+        # KVCacheLayout permutation (kv_cache_layout.py L23-L28 at 0.32.0),
+        # including layouts whose block pages are not one contiguous run.
+        whole = {
+            "shape": [len(names), *first["shape"]],
+            "stride_bytes": [layer_stride, *strides],
+            "element_size_bytes": first["element_size_bytes"],
+            "block_axis": axis + 1,
+        }
+        try:
+            extent = _affine_span(whole["shape"], whole["stride_bytes"], whole["element_size_bytes"])
+        except ValueError as error:
+            raise ValueError("layer-strided allocation pages overlap") from error
+        if offset + extent > storages[storage_id]["size_bytes"]:
+            raise ValueError("physical tensor byte bounds exceed its backing storage")
+        alias_sets.setdefault((storage_id, offset), []).append((group_id, whole, ratio, offset + extent))
+        covered.update(names)
+        used_storage.add(storage_id)
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    for (storage_id, offset), members in alias_sets.items():
+        if len({group_id for group_id, *_rest in members}) != len(members):
+            raise ValueError("allocations of one cache group cannot alias the same bytes")
+        _validate_alias_ownership([(whole, ratio) for _group, whole, ratio, _end in members], count)
+        end = max(member[3] for member in members)
+        for lower, upper in ranges.setdefault(storage_id, []):
+            if offset < upper and lower < end:
+                raise ValueError("layer-strided allocations at different offsets overlap")
+        ranges[storage_id].append((offset, end))
+    return covered, used_storage
 
 
 def _configuration(
@@ -707,7 +854,10 @@ def _configuration(
             scheduler = schedulers[dp]
             runtime_memory._validate_scheduler_config(worker, scheduler)
             groups, accounting = _physical_views(
-                worker["cache"], scheduler["cache"], runtime_memory._resolved_cache_dtype(worker["resolved_config"])
+                worker["cache"],
+                scheduler["cache"],
+                runtime_memory._resolved_cache_dtype(worker["resolved_config"]),
+                bundle.manifest["runtime"]["version"],
             )
             geometry = [
                 {key: value for key, value in group.items() if key != "pool_id"} for group in worker["cache"]["groups"]

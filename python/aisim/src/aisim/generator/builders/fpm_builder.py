@@ -22,7 +22,7 @@ from aisim.fpm_contract import (
     FPM_ENV_EXPORTED_VARS,
     FPM_ENV_FILENAME,
     FPM_MANIFEST_FILENAME,
-    FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
+    FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS,
     FPM_RESOLVED_CONFIG_TEMPLATE,
     FPM_RESULTS_DIR,
     FPM_RUN_SCRIPT_FILENAME,
@@ -540,7 +540,7 @@ def _render_env_script(
         f"export FPM_BENCHMARK_MODE={shlex.quote(benchmark_mode)}",
         f"export FPM_BENCHMARK_OUTPUT_PATH={shlex.quote(benchmark_output_path)}",
         f"export FPM_WAIT_TIMEOUT_SECONDS={wait_timeout_seconds}",
-        f"export FPM_RESULT_SCHEMA_VERSION={FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION}",
+        f"export FPM_RESULT_SCHEMA_VERSION={','.join(map(str, sorted(FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSIONS)))}",
     ]
     if barrier_timeout_override is not None:
         # Operator tunable consumed by the collection runtime's DP barrier;
