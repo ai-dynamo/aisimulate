@@ -43,7 +43,7 @@ collect.py --backend <fw> --ops probe.trace_case --case-filter op=<op>,<field>=<
 The collector's vocabulary (Pin, Plan, Record, Note, Rule) is in
 `.claude/rules/collector/overview.md`; a campaign's conclusions go where it
 says (skips.py entries, the op plan's dispatch, deviation notes, fixes), never
-into a findings file; cite the run (pipeline id, system, version) at the code
+into a findings file; cite the run (system, framework version, date) at the code
 instead of committing its evidence.
 
 Collection and the plan diff are not opharness components: use `collect.py`

@@ -52,7 +52,7 @@ when a test or script reads it; otherwise cite the run at the code.
 ## Running
 
 Everything runs from one control machine; GPU work goes through the collection
-pipeline (the `aisim-campaign` skill). Nothing generated is committed.
+pipeline (the `aic-auto-collect` skill). Nothing generated is committed.
 
 - **Workspace.** `AIS_PROBE_WORKSPACE` (default `collector/opharness/workspace/`,
   git-ignored) holds `configs/`, `dummy_models/`, `campaigns/<name>/` and `results/`.
