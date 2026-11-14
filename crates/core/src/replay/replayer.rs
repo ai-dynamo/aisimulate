@@ -7,6 +7,7 @@
 //! Public replay facade over the mechanically moved topology runtimes.
 
 use std::collections::VecDeque;
+use std::num::NonZeroU32;
 use std::time::Instant;
 
 use anyhow::Result as AnyResult;
@@ -22,11 +23,12 @@ use crate::replay::artifact::{
     ReplayArtifactKvEventVisibility, ReplayArtifactSink, ReplayArtifacts,
 };
 use crate::replay::components::{
-    AdmissionQueue, DetokenizationLatency, DetokenizationStage, DpRankLimits, NoReplayMetadata,
-    ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode, TokenizationLatency,
+    AdmissionQueue, DEFAULT_MAX_SOURCE_STEPS_PER_INSTANT, DetokenizationLatency,
+    DetokenizationStage, DpRankLimits, NoReplayMetadata, ReplayAdmissionMetadata,
+    ReplayEngineObservation, ReplayMode, TokenizationLatency,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
-use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
+use crate::replay::core::{NoEngineEvents, PlacementPolicy, ReplayWorkloadSource, WorkerTopology};
 use crate::replay::disagg::DisaggRuntimeImpl;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
 use crate::replay::error::{
@@ -328,6 +330,7 @@ pub struct Replayer<C = RoundRobinComposition> {
     telemetry_capture_interval_ms: Option<f64>,
     tokenization: Option<TokenizationLatency>,
     detokenization: Option<DetokenizationLatency>,
+    max_source_steps_per_instant: NonZeroU32,
 }
 
 impl Replayer<RoundRobinComposition> {
@@ -356,7 +359,7 @@ impl Replayer<RoundRobinComposition> {
         visibility: ReplayArtifactKvEventVisibility,
     ) -> ReplayResult<(ReplayReport, ReplayArtifacts)> {
         let sink = ReplayArtifactSink::new(visibility);
-        let report = self.run_inner(Some(sink.clone()))?;
+        let report = self.run_inner(Some(sink.clone()), None)?;
         Ok((report, sink.take()?))
     }
 }
@@ -379,6 +382,7 @@ impl<C: ReplayComposition> Replayer<C> {
             telemetry_capture_interval_ms: None,
             tokenization: None,
             detokenization: None,
+            max_source_steps_per_instant: DEFAULT_MAX_SOURCE_STEPS_PER_INSTANT,
         })
     }
 
@@ -490,19 +494,83 @@ impl<C: ReplayComposition> Replayer<C> {
     }
 
     pub fn run(self) -> ReplayResult<ReplayReport> {
-        self.run_inner(None)
+        self.run_inner(None, None)
+    }
+
+    /// Run an external reactive workload with no spec-authored requests.
+    ///
+    /// The source owns concurrency and duration. It is consumed here rather
+    /// than stored, so a non-`Send` source does not affect `Replayer`'s `Send` bound.
+    #[doc(hidden)]
+    pub fn run_with_source(
+        self,
+        source: Box<dyn ReplayWorkloadSource>,
+    ) -> ReplayResult<ReplayReport> {
+        self.run_inner(None, Some(source))
+    }
+
+    /// Bound the external workload source's steps at one instant (default
+    /// 1,000,000). Exceeding it, which only a same-instant reaction loop can,
+    /// fails [`Self::run_with_source`] with `ReplayError::ResourceLimited`
+    /// naming the budget and the instant. Runs without a source ignore it.
+    #[doc(hidden)]
+    pub fn with_max_source_steps_per_instant(mut self, limit: NonZeroU32) -> Self {
+        self.max_source_steps_per_instant = limit;
+        self
+    }
+
+    fn refuse_with_external_source(&self, engine_config: &ReplayEngineConfig) -> ReplayResult<()> {
+        if self.runtime_input.is_some() || !self.spec.requests.is_empty() {
+            return Err(ReplayError::InvalidSpec(
+                "an external workload source cannot be combined with another request input".into(),
+            ));
+        }
+        if self.spec.max_in_flight.is_some() || self.spec.max_sim_time_ms.is_some() {
+            return Err(ReplayError::InvalidSpec(
+                "an external workload source owns its concurrency and duration; \
+                 max_in_flight and max_sim_time_ms are refused"
+                    .into(),
+            ));
+        }
+        if self.capture.determinism == ReplayDeterminism::CanonicalV1 {
+            return Err(ReplayError::InvalidSpec(
+                "an external workload source owns request identity; canonical replay \
+                 determinism (CanonicalV1) would rewrite its request IDs and is refused"
+                    .into(),
+            ));
+        }
+        if engine_config.kv_eviction_policy == KvEvictionPolicy::Belady {
+            return Err(ReplayError::InvalidSpec(
+                "belady eviction needs the whole workload up front and cannot use an external \
+                 workload source"
+                    .into(),
+            ));
+        }
+        if self.detokenization.is_some() {
+            return Err(ReplayError::InvalidSpec(
+                "detokenization latency (Replayer::with_detokenization) cannot be combined \
+                 with an external workload source: the source would observe tokens before \
+                 the client receives them"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     fn run_inner(
         mut self,
         artifact_sink: Option<ReplayArtifactSink>,
+        workload_source: Option<Box<dyn ReplayWorkloadSource>>,
     ) -> ReplayResult<ReplayReport> {
         let wall_start = Instant::now();
-        self.composition.set_determinism(self.capture.determinism)?;
         let engine_config = ReplayEngineConfig::parse(&self.spec.engine)?;
         engine_config.validate_topology(&self.spec.topology)?;
         let ranks = dp_rank_limits(&self.spec, &engine_config);
         validate_request_dp_ranks(&self.spec, ranks)?;
+        if workload_source.is_some() {
+            self.refuse_with_external_source(&engine_config)?;
+        }
+        self.composition.set_determinism(self.capture.determinism)?;
         let mut runtime_input = match self.runtime_input.take() {
             Some(mut input) => {
                 apply_runtime_determinism(&mut input, self.capture.determinism);
@@ -538,6 +606,17 @@ impl<C: ReplayComposition> Replayer<C> {
             )?)
         } else {
             None
+        };
+        let admission = match workload_source {
+            Some(source) => AdmissionInput::External {
+                source,
+                ranks,
+                max_steps_per_instant: self.max_source_steps_per_instant,
+            },
+            None => AdmissionInput::Runtime {
+                input: runtime_input,
+                mode,
+            },
         };
         let telemetry = self.telemetry.take();
         if telemetry.is_some() && self.telemetry_capture_interval_ms.is_some() {
@@ -621,7 +700,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     C::Metadata,
                 >::new_composed(
                     role_factory,
-                    admission_queue(runtime_input, mode)?,
+                    admission_queue(admission)?,
                     workers.initial_workers,
                     startup_time_ms,
                     |dp_size, topology| {
@@ -693,7 +772,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     C::Metadata,
                 >::new_composed(
                     &config,
-                    admission_queue(runtime_input, mode)?,
+                    admission_queue(admission)?,
                     false,
                     |prefill_dp, prefill_topology, decode_dp, decode_topology| {
                         self.composition
@@ -848,10 +927,36 @@ fn dp_rank_limits(spec: &ReplaySpec, engine_config: &ReplayEngineConfig) -> DpRa
     }
 }
 
+#[allow(clippy::large_enum_variant)] // Built once per run and consumed at once; boxing only adds an allocation.
+enum AdmissionInput {
+    Runtime {
+        input: ReplayRuntimeInput,
+        mode: ReplayMode,
+    },
+    External {
+        source: Box<dyn ReplayWorkloadSource>,
+        ranks: DpRankLimits,
+        max_steps_per_instant: NonZeroU32,
+    },
+}
+
 fn admission_queue<Metadata: ReplayAdmissionMetadata>(
-    input: ReplayRuntimeInput,
-    mode: ReplayMode,
+    admission: AdmissionInput,
 ) -> ReplayResult<AdmissionQueue<Metadata>> {
+    let (input, mode) = match admission {
+        AdmissionInput::External {
+            source,
+            ranks,
+            max_steps_per_instant,
+        } => {
+            return Ok(AdmissionQueue::new_external(
+                source,
+                ranks,
+                max_steps_per_instant,
+            ));
+        }
+        AdmissionInput::Runtime { input, mode } => (input, mode),
+    };
     Ok(match input {
         ReplayRuntimeInput::Requests(requests) => AdmissionQueue::new_requests(requests, mode),
         ReplayRuntimeInput::GeneratedRequests(requests) => {
