@@ -25,16 +25,29 @@ fn write_trace(lines: &[serde_json::Value]) -> NamedTempFile {
     file
 }
 
-fn write_agentic_trace(rows: &[serde_json::Value]) -> NamedTempFile {
-    let mut lines = vec![serde_json::json!({
+fn agentic_header() -> serde_json::Value {
+    serde_json::json!({
         "schema": AGENTIC_MOONCAKE_SCHEMA,
         "version": AGENTIC_MOONCAKE_VERSION,
         "block_size": 4,
         "hash_id_scope": "local",
         "source": {"format": "test", "digest": "fixture"}
-    })];
+    })
+}
+
+fn write_agentic_trace(rows: &[serde_json::Value]) -> NamedTempFile {
+    let mut lines = vec![agentic_header()];
     lines.extend_from_slice(rows);
     write_trace(&lines)
+}
+
+/// Checks `rows` with the compile-free validation the Weka preflight uses.
+fn validate_agentic_rows(rows: &[serde_json::Value]) -> anyhow::Result<()> {
+    let mut builder = AgenticGraphBuilder::new(serde_json::from_value(agentic_header())?)?;
+    for row in rows {
+        builder.push(serde_json::from_value(row.clone())?)?;
+    }
+    builder.validate()
 }
 
 #[test]
@@ -666,15 +679,22 @@ fn agentic_v2_rejects_invalid_schema_and_graph_contracts() {
     ];
 
     for (name, fixture, expected) in cases {
-        let file = match fixture {
-            Fixture::Raw(lines) => write_trace(&lines),
-            Fixture::Rows(rows) => write_agentic_trace(&rows),
+        let file = match &fixture {
+            Fixture::Raw(lines) => write_trace(lines),
+            Fixture::Rows(rows) => write_agentic_trace(rows),
         };
         let error = AgenticTrace::from_agentic_mooncake(file.path()).expect_err(name);
         assert!(
             format!("{error:#}").contains(expected),
             "{name}: unexpected error: {error:#}"
         );
+        if let Fixture::Rows(rows) = &fixture {
+            let error = validate_agentic_rows(rows).expect_err(name);
+            assert!(
+                format!("{error:#}").contains(expected),
+                "{name}: unexpected validation error: {error:#}"
+            );
+        }
     }
 }
 
@@ -726,7 +746,21 @@ fn agentic_v2_rejects_ambiguous_source_play_order() {
             error.to_string().contains(expected),
             "{name}: unexpected error: {error:#}"
         );
+        let error = validate_agentic_rows(&rows).expect_err(name);
+        assert!(
+            error.to_string().contains(expected),
+            "{name}: unexpected validation error: {error:#}"
+        );
     }
+
+    let error = validate_agentic_rows(&[]).unwrap_err();
+    assert!(
+        error.to_string().contains("did not contain any requests"),
+        "{error:#}"
+    );
+    let ordered = [row("r1", "p1", Some(0)), row("r2", "p2", Some(1))];
+    validate_agentic_rows(&ordered).unwrap();
+    AgenticTrace::from_agentic_mooncake(write_agentic_trace(&ordered).path()).unwrap();
 }
 
 #[test]

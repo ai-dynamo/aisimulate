@@ -978,10 +978,14 @@ mod admission_v0522 {
         assert!(second.admissions.is_empty());
     }
 
-    #[test]
-    fn lpm_keeps_the_owned_continuation_ahead_of_a_longer_hit() {
+    /// LPM orders the continuation first itself; under FIFO it stays queued
+    /// behind a fresh request with a longer cache hit, and admission finds it.
+    #[rstest::rstest]
+    fn admission_runs_the_owned_continuation_first(#[values(false, true)] lpm: bool) {
         let mut args = test_args(64, 4, 8);
-        args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".into());
+        if lpm {
+            args.sglang.as_mut().unwrap().schedule_policy = Some("lpm".into());
+        }
         let config = SglangConfig::from_args(&args);
         let mut manager = SglangKvManager::new(256, 4, KvEventPublishers::default(), 0);
         let hot = vec![99; 32];
@@ -999,10 +1003,11 @@ mod admission_v0522 {
         waiting.push_back(SglangRequest::new(direct_request(hot, 1), 4, 0));
         waiting.push_back(continuation);
         apply_schedule_policy(&mut waiting, &manager, &config);
-        assert_eq!(waiting.front().unwrap().uuid, id);
+        assert_eq!(waiting.front().unwrap().uuid == id, lpm);
         let next = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], false, 0);
         assert_eq!(next.can_run[0].uuid, id);
         assert!(next.admissions.is_empty());
+        assert!(!waiting.has_continuation());
     }
 
     #[test]
@@ -1159,6 +1164,346 @@ fn rejects_image_placeholders_outside_the_prompt(#[values((6, 3), (6, 9))] span:
             .contains("image placeholders")
     );
     assert!(core.waiting.is_empty());
+}
+
+#[rstest::rstest]
+#[case::tiny(1)]
+#[case::huge(1 << 20)]
+fn prefill_admission_caps_at_max_running_requests_ignoring_batched_tokens(
+    #[case] max_num_batched_tokens: usize,
+) {
+    // `max_running_requests` (= `max_num_seqs`) is the hard in-flight cap for
+    // continuous AFD admission; `max_num_batched_tokens` is not consulted by
+    // the SGLang prefill path (only `max_prefill_tokens` /
+    // `chunked_prefill_size` and the radix memory reserve gate admission).
+    let mut args = test_args(64, 4, 64);
+    args.max_num_seqs = Some(2);
+    args.max_num_batched_tokens = Some(max_num_batched_tokens);
+    let mut core = SglangCore::new(args);
+    for index in 0..4u128 {
+        let mut request = direct_request(vec![1, 2, 3, 4], 8);
+        request.uuid = Some(Uuid::from_u128(index + 1));
+        core.receive(request);
+    }
+    let pass = core.execute_hidden_pass(0.0);
+    assert_eq!(
+        pass.admissions.len(),
+        2,
+        "max_num_batched_tokens={max_num_batched_tokens} must not change the admission cap"
+    );
+    assert_eq!(core.running.len(), 2);
+    assert_eq!(core.waiting.len(), 2);
+}
+
+#[test]
+fn continuous_afd_derivation_keeps_max_num_seqs_as_the_only_binding_limit() {
+    // Mirrors the earlier runner derivation for
+    // crates/core/parity_tests/perfmodel/configs/afd-predict-pure.yaml, whose
+    // `context_length: max` resolves to 40960 for Qwen/Qwen3-32B:
+    //   max_num_seqs   = a_replica_count (1*8/8) * batch_size_per_a_replica (18) = 18
+    //   prompt_window  = kv_window = 40960
+    //   num_gpu_blocks = ceil(18 * 40960 * 1.25) = 921_600 (sentinel headroom)
+    // The runner now lets the native provider derive num_gpu_blocks from the
+    // memory gate's A-pool budget; this test pins the scheduler behavior at a
+    // capacity sized so max_num_seqs is the only binding admission limit.
+    // Concurrency 24 exceeds the in-flight cap, so this is the saturated side
+    // of the admission boundary.
+    let mut args = test_args(921_600, 1, 40_960);
+    args.max_num_seqs = Some(18);
+    // `max_prefill_tokens` MUST be set explicitly: SglangConfig's default is
+    // 16_384 (sglang/config.rs), which would cap this pass at 16 of the 18
+    // 1024-token prompts and make max_num_seqs look non-binding for the wrong
+    // reason. `test_args` only wires page_size and chunked_prefill_size.
+    args.sglang
+        .as_mut()
+        .expect("sglang args")
+        .max_prefill_tokens = Some(40_960);
+    let mut core = SglangCore::new(args);
+    for index in 0..24u128 {
+        let mut request = direct_request(vec![(index + 1) as u32; 1024], 128);
+        request.uuid = Some(Uuid::from_u128(index + 1));
+        core.receive(request);
+    }
+
+    let pass = core.execute_hidden_pass(0.0);
+    // G1: the radix memory reserve does not bind below max_num_seqs.
+    assert_eq!(
+        pass.admissions.len(),
+        18,
+        "max_num_seqs must be the only binding admission limit"
+    );
+    // G2: every admitted 1024-token prompt pre-fills in ONE pass, so the AFD
+    // timing identity's "one frozen prefill step per pass" holds.
+    for admission in &pass.admissions {
+        assert_eq!(
+            admission.reused_input_tokens, 0,
+            "no prefix sharing expected"
+        );
+    }
+    assert_eq!(core.running.len(), 18);
+    assert_eq!(core.waiting.len(), 6);
+    assert!(pass.pressure_events.is_empty());
+
+    // Drive every request to completion: retraction must never fire at this
+    // explicitly oversized capacity. (Note: the runner no longer derives
+    // num_gpu_blocks from the 1.25 sentinel headroom — the native provider
+    // derives it from the memory gate's A-pool budget. This test keeps its
+    // explicit sentinel-shaped geometry to pin the scheduler's admission
+    // boundary independent of either derivation.)
+    let mut now_ms = pass.end_ms;
+    let mut completed = pass
+        .output_signals
+        .iter()
+        .filter(|signal| signal.completed)
+        .count();
+    for _ in 0..4096 {
+        if completed == 24 {
+            break;
+        }
+        let pass = core.execute_hidden_pass(now_ms);
+        assert!(
+            pass.pressure_events.is_empty(),
+            "retract fired at the derived AFD capacity"
+        );
+        completed += pass
+            .output_signals
+            .iter()
+            .filter(|signal| signal.completed)
+            .count();
+        now_ms = pass.end_ms;
+    }
+    assert_eq!(
+        completed, 24,
+        "every request must finish without retraction"
+    );
+}
+
+#[test]
+fn mtp_bursts_with_external_timing_provider() {
+    // The afd injection route drives SglangCore through
+    // `PerfModel::External`; the speculative burst path must work unchanged
+    // with a provider-backed timing model.
+    struct FixedTiming;
+    impl crate::engine::TimingModel for FixedTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(5.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+    }
+    let args = MockEngineArgs::builder()
+        .engine_type(EngineType::Sglang)
+        .num_gpu_blocks(32)
+        .block_size(4)
+        .speedup_ratio(0.0)
+        .aic_nextn(Some(2))
+        .aic_nextn_accept_rates(Some("1,1".to_string()))
+        .perf_model(std::sync::Arc::new(
+            crate::engine::common::perf_model::PerfModel::External {
+                timing: std::sync::Arc::new(FixedTiming),
+            },
+        ))
+        .sglang(Some(SglangArgs {
+            page_size: Some(4),
+            chunked_prefill_size: Some(16),
+            ..Default::default()
+        }))
+        .build()
+        .unwrap();
+    let mut core = SglangCore::new(args);
+    let first_id = Uuid::from_u128(201);
+    let second_id = Uuid::from_u128(202);
+    for (uuid, tokens) in [(first_id, vec![1, 2, 3, 4]), (second_id, vec![5, 6, 7, 8])] {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 8,
+            uuid: Some(uuid),
+            arrival_timestamp_ms: None,
+            ..Default::default()
+        });
+    }
+
+    // Prefill: one token per request, duration from the external provider.
+    let prefill = core.execute_hidden_pass(0.0);
+    assert_eq!(prefill.output_signals.len(), 2);
+    assert_eq!(prefill.end_ms, 5.0);
+
+    // Decode: full nextn+1 burst per request, provider decode duration.
+    let decode = core.execute_hidden_pass(prefill.end_ms);
+    let burst_counts = |pass: &crate::engine::scheduler::EnginePassResult, id: Uuid| {
+        pass.output_signals
+            .iter()
+            .filter(|signal| signal.uuid == id)
+            .count()
+    };
+    assert_eq!(burst_counts(&decode, first_id), 3);
+    assert_eq!(burst_counts(&decode, second_id), 3);
+    assert_eq!(decode.end_ms, 6.0);
+}
+
+#[test]
+fn handed_off_request_bursts_on_destination_with_external_timing() {
+    // afd+pd decode-role shape: the destination rank runs SglangCore with a
+    // provider timing model injected via `PerfModel::External` (the afd
+    // injection route) and speculative decoding configured. Activation must
+    // feed the handed-off request into the same burst path as a locally
+    // prefilled one: full nextn+1 bursts until the output plan is exhausted.
+    struct FixedTiming;
+    impl crate::engine::TimingModel for FixedTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(5.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+    }
+    let args = MockEngineArgs::builder()
+        .engine_type(EngineType::Sglang)
+        .worker_type(crate::engine::common::protocols::WorkerType::Decode)
+        .num_gpu_blocks(32)
+        .block_size(4)
+        .speedup_ratio(0.0)
+        .aic_nextn(Some(2))
+        .aic_nextn_accept_rates(Some("1,1".to_string()))
+        .perf_model(std::sync::Arc::new(
+            crate::engine::common::perf_model::PerfModel::External {
+                timing: std::sync::Arc::new(FixedTiming),
+            },
+        ))
+        .sglang(Some(SglangArgs {
+            page_size: Some(4),
+            chunked_prefill_size: Some(16),
+            num_reserved_decode_tokens: Some(0),
+            ..Default::default()
+        }))
+        .build()
+        .unwrap();
+    let mut core = SglangCore::new(args);
+    let handoff_id = HandoffId::from(Uuid::from_u128(910));
+    let request_id = Uuid::from_u128(911);
+    let mut request = direct_request(vec![1, 2, 3, 4], 7);
+    request.uuid = Some(request_id);
+    let effects = core
+        .apply_command_effects(
+            SchedulerCommand::ReserveDestination {
+                handoff_id,
+                request,
+            },
+            true,
+        )
+        .unwrap();
+    assert!(matches!(
+        effects.lifecycle_events.as_slice(),
+        [SchedulerLifecycleEvent::DestinationReserved { .. }]
+    ));
+    core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+        .unwrap();
+
+    let burst_counts = |pass: &crate::engine::scheduler::EnginePassResult| {
+        pass.output_signals
+            .iter()
+            .filter(|signal| signal.uuid == request_id)
+            .count()
+    };
+    let first = core.execute_hidden_pass(0.0);
+    assert_eq!(burst_counts(&first), 3);
+    assert_eq!(first.end_ms, 1.0);
+    let second = core.execute_hidden_pass(first.end_ms);
+    assert_eq!(burst_counts(&second), 3);
+    let third = core.execute_hidden_pass(second.end_ms);
+    assert_eq!(burst_counts(&third), 1);
+    assert!(third.output_signals[0].completed);
+}
+
+#[test]
+fn external_timed_afd_route_retracts_under_binding_capacity_and_drains() {
+    // Evaluation: with a deliberately binding KV capacity (the physical
+    // regime the memory-derived num_gpu_blocks enables), the afd
+    // injection route — SglangCore with `PerfModel::External` — retracts a
+    // decode request back to the waiting tail under memory pressure and
+    // still drains every request. The retract mechanism is
+    // provider-agnostic; this pins it for the External seam AFD arrives
+    // through. Mirrors `test_retraction_requeues_at_back`'s tight-KV
+    // geometry.
+    struct FixedTiming;
+    impl crate::engine::TimingModel for FixedTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(5.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+    }
+    let args = MockEngineArgs::builder()
+        .engine_type(EngineType::Sglang)
+        .block_size(4)
+        .num_gpu_blocks(14)
+        .max_num_batched_tokens(Some(32))
+        .max_num_seqs(Some(4))
+        .speedup_ratio(0.0)
+        .perf_model(std::sync::Arc::new(
+            crate::engine::common::perf_model::PerfModel::External {
+                timing: std::sync::Arc::new(FixedTiming),
+            },
+        ))
+        .sglang(Some(SglangArgs {
+            page_size: Some(4),
+            chunked_prefill_size: Some(32),
+            num_reserved_decode_tokens: Some(0),
+            clip_max_new_tokens: Some(1),
+            // Low conservativeness so the second request is admitted while the first runs.
+            schedule_conservativeness: Some(0.3),
+            ..Default::default()
+        }))
+        .build()
+        .unwrap();
+    let mut core = SglangCore::new(args);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    for (uuid, tokens) in [
+        (Uuid::from_u128(1), (0..4).collect::<Vec<_>>()),
+        (Uuid::from_u128(2), (100..104).collect()),
+    ] {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 30,
+            output_token_ids: None,
+            uuid: Some(uuid),
+            arrival_timestamp_ms: None,
+            images: Vec::new(),
+            kv_hint: None,
+            session_id: None,
+            cache_salt: None,
+        });
+    }
+
+    let mut now = core.execute_pass(&mut collector, 0.0).end_ms + 1.0;
+    let mut retracted = false;
+    let mut pressured = false;
+    let mut completed = 0usize;
+    for _ in 0..200 {
+        let pass = core.execute_pass(&mut collector, now);
+        now = pass.end_ms + 1.0;
+        pressured |= !pass.pressure_events.is_empty();
+        retracted |= core.waiting.iter().any(|req| req.output_len() > 0);
+        completed += pass
+            .output_signals
+            .iter()
+            .filter(|signal| signal.completed)
+            .count();
+        if completed == 2 {
+            break;
+        }
+    }
+    assert!(
+        pressured,
+        "the binding capacity must surface decode memory pressure"
+    );
+    assert!(
+        retracted,
+        "the binding capacity must force a decode retraction"
+    );
+    assert_eq!(completed, 2, "every request must still drain");
 }
 
 #[rstest::rstest]
@@ -3948,6 +4293,7 @@ mod forward_pass_metrics {
         let mut core = SglangCore::new(fpm_args());
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
+        let r3 = Uuid::from_u128(3);
         core.receive(DirectRequest {
             cache_salt: None,
             tokens: (0..4).collect(),
@@ -3983,18 +4329,26 @@ mod forward_pass_metrics {
             images: Vec::new(),
             kv_hint: None,
         });
+        // r3 finishes on the token its prefill forward samples.
+        core.receive(DirectRequest {
+            uuid: Some(r3),
+            ..direct_request((200..204).collect(), 1)
+        });
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
         assert_eq!(
             pass2
                 .output_signals
                 .iter()
-                .map(|s| s.uuid)
+                .map(|s| (s.uuid, s.completed))
                 .collect::<Vec<_>>(),
-            vec![r2],
-            "only the freshly prefilled request emits a token; r1 stalls"
+            vec![(r2, false), (r3, true)],
+            "only the freshly prefilled requests emit a token; r1 stalls"
         );
-        assert_eq!(core.running.len(), 2);
-        assert_eq!(core.running[0].uuid, r1, "FIFO order: r1 stays ahead of r2");
+        assert_eq!(
+            core.running.iter().map(|r| r.uuid).collect::<Vec<_>>(),
+            vec![r1, r2],
+            "FIFO order: r1 stays ahead of r2, and the finished r3 leaves the batch"
+        );
         assert_eq!(core.running[0].output_len(), 1, "r1 did not decode");
         assert_eq!(core.running[1].output_len(), 1);
         let fpm2 = pass2.fpm.as_ref().expect("FPM should be present");

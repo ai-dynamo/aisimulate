@@ -25,7 +25,7 @@ so python-era frozen values and rust-pinned values stay distinguishable.
 
 Run from the repository root::
 
-    python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py
+    python/aisim/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py
 
 Contract carried over from the retired capture script: byte-reproducible
 output (thread caps pinned, sorted keys, full-repr floats, no wall-clock
@@ -240,12 +240,8 @@ def _compile_scenario_references() -> dict[str, float]:
     gb200_ctx, gb200_gen, _ = gb200_sglang_handle.run_static(batch_size=1, isl=1024, osl=4, prefix=0, stride=1)
     references["wideep_sglang_gb200::static_ctx"] = float(gb200_ctx)
     references["wideep_sglang_gb200::static_gen"] = float(gb200_gen)
-    references["wideep_sglang_gb200::mixed_step"] = float(
-        gb200_sglang_handle.mixed_step_latency(1024, 2, 1024, 4, 0)
-    )
-    references["wideep_sglang_gb200::decode_step"] = float(
-        gb200_sglang_handle.decode_step_latency(2, 1024, 4)
-    )
+    references["wideep_sglang_gb200::mixed_step"] = float(gb200_sglang_handle.mixed_step_latency(1024, 2, 1024, 4, 0))
+    references["wideep_sglang_gb200::decode_step"] = float(gb200_sglang_handle.decode_step_latency(2, 1024, 4))
 
     _m, _b, _d, trtllm_spec = compile_parity._build_wideep_trtllm()
     trtllm_handle = compile_parity._handle_from_spec_json(trtllm_spec)

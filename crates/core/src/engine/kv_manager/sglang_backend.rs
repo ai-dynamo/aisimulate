@@ -19,7 +19,6 @@ use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::KvEventPublishers;
 use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
 use fixedbitset::FixedBitSet;
-use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -178,14 +177,13 @@ pub struct SglangKvManager {
     /// Stored events, so Removed events can use the same block hash.
     /// Sized at construction when event publishing is enabled; a slot holds a
     /// hash only while its `page_hash_present` bit is set.
+    ///
+    /// A page holds a hash exactly while it is in the radix tree. The tree keeps
+    /// one page per prefix, so each logical block hash is advertised by one page:
+    /// a request's duplicate copy of a cached prefix is canonicalized to the
+    /// tree's page before publishing and freed without ever being hashed.
     page_to_block_hash: Vec<SequenceHash>,
     page_hash_present: FixedBitSet,
-    /// Tracks how many live pool slots currently advertise the same logical
-    /// block hash so router events reflect logical block visibility, not
-    /// transient slot ownership. Slots beyond the first, which exist only while
-    /// concurrent requests hold duplicate pages, are counted in `extra_hash_refs`.
-    live_hashes: FxHashSet<SequenceHash>,
-    extra_hash_refs: FxHashMap<SequenceHash, usize>,
     /// Committed cache events, coalesced until the scheduler reaches a publish boundary.
     queued_events: Vec<KvEvent>,
     hicache: Option<HiCache>,
@@ -281,8 +279,6 @@ impl SglangKvManager {
             next_event_id: 0,
             page_to_block_hash: vec![0; event_pages],
             page_hash_present: FixedBitSet::with_capacity(event_pages),
-            live_hashes: FxHashSet::default(),
-            extra_hash_refs: FxHashMap::default(),
             queued_events: Vec::new(),
             hicache: None,
         }
@@ -291,19 +287,6 @@ impl SglangKvManager {
     #[cfg(test)]
     fn page_metadata_len(&self) -> usize {
         self.page_to_block_hash.len()
-    }
-
-    #[cfg(test)]
-    fn refcount_snapshot(&self) -> std::collections::BTreeMap<SequenceHash, usize> {
-        self.live_hashes
-            .iter()
-            .map(|&hash| {
-                (
-                    hash,
-                    1 + self.extra_hash_refs.get(&hash).copied().unwrap_or(0),
-                )
-            })
-            .collect()
     }
 
     fn page_hash(&self, slot: usize) -> Option<SequenceHash> {
@@ -317,29 +300,6 @@ impl SglangKvManager {
             self.page_to_block_hash[slot] = hash;
         }
         self.page_hash_present.set(slot, hash.is_some());
-    }
-
-    /// Count one more slot advertising `hash`; returns whether `hash` became live.
-    fn acquire_hash(&mut self, hash: SequenceHash) -> bool {
-        if self.live_hashes.insert(hash) {
-            return true;
-        }
-        *self.extra_hash_refs.entry(hash).or_default() += 1;
-        false
-    }
-
-    /// Count one slot fewer advertising `hash`; returns whether that was its last slot.
-    fn release_hash(&mut self, hash: SequenceHash) -> bool {
-        if !self.extra_hash_refs.is_empty()
-            && let Some(extra) = self.extra_hash_refs.get_mut(&hash)
-        {
-            *extra -= 1;
-            if *extra == 0 {
-                self.extra_hash_refs.remove(&hash);
-            }
-            return false;
-        }
-        self.live_hashes.remove(&hash)
     }
 
     pub fn cache(&self) -> &RadixCache {
@@ -824,8 +784,8 @@ impl SglangKvManager {
             return;
         }
         self.cache_finished_hashes(
-            lease.page_hashes_through(complete_len, self.cache.page_size()),
-            &lease.pages,
+            &lease.page_hashes[..complete_pages],
+            &mut lease.pages,
             last_node,
             lease.cached_tokens,
             token_ids,
@@ -852,11 +812,13 @@ impl SglangKvManager {
     /// Cache a completed request's full sequence into the radix tree.
     ///
     /// Inserts the full token sequence so future requests can reuse it,
-    /// then unlocks the path.
+    /// publishes the pages the tree retained, frees the request's duplicates
+    /// of pages the tree already held, starts the HiCache backup, then
+    /// unlocks the path.
     fn cache_finished_hashes(
         &mut self,
         page_hashes: &[LocalBlockHash],
-        pages: &[KvPageId],
+        pages: &mut [KvPageId],
         last_node: NodeId,
         first_new_token: usize,
         token_ids: &[u32],
@@ -867,6 +829,11 @@ impl SglangKvManager {
         cache_salt: Option<&str>,
     ) {
         let complete_len = page_hashes.len() * self.cache.page_size();
+        let new_last_node =
+            self.cache
+                .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
+        let duplicate_pages =
+            self.canonicalize_pages(pages, new_last_node, first_new_token, complete_len);
         self.publish_stored_hashes(
             page_hashes,
             pages,
@@ -875,10 +842,7 @@ impl SglangKvManager {
             session_id,
             cache_salt,
         );
-        let new_last_node =
-            self.cache
-                .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
-        self.release_unretained_finished_pages(pages, new_last_node, first_new_token, complete_len);
+        self.free_pages(&duplicate_pages);
         self.backup_prefix(
             new_last_node,
             inserted_tokens,
@@ -917,6 +881,20 @@ impl SglangKvManager {
             pages.len()
         );
 
+        let new_last_node =
+            self.cache
+                .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
+
+        // An interleaved insert can retain different physical pages for the same prefix.
+        // Move the active request to canonical pages before releasing its duplicates, so
+        // only the pages the tree retained are published.
+        // Acquire the extended path before releasing the old prefix so
+        // publishing a transferred prompt never leaves its valid KV unprotected.
+        if new_last_node != last_node {
+            self.cache.inc_lock_ref(new_last_node);
+        }
+        let duplicate_pages =
+            self.canonicalize_pages(pages, new_last_node, first_new_token, complete_len);
         self.publish_stored_hashes(
             page_hashes,
             pages,
@@ -925,18 +903,7 @@ impl SglangKvManager {
             session_id,
             cache_salt,
         );
-        let new_last_node =
-            self.cache
-                .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
-
-        // An interleaved insert can retain different physical pages for the same prefix.
-        // Move the active request to canonical pages before releasing its duplicates.
-        // Acquire the extended path before releasing the old prefix so
-        // publishing a transferred prompt never leaves its valid KV unprotected.
-        if new_last_node != last_node {
-            self.cache.inc_lock_ref(new_last_node);
-        }
-        self.canonicalize_unfinished_pages(pages, new_last_node, first_new_token, complete_len);
+        self.free_pages(&duplicate_pages);
         if new_last_node != last_node {
             self.cache.dec_lock_ref(last_node);
         }
@@ -1117,82 +1084,16 @@ impl SglangKvManager {
         pages
     }
 
-    fn release_unretained_finished_pages(
-        &mut self,
-        pages: &[KvPageId],
-        last_node: NodeId,
-        first_new_token: usize,
-        complete_len: usize,
-    ) {
-        let block_size = self.cache.page_size();
-        if complete_len == 0 {
-            return;
-        }
-
-        let mut unretained_pages = Vec::new();
-        let mut current = last_node;
-        let first_new_page = first_new_token / block_size;
-        let mut path_end = complete_len / block_size;
-
-        while path_end > first_new_page {
-            debug_assert_ne!(current, self.cache.root());
-            if current == self.cache.root() {
-                tracing::error!(
-                    path_end,
-                    first_new_token,
-                    complete_len,
-                    "SGLang radix path ended before finished-request reconciliation"
-                );
-                break;
-            }
-
-            let node = self.cache.node(current);
-            let node_len = node.value.len();
-            debug_assert!(node_len <= path_end);
-            if node_len > path_end {
-                tracing::error!(
-                    node_len,
-                    path_end,
-                    complete_len,
-                    "SGLang radix node exceeds finished materialized prefix"
-                );
-                break;
-            }
-            let path_start = path_end - node_len;
-            let reconcile_start = path_start.max(first_new_page);
-
-            for (page_idx, &incoming_page) in pages
-                .iter()
-                .enumerate()
-                .take(path_end)
-                .skip(reconcile_start)
-            {
-                let canonical_page = node.value[page_idx - path_start];
-                if incoming_page != canonical_page {
-                    unretained_pages.push(incoming_page);
-                }
-            }
-
-            path_end = path_start;
-            current = node.parent.unwrap_or(self.cache.root());
-        }
-
-        self.free_pages(&unretained_pages);
-    }
-
-    fn canonicalize_unfinished_pages(
-        &mut self,
+    /// Point a request's newly cached positions at the pages the radix tree kept
+    /// and return the request's pages the tree did not retain.
+    fn canonicalize_pages(
+        &self,
         pages: &mut [KvPageId],
         last_node: NodeId,
         first_new_token: usize,
         complete_len: usize,
-    ) {
+    ) -> Vec<KvPageId> {
         let block_size = self.cache.page_size();
-        debug_assert_eq!(complete_len % block_size, 0);
-        debug_assert_eq!(first_new_token % block_size, 0);
-        debug_assert!(complete_len / block_size <= pages.len());
-        debug_assert!(first_new_token <= complete_len);
-
         assert!(
             first_new_token.is_multiple_of(block_size)
                 && complete_len.is_multiple_of(block_size)
@@ -1231,7 +1132,7 @@ impl SglangKvManager {
             current = node.parent.unwrap_or_else(|| self.cache.root());
         }
 
-        self.free_pages(&unretained_pages);
+        unretained_pages
     }
 
     fn radix_path_covers(
@@ -1331,52 +1232,38 @@ impl SglangKvManager {
             return 0;
         };
 
+        // Callers canonicalize first, so a prefix the tree already held sits on its
+        // published pages, and every unpublished page from here on is new to the router.
         let local_hashes = &page_hashes[first_unpublished_page..complete_pages];
-        let mut parent_hash = None;
-        let mut blocks = Vec::new();
-        let mut publishing = false;
+        let parent_hash = first_unpublished_page
+            .checked_sub(1)
+            .and_then(|page_idx| self.page_hash(pages[page_idx].index()));
+        let mut block_parent_hash = parent_hash;
+        let mut blocks = Vec::with_capacity(local_hashes.len());
 
-        for (block_idx, tokens_hash) in local_hashes.iter().copied().enumerate() {
-            let page_idx = first_unpublished_page + block_idx;
-            let page = pages[page_idx];
-            let page_slot = page.index();
-            if self.page_hash(page_slot).is_some() {
-                continue;
-            }
-
-            let block_parent_hash = if page_idx == 0 {
-                None
-            } else {
-                self.page_hash(pages[page_idx - 1].index())
-            };
+        for (page_idx, tokens_hash) in (first_unpublished_page..).zip(local_hashes.iter().copied())
+        {
+            let page_slot = pages[page_idx].index();
+            debug_assert!(
+                self.page_hash(page_slot).is_none(),
+                "SGLang radix insertion left a published page after an unpublished one"
+            );
             let block_hash = match block_parent_hash {
                 Some(parent_hash) => compute_next_seq_hash(parent_hash, tokens_hash),
                 None => tokens_hash.0,
             };
-
-            let newly_live = self.acquire_hash(block_hash);
             self.set_page_hash(page_slot, Some(block_hash));
-            if newly_live && !publishing {
-                publishing = true;
-                parent_hash = block_parent_hash;
-                blocks.reserve_exact(local_hashes.len() - block_idx);
-            }
-            if publishing {
-                blocks.push(KvBlock {
-                    block_hash,
-                    tokens_hash: tokens_hash.0,
-                    token_ids: self.emit_token_ids.then(|| {
-                        token_ids[page_idx * block_size..(page_idx + 1) * block_size].to_vec()
-                    }),
-                });
-            }
+            blocks.push(KvBlock {
+                block_hash,
+                tokens_hash: tokens_hash.0,
+                token_ids: self.emit_token_ids.then(|| {
+                    token_ids[page_idx * block_size..(page_idx + 1) * block_size].to_vec()
+                }),
+            });
+            block_parent_hash = Some(block_hash);
         }
 
         let hashed_blocks = local_hashes.len();
-        if blocks.is_empty() {
-            return hashed_blocks;
-        }
-
         let event = KvEvent {
             event_id: 0,
             data: KvEventData::Stored(StoredBlocks {
@@ -1404,14 +1291,11 @@ impl SglangKvManager {
             let Some(block_hash) = self.page_hash(page.index()) else {
                 continue;
             };
-            let last_copy = self.release_hash(block_hash);
             self.set_page_hash(page.index(), None);
-            if last_copy {
-                if block_hashes.is_empty() {
-                    block_hashes.reserve_exact(evicted_pages.len() - page_idx);
-                }
-                block_hashes.push(block_hash);
+            if block_hashes.is_empty() {
+                block_hashes.reserve_exact(evicted_pages.len() - page_idx);
             }
+            block_hashes.push(block_hash);
         }
 
         if block_hashes.is_empty() {
@@ -1769,11 +1653,21 @@ mod tests {
     #[test]
     fn hicache_load_survives_cancellation_and_split_with_matching_event_hashes() {
         let (mut manager, sink) = hicache_manager(16, 0.0, 1.0);
+        // The device event view must track resident device pages through every transition.
+        let (mut seen_events, mut router) = (0, std::collections::HashSet::new());
+        let mut check_router = |manager: &mut SglangKvManager| {
+            manager.flush_events();
+            apply_router_events(&sink, &mut seen_events, &mut router);
+            assert_router_matches_tree(manager, &router);
+            router.len()
+        };
         let tokens = (0..20).collect::<Vec<_>>();
         let cached = manager.allocate_for_request(&tokens[..16]).unwrap();
         manager.finish(&tokens[..16], cached.lease);
         manager.complete_host_boundary(0.0);
+        assert_eq!(check_router(&mut manager), 4);
         manager.evict(16);
+        assert_eq!(check_router(&mut manager), 0);
         let mut lease = lease_with_hashes(&tokens, 4);
         assert_eq!(
             manager.admission_host_match(&mut lease, 4),
@@ -1785,6 +1679,7 @@ mod tests {
         manager.begin_host_pass(1.0);
         assert_eq!(manager.load_host_prefix(&lease, &tokens, 16, 24), Some(16));
         assert_eq!(manager.host_load_end_ms(), 5.0);
+        assert_eq!(check_router(&mut manager), 4);
         assert_eq!(
             manager.allocate_for_request_lease_capped(&tokens, &mut lease, 16),
             Some(16)
@@ -1794,13 +1689,16 @@ mod tests {
             manager.allocate_for_request_lease(&tokens[..8], &mut second),
             Some(8)
         );
+        assert_eq!(check_router(&mut manager), 4);
         manager.abort(lease);
         manager.abort(second);
         manager.evict(64);
         assert_eq!(manager.cache.protected_size, 16);
+        // The cancelled load keeps its reloaded pages resident until the transfer completes.
+        assert_eq!(check_router(&mut manager), 4);
         manager.advance_host(5.0);
         manager.evict(64);
-        manager.flush_events();
+        assert_eq!(check_router(&mut manager), 0);
         assert_eq!(manager.cache.available_tokens(), 64);
         assert_eq!(manager.cache.protected_size, 0);
         let events = sink.clone_events();
@@ -2377,10 +2275,6 @@ mod tests {
             assert_eq!(matches!(event.data, KvEventData::Stored(_)), index % 2 == 0);
         }
         let final_hash = mgr.page_hash(page.index()).unwrap();
-        assert_eq!(
-            mgr.refcount_snapshot(),
-            std::collections::BTreeMap::from([(final_hash, 1)])
-        );
         let KvEventData::Stored(stored) = &events[4].data else {
             unreachable!()
         };
@@ -2415,18 +2309,6 @@ mod tests {
         assert_eq!(mgr.next_event_id, 1);
         assert_eq!(sink.event_count(), 1);
         mgr.abort(first.lease);
-    }
-
-    #[test]
-    fn hash_refcounts_track_more_than_two_copies() {
-        let sink = Arc::new(MockSink::new());
-        let mut mgr = SglangKvManager::new(4, 1, KvEventPublishers::new(Some(sink)), 0);
-        let newly_live: Vec<_> = (0..3).map(|_| mgr.acquire_hash(7)).collect();
-        assert_eq!(newly_live, [true, false, false]);
-        assert_eq!(mgr.refcount_snapshot()[&7], 3);
-        let last_copy: Vec<_> = (0..4).map(|_| mgr.release_hash(7)).collect();
-        assert_eq!(last_copy, [false, false, true, false]);
-        assert!(mgr.refcount_snapshot().is_empty());
     }
 
     #[test]
@@ -2552,43 +2434,209 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_logical_blocks_publish_once_and_remove_once() {
+    fn concurrent_duplicate_prefixes_publish_once_and_remove_once() {
         let sink = Arc::new(MockSink::new());
         let mut mgr = SglangKvManager::new(100, 1, KvEventPublishers::new(Some(sink.clone())), 0);
+        let tokens = [1, 2, 3];
 
-        let req1 = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
-        let req2 = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
-
-        let hashes = compute_block_hash_for_seq(&[1, 2, 3], 1);
-        // Two private copies may publish the same logical blocks before canonicalization.
-        assert_eq!(
-            mgr.publish_stored_hashes(&hashes, req1.lease.pages(), 0, &[1, 2, 3], None, None),
-            3
-        );
-        assert_eq!(
-            mgr.publish_stored_hashes(&hashes, req2.lease.pages(), 0, &[1, 2, 3], None, None),
-            3
-        );
+        // Three requests miss the cache together, so each computes its own copy.
+        let allocs: Vec<_> = (0..3)
+            .map(|_| mgr.allocate_for_request(&tokens).unwrap())
+            .collect();
+        assert!(allocs.iter().all(|alloc| alloc.prefix_len == 0));
+        let first_pages = allocs[0].lease.pages().to_vec();
+        for alloc in allocs {
+            mgr.finish(&tokens, alloc.lease);
+        }
         mgr.flush_events();
         let events = sink.clone_events();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 1, "duplicate copies must stay unpublished");
         let KvEventData::Stored(store) = &events[0].data else {
             panic!("expected stored event");
         };
-        assert_eq!(store.blocks.len(), 3);
+        let stored: Vec<_> = store.blocks.iter().map(|block| block.block_hash).collect();
+        let retained: Vec<_> = first_pages
+            .iter()
+            .map(|page| mgr.page_hash(page.index()).unwrap())
+            .collect();
+        assert_eq!(stored, retained);
+        assert_eq!(mgr.cache().available_tokens(), 97);
 
-        mgr.free_pages(&req1.lease.pages);
-        mgr.flush_events();
-        assert_eq!(sink.event_count(), 1);
-
-        mgr.free_pages(&req2.lease.pages);
+        mgr.evict(3);
         mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 2);
         let KvEventData::Removed { block_hashes } = &events[1].data else {
             panic!("expected removed event");
         };
-        assert_eq!(block_hashes.len(), 3);
+        assert_eq!(block_hashes, &stored);
+        assert_eq!(mgr.page_hash_present.count_ones(..), 0);
+    }
+
+    /// Apply flushed events to a router view: every Stored block must be new and
+    /// extend a visible parent, and every Removed block must be visible.
+    fn apply_router_events(
+        sink: &MockSink,
+        seen_events: &mut usize,
+        router: &mut std::collections::HashSet<SequenceHash>,
+    ) {
+        let events = sink.clone_events();
+        // HostPinned events track HiCache's host copy, not device residency.
+        for event in events[*seen_events..]
+            .iter()
+            .filter(|event| event.tier == KvEventTier::Device)
+        {
+            match &event.data {
+                KvEventData::Stored(stored) => {
+                    if let Some(parent_hash) = stored.parent_hash {
+                        assert!(
+                            router.contains(&parent_hash),
+                            "Stored parent is not visible"
+                        );
+                    }
+                    for block in &stored.blocks {
+                        assert!(router.insert(block.block_hash), "Stored a visible block");
+                    }
+                }
+                KvEventData::Removed { block_hashes } => {
+                    for hash in block_hashes {
+                        assert!(router.remove(hash), "Removed an invisible block");
+                    }
+                }
+            }
+        }
+        *seen_events = events.len();
+    }
+
+    /// The router view must equal the chained hashes of the radix tree's pages,
+    /// and only tree pages may carry a hash. Host-only HiCache edges have no pages.
+    fn assert_router_matches_tree(
+        mgr: &SglangKvManager,
+        router: &std::collections::HashSet<SequenceHash>,
+    ) {
+        let cache = mgr.cache();
+        let mut tree_hashes = std::collections::HashSet::new();
+        let mut tree_pages = 0;
+        let mut stack = vec![(cache.root(), None)];
+        while let Some((node_id, parent_hash)) = stack.pop() {
+            let node = cache.node(node_id);
+            let mut chain = parent_hash;
+            for (key, page) in node.key.iter().zip(&node.value) {
+                let expected = match chain {
+                    Some(parent_hash) => compute_next_seq_hash(parent_hash, *key),
+                    None => key.0,
+                };
+                assert_eq!(mgr.page_hash(page.index()), Some(expected));
+                assert!(tree_hashes.insert(expected), "two tree pages share a hash");
+                tree_pages += 1;
+                chain = Some(expected);
+            }
+            stack.extend(node.children.values().map(|&child| (child, chain)));
+        }
+        assert_eq!(mgr.page_hash_present.count_ones(..), tree_pages);
+        assert_eq!(&tree_hashes, router);
+    }
+
+    struct ModelRequest {
+        prompt: Vec<u32>,
+        sequence: Vec<u32>,
+        lease: RadixRequestLease,
+    }
+
+    #[test]
+    fn kv_events_track_radix_tree_pages() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        for page_size in [1, 2] {
+            for seed in 0..8 {
+                let mut rng = StdRng::seed_from_u64(seed);
+                let sink = Arc::new(MockSink::new());
+                let mut mgr = SglangKvManager::new(
+                    24 * page_size,
+                    page_size,
+                    KvEventPublishers::new(Some(sink.clone())),
+                    0,
+                );
+                let mut router = std::collections::HashSet::new();
+                let mut seen_events = 0;
+                let mut active: Vec<ModelRequest> = Vec::new();
+
+                for _ in 0..300 {
+                    match rng.random_range(0..6) {
+                        // Admit a prompt that shares one of three prefixes.
+                        0 | 1 if active.len() < 4 => {
+                            let base = rng.random_range(0..3u32) * 100;
+                            let mut prompt: Vec<u32> = (base..base + 6).collect();
+                            let suffix_len = rng.random_range(0..6);
+                            prompt.extend((0..suffix_len).map(|_| rng.random_range(50..53)));
+                            let chunk = rng.random_range(1..=prompt.len());
+                            let sequence = prompt[..chunk].to_vec();
+                            let mut lease = RadixRequestLease::default();
+                            if mgr
+                                .allocate_for_request_lease(&sequence, &mut lease)
+                                .is_some()
+                            {
+                                active.push(ModelRequest {
+                                    prompt,
+                                    sequence,
+                                    lease,
+                                });
+                            }
+                        }
+                        // Prefill the next chunk and cache it, or decode one token.
+                        2 | 3 if !active.is_empty() => {
+                            let index = rng.random_range(0..active.len());
+                            let request = &mut active[index];
+                            if request.sequence.len() < request.prompt.len() {
+                                let remaining = request.prompt.len() - request.sequence.len();
+                                let target =
+                                    request.sequence.len() + rng.random_range(1..=remaining);
+                                let next = &request.prompt[..target];
+                                if mgr.extend_allocation(next, &mut request.lease).is_some() {
+                                    request.sequence = next.to_vec();
+                                }
+                                mgr.extend_cached_prefix(&request.sequence, &mut request.lease);
+                            } else {
+                                let pages =
+                                    usize::from(request.sequence.len().is_multiple_of(page_size));
+                                if let Some(mut reservation) = mgr.reserve_decode_pages(pages) {
+                                    mgr.extend_decode(&mut request.lease, &mut reservation);
+                                    request.sequence.push(rng.random_range(50..53));
+                                    mgr.release_decode_reservation(reservation);
+                                }
+                            }
+                        }
+                        4 if !active.is_empty() => {
+                            let index = rng.random_range(0..active.len());
+                            let mut request = active.swap_remove(index);
+                            if rng.random_bool(0.8) {
+                                request
+                                    .lease
+                                    .ensure_page_hashes(&request.sequence, page_size);
+                                mgr.finish(&request.sequence, request.lease);
+                            } else {
+                                mgr.abort(request.lease);
+                            }
+                        }
+                        5 => mgr.evict(rng.random_range(1..=8) * page_size),
+                        _ => {}
+                    }
+                    mgr.flush_events();
+                    apply_router_events(&sink, &mut seen_events, &mut router);
+                    assert_router_matches_tree(&mgr, &router);
+                }
+
+                for request in active {
+                    mgr.abort(request.lease);
+                }
+                mgr.evict(usize::MAX);
+                mgr.flush_events();
+                apply_router_events(&sink, &mut seen_events, &mut router);
+                assert!(router.is_empty());
+                assert_router_matches_tree(&mgr, &router);
+            }
+        }
     }
 
     #[test]
@@ -2598,7 +2646,7 @@ mod tests {
         let mut pages = mgr.cache_mut().page_pool.allocate_pages(1).unwrap();
         let root = mgr.cache().root();
 
-        mgr.canonicalize_unfinished_pages(&mut pages, root, 0, 4);
+        mgr.canonicalize_pages(&mut pages, root, 0, 4);
     }
 
     #[test]

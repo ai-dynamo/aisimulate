@@ -782,6 +782,7 @@ mod tests {
                 p2p_latency: 0.0,
                 num_gpus_per_rack: None,
                 inter_rack_bw: None,
+                inter_rack_latency: None,
             },
             misc: MiscSpec::default(),
         }
@@ -2120,7 +2121,7 @@ mod tests {
             serde_json::from_str(include_str!("testdata/moe_expert_compute_oracle.json"))
                 .expect("oracle fixture must parse");
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aisimulate_core/systems");
+            .join("../../python/aisim/src/aisim_core/systems");
         let samples = oracle["samples"].as_array().expect("samples array");
         let mut tables: BTreeMap<String, MoeExpertComputeTable> = BTreeMap::new();
         let mut max_rel = 0.0_f64;

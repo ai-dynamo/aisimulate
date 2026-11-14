@@ -22,7 +22,7 @@ use crate::replay::artifact::{
     ReplayArtifactKvEventVisibility, ReplayArtifactSink, ReplayArtifacts,
 };
 use crate::replay::components::{
-    AdmissionQueue, DetokenizationLatency, DetokenizationStage, NoReplayMetadata,
+    AdmissionQueue, DetokenizationLatency, DetokenizationStage, DpRankLimits, NoReplayMetadata,
     ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode, TokenizationLatency,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
@@ -40,8 +40,8 @@ use crate::replay::telemetry::{
     ReplayTelemetryCaptureSink, ReplayTelemetryObserver, ReplayTelemetrySnapshot,
 };
 use crate::replay::{
-    ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayRequest,
-    ReplayResult, ReplaySpec, ReplayTopology, WorkerStage,
+    ReplayCaptureOptions, ReplayDeterminism, ReplayError, ReplayReport, ReplayResult, ReplaySpec,
+    ReplayTopology, WorkerStage,
 };
 
 /// Runtime composition supplied by the built-in engine stack or a Dynamo
@@ -501,7 +501,8 @@ impl<C: ReplayComposition> Replayer<C> {
         self.composition.set_determinism(self.capture.determinism)?;
         let engine_config = ReplayEngineConfig::parse(&self.spec.engine)?;
         engine_config.validate_topology(&self.spec.topology)?;
-        validate_request_dp_ranks(&self.spec, &engine_config)?;
+        let ranks = dp_rank_limits(&self.spec, &engine_config);
+        validate_request_dp_ranks(&self.spec, ranks)?;
         let mut runtime_input = match self.runtime_input.take() {
             Some(mut input) => {
                 apply_runtime_determinism(&mut input, self.capture.determinism);
@@ -814,12 +815,24 @@ fn prepare_belady_oracle(
     BeladyOracle::new(requests).map_err(|error| ReplayError::InvalidSpec(format!("{error:#}")))
 }
 
-fn validate_request_dp_ranks(
-    spec: &ReplaySpec,
-    engine_config: &ReplayEngineConfig,
-) -> ReplayResult<()> {
-    const PREFERRED: &str = "preferred attention-DP";
-    const HINT_SOURCE: &str = "kv_hints source";
+fn validate_request_dp_ranks(spec: &ReplaySpec, limits: DpRankLimits) -> ReplayResult<()> {
+    for request in &spec.requests {
+        // A peer-fetch hint's source worker is not checked: workers come and go under
+        // scaling, so placement drops a hint whose source worker is not live instead.
+        limits
+            .check(
+                request.dp_rank,
+                request.prefill_dp_rank,
+                request.kv_hints.map(|hints| hints.source_dp_rank),
+            )
+            .map_err(|message| {
+                ReplayError::InvalidSpec(format!("request {:?} {message}", request.id))
+            })?;
+    }
+    Ok(())
+}
+
+fn dp_rank_limits(spec: &ReplaySpec, engine_config: &ReplayEngineConfig) -> DpRankLimits {
     // `role` clones the rank config, so read each stage's dp_size once.
     let [aggregated, prefill, decode] = [
         WorkerStage::Aggregated,
@@ -827,55 +840,12 @@ fn validate_request_dp_ranks(
         WorkerStage::Decode,
     ]
     .map(|stage| engine_config.role(stage).dp_size);
-    let validate = |request: &ReplayRequest,
-                    stage: WorkerStage,
-                    label: &str,
-                    rank: Option<u32>|
-     -> ReplayResult<()> {
-        let Some(rank) = rank else {
-            return Ok(());
-        };
-        let dp_size = match stage {
-            WorkerStage::Aggregated => aggregated,
-            WorkerStage::Prefill => prefill,
-            WorkerStage::Decode => decode,
-        };
-        if rank >= dp_size {
-            let stage = match stage {
-                WorkerStage::Aggregated => "aggregated",
-                WorkerStage::Prefill => "prefill",
-                WorkerStage::Decode => "decode",
-            };
-            return Err(ReplayError::InvalidSpec(format!(
-                "request {:?} {stage} placement: {label} rank {rank} is out of range for dp_size {dp_size}",
-                request.id
-            )));
-        }
-        Ok(())
-    };
-
-    for request in &spec.requests {
-        // A peer-fetch hint's source worker is not checked: workers come and go under
-        // scaling, so placement drops a hint whose source worker is not live instead.
-        let hint_rank = request.kv_hints.map(|hints| hints.source_dp_rank);
-        match spec.topology {
-            ReplayTopology::Aggregated { .. } => {
-                validate(request, WorkerStage::Aggregated, PREFERRED, request.dp_rank)?;
-                validate(request, WorkerStage::Aggregated, HINT_SOURCE, hint_rank)?;
-            }
-            ReplayTopology::Disaggregated { .. } => {
-                validate(
-                    request,
-                    WorkerStage::Prefill,
-                    PREFERRED,
-                    request.prefill_dp_rank.or(request.dp_rank),
-                )?;
-                validate(request, WorkerStage::Decode, PREFERRED, request.dp_rank)?;
-                validate(request, WorkerStage::Prefill, HINT_SOURCE, hint_rank)?;
-            }
-        }
+    DpRankLimits {
+        disaggregated: matches!(spec.topology, ReplayTopology::Disaggregated { .. }),
+        aggregated,
+        prefill,
+        decode,
     }
-    Ok(())
 }
 
 fn admission_queue<Metadata: ReplayAdmissionMetadata>(

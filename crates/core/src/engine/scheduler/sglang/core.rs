@@ -1438,7 +1438,9 @@ impl SglangCore {
             oracle.retire_requests(admit.can_run.iter().map(|request| request.uuid));
         }
 
-        let previously_running = self.running.len();
+        // Freshly prefilled requests stay out of `running` until this pass is done, then join
+        // its back in FIFO order, so the requests that were already running never move.
+        let mut prefilled = Vec::with_capacity(batch_size);
         let mut prefill_completed = Vec::new();
         let mut chunk_commits = Vec::new();
         for mut req in admit.can_run {
@@ -1450,7 +1452,7 @@ impl SglangCore {
                 self.waiting.push_front(req);
             } else {
                 prefill_completed.push(req.uuid);
-                self.running.push(req);
+                prefilled.push(req);
             }
         }
 
@@ -1462,11 +1464,6 @@ impl SglangCore {
         let prefill_pass = batch_size > 0;
         // A fully cached, zero-output request can complete without a forward.
         self.prefill_in_pass = prefill_fpm.iter().any(|item| item.tokens_computed > 0);
-        let mut stalled: Vec<SglangRequest> = if prefill_pass && previously_running > 0 {
-            self.running.drain(..previously_running).collect()
-        } else {
-            Vec::new()
-        };
 
         // The aggregated overlap loop filters rows whose queued result finishes
         // by length. Keep their KV until that result is observed below. If the
@@ -1510,7 +1507,7 @@ impl SglangCore {
         let decode_start_ms = selected_ms + vision_ms;
         let mut decode = if prefill_pass {
             simulate_prefill_first_tokens(
-                &mut self.running,
+                &mut prefilled,
                 &mut self.kv_manager,
                 &self.config,
                 decode_start_ms,
@@ -1559,11 +1556,7 @@ impl SglangCore {
         let forward = forward
             && (!decode.output_signals.is_empty()
                 || decode.decode.as_ref().is_none_or(|shape| shape.charged));
-        if !stalled.is_empty() {
-            // Keep FIFO order: older requests stay ahead of the ones admitted in this pass.
-            stalled.append(&mut self.running);
-            self.running = stalled;
-        }
+        self.running.append(&mut prefilled);
 
         if self.host.is_some() && self.config.worker_type == WorkerType::Prefill {
             // `process_batch_result_disagg_prefill` moves a finished extend to the
@@ -1803,13 +1796,17 @@ impl SglangCore {
             decode: decode_shape
                 .as_mut()
                 .filter(|shape| shape.charged)
-                .map(|shape| DecodeWork {
-                    batch_size: shape.batch_size,
-                    active_kv_tokens: shape.active_kv_tokens,
-                    mean_context_length: shape.mean_context_length,
-                    kv_bound_tokens: self.config.total_kv_tokens,
-                    lengths: std::mem::take(&mut shape.lengths),
-                    verify_width: self.config.speculative_max_tokens.unwrap_or(1),
+                .map(|shape| {
+                    let verify_width = self.config.speculative_max_tokens.unwrap_or(1);
+                    DecodeWork {
+                        batch_size: shape.batch_size,
+                        active_kv_tokens: shape.active_kv_tokens,
+                        mean_context_length: shape.mean_context_length,
+                        kv_bound_tokens: self.config.total_kv_tokens,
+                        widths: vec![verify_width; shape.lengths.len()],
+                        lengths: std::mem::take(&mut shape.lengths),
+                        verify_width,
+                    }
                 }),
         };
         self.host_capacity_blocked = !self.model_work_in_pass

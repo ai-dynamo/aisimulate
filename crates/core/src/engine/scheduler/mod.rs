@@ -168,6 +168,7 @@ pub(crate) fn modeled_duration(raw_ms: f64, speedup_ratio: f64) -> anyhow::Resul
     let modeled_ms = modeled_duration_ms(raw_ms, speedup_ratio)?;
     Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
 }
+pub(crate) mod afd;
 
 /// Rank-local scheduler and native-G1 occupancy metrics.
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -345,11 +346,17 @@ impl EngineCore {
     }
 
     pub(crate) fn prefill_in_pass(&self) -> bool {
-        matches!(self, Self::Sglang(core) if core.prefill_in_pass())
+        match self {
+            Self::Sglang(core) => core.prefill_in_pass(),
+            Self::Vllm(_) => false,
+        }
     }
 
     pub(crate) fn model_work_in_pass(&self) -> bool {
-        matches!(self, Self::Sglang(core) if core.model_work_in_pass())
+        match self {
+            Self::Sglang(core) => core.model_work_in_pass(),
+            Self::Vllm(_) => false,
+        }
     }
 
     /// Duration of the last resolved SGLang forward, excluding preselection waits.
@@ -361,8 +368,9 @@ impl EngineCore {
     }
 
     pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
-        if let Self::Sglang(core) = self {
-            core.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
+        match self {
+            Self::Sglang(core) => core.finish_group_pass(any_rank_prefilled, any_rank_ran_model),
+            Self::Vllm(_) => {}
         }
     }
 
@@ -371,8 +379,9 @@ impl EngineCore {
         registry: crate::engine::g3_offload::SharedG3Tier,
         node: usize,
     ) {
-        if let Self::Vllm(core) = self {
-            core.set_g3_offload(registry, node);
+        match self {
+            Self::Vllm(core) => core.set_g3_offload(registry, node),
+            Self::Sglang(_) => {}
         }
     }
 

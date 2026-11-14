@@ -1,4 +1,4 @@
-# AISimulate Replay Liveness
+# AISim Replay Liveness
 
 Offline replay is a discrete-event simulation. Real runtime scheduling must
 not be mistaken for virtual-time progress or quiescence.

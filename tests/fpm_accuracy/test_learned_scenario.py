@@ -139,7 +139,7 @@ def backend(monkeypatch):
     # after each test when an installed SDK is available.
     monkeypatch.setitem(
         sys.modules,
-        "aisimulate_core.sdk.errors",
+        "aisim_core.sdk.errors",
         SimpleNamespace(PerfDataNotAvailableError=PerfDataNotAvailableError),
     )
     Native.models = []
@@ -325,7 +325,7 @@ def test_failed_native_admission_does_not_seed_a_missing_mixed_store(backend):
 
 @pytest.mark.parametrize("method", ["gbdt", "selector", "hybrid"])
 def test_missing_prior_data_does_not_block_causal_mixed_bootstrap(backend, method):
-    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+    from aisim_core.sdk.errors import PerfDataNotAvailableError
 
     original = [observation(i, kind) for kind in ("prefill", "decode") for i in range(20)]
     model = make(backend, method, rows=original, mixed=Mixed())

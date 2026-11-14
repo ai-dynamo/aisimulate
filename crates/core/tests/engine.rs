@@ -9,18 +9,18 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
-use aisimulate_core::engine::{
+use aisim_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
+use aisim_core::engine::{
     Backend, Command, EncoderShape, Engine, EngineConfig, EngineFactory, FrontendConfig,
     FrontendStage, ImageSpec, IterationMs, NativeHostOffloadConfig, PassCompletionEffects,
     RankWork, Request, SglangConfig, SglangHiCacheConfig, SglangHiCacheWritePolicy, TimingModel,
     TimingModelConfig, VisionShape,
 };
-use aisimulate_core::replay::{
+use aisim_core::replay::{
     AggregatedRoundRobinPlacement, EncoderSpec, NoEngineEvents, NoReplayMetadata,
     PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition,
-    ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest,
-    ReplayRequestPool, ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy,
+    ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayError, ReplayReport,
+    ReplayRequest, ReplayRequestPool, ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy,
     ReplayScalingSnapshot, ReplaySpec, ReplayTerminalStatus, ReplayTopology, Replayer,
     WorkerPoolSpec, WorkerTopology, run_engine_replay, run_engine_replay_with_optional_role_timing,
     run_engine_replay_with_timing,
@@ -465,36 +465,65 @@ fn aggregated_replay_rejects_prefill_dp_rank() {
     assert!(error.to_string().contains("cannot specify prefill_dp_rank"));
 }
 
-#[test]
-fn disaggregated_replay_validates_authored_rank_per_role() {
-    for (prefill_dp_rank, decode_dp_rank, expected) in [
-        (Some(2), Some(0), "prefill placement"),
-        (Some(0), Some(4), "decode placement"),
-    ] {
-        let mut replay = disaggregated_spec(
-            Backend::Vllm,
-            TimingModelConfig::Fixed {
-                prefill_ms: 1.0,
-                decode_ms: 1.0,
-            },
-            TimingModelConfig::Fixed {
-                prefill_ms: 1.0,
-                decode_ms: 1.0,
-            },
-        );
-        let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
-        config.prefill.as_mut().unwrap().dp_size = 2;
-        config.decode.as_mut().unwrap().dp_size = 4;
-        replay.engine = serde_json::to_value(config).unwrap();
-        replay.requests = vec![ReplayRequest {
-            dp_rank: decode_dp_rank,
-            prefill_dp_rank,
-            ..request("out-of-range", 0.0, 4, 2)
-        }];
+fn disaggregated_out_of_range_rank_error(
+    dp_rank: Option<u32>,
+    prefill_dp_rank: Option<u32>,
+) -> ReplayError {
+    let mut replay = disaggregated_spec(
+        Backend::Vllm,
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+        TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        },
+    );
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine.clone()).unwrap();
+    config.prefill.as_mut().unwrap().dp_size = 2;
+    config.decode.as_mut().unwrap().dp_size = 4;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![ReplayRequest {
+        dp_rank,
+        prefill_dp_rank,
+        ..request("out-of-range", 0.0, 4, 2)
+    }];
 
-        let error = run_engine_replay(replay).unwrap_err();
-        assert!(error.to_string().contains(expected), "{error:#}");
-    }
+    run_engine_replay(replay).unwrap_err()
+}
+
+#[test]
+fn disaggregated_replay_rejects_out_of_range_explicit_prefill_dp_rank() {
+    assert_eq!(
+        disaggregated_out_of_range_rank_error(Some(0), Some(2)),
+        ReplayError::InvalidSpec(
+            "request \"out-of-range\" prefill placement: preferred attention-DP rank 2 is out of range for dp_size 2"
+                .to_string(),
+        )
+    );
+}
+
+#[test]
+fn disaggregated_replay_rejects_out_of_range_dp_rank_prefill_fallback() {
+    assert_eq!(
+        disaggregated_out_of_range_rank_error(Some(2), None),
+        ReplayError::InvalidSpec(
+            "request \"out-of-range\" prefill placement: preferred attention-DP rank 2 is out of range for dp_size 2"
+                .to_string(),
+        )
+    );
+}
+
+#[test]
+fn disaggregated_replay_rejects_out_of_range_decode_dp_rank_with_valid_prefill_rank() {
+    assert_eq!(
+        disaggregated_out_of_range_rank_error(Some(4), Some(1)),
+        ReplayError::InvalidSpec(
+            "request \"out-of-range\" decode placement: preferred attention-DP rank 4 is out of range for dp_size 4"
+                .to_string(),
+        )
+    );
 }
 
 #[test]
@@ -1586,7 +1615,7 @@ fn scaling_composition_changes_round_robin_capacity_before_arrival() {
     };
     let report = Replayer::with_composition(
         replay,
-        aisimulate_core::replay::ReplayEngineFactory::new(),
+        aisim_core::replay::ReplayEngineFactory::new(),
         composition,
     )
     .unwrap()
@@ -3049,7 +3078,7 @@ fn sglang_host_loop_launches_the_group_priced_forward_after_observing_the_last()
             .lifecycle_events
             .iter()
             .filter_map(|event| match event {
-                aisimulate_core::engine::LifecycleEvent::TtftMilestone {
+                aisim_core::engine::LifecycleEvent::TtftMilestone {
                     request_id: id,
                     stage,
                     at_ms,
@@ -3065,7 +3094,7 @@ fn sglang_host_loop_launches_the_group_priced_forward_after_observing_the_last()
         ));
         now_ms = started.end_ms;
     }
-    use aisimulate_core::engine::TtftMilestone::{PrefillComplete, Received, Selected};
+    use aisim_core::engine::TtftMilestone::{PrefillComplete, Received, Selected};
     // Hand oracle: the 4 ms prefill launches at 0 and its loop returns at
     // once; the next iteration observes it at 4 ms and launches a 3 ms
     // decode, observed at 7 ms. The queued result finishes by length, so its

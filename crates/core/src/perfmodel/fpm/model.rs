@@ -623,7 +623,7 @@ impl ForwardPassPerfModel {
     ///
     /// Description: create a forward-pass model from an offline-trained learned
     /// artifact (`aic_fpm_learned_forward_perf` JSON written by the Python
-    /// `aisimulate_core.sdk.fpm_learned` trainer).
+    /// `aisim_core.sdk.fpm_learned` trainer).
     ///
     /// `source` is either a filesystem path or the artifact JSON text itself
     /// (detected by a leading `{`). The artifact binds the worker type and the
@@ -867,6 +867,14 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if config.afd_pool_role.is_some() && mode != EstimationMode::OpLevel {
+                return Err(last_error.unwrap_or_else(|| {
+                    AicError::NotImplemented(
+                    "AFD pools cannot select whole-forward estimators; op_level preparation failed"
+                        .into(),
+                )
+                }));
+            }
             if mode == EstimationMode::OpLevel && registered == Some(false) {
                 let error = AicError::UnsupportedModel(format!(
                     "op-level timing requires a registered architecture for {:?}",
@@ -2716,7 +2724,7 @@ fn prepare_learned_iteration(
         return Err(AicError::InvalidForwardPassMetrics(
             "learned artifact uses per-request features but the iteration carries no aligned, \
              consistent extend_lengths/past_kv_lengths on every active rank; collect with the \
-             per-request FPM hooks (aisimulate_core.fpm_hooks) or retrain with the default \
+             per-request FPM hooks (aisim_core.fpm_hooks) or retrain with the default \
              aggregate --features fpm5 (or v1)"
                 .to_string(),
         ));

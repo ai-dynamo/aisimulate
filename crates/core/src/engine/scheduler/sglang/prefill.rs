@@ -67,7 +67,9 @@ pub(super) fn get_new_batch_prefill(
         .saturating_sub(running.len() + occupied_request_slots);
     // An in-flight chunk owns KV and must run before newly matched requests,
     // including under LPM or a full running batch.
-    if let Some(index) = waiting.iter().position(|req| req.materialized_tokens > 0) {
+    if waiting.has_continuation()
+        && let Some(index) = waiting.iter().position(|req| req.materialized_tokens > 0)
+    {
         let continuation = waiting.remove(index).expect("continuation is queued");
         waiting.push_front(continuation);
     }
