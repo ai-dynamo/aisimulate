@@ -224,7 +224,10 @@ def test_selective_hicache_does_not_inflate_unbacked_swa_room(hicache):
     requests += [_request("continuation", prompts[0] + [99_999], at=600.0)]
     rows = _native(public, requests)
     assert rows["continuation"]["first_admission_reused_input_tokens"] == 0
-    assert all(row["first_admission_host_reused_input_tokens"] == 0 for row in rows.values())
+    if hicache:
+        assert all(row["first_admission_host_reused_input_tokens"] == 0 for row in rows.values())
+    else:
+        assert all("first_admission_host_reused_input_tokens" not in row for row in rows.values())
 
 
 def _token_balanced_public():
@@ -236,6 +239,10 @@ def _token_balanced_public():
     return public
 
 
+def _decode_rank(row):
+    return next(route["dp_rank"] for route in row["routing_history"] if route["pool"] == "decode")
+
+
 def test_native_token_balance_mixed_output_budgets():
     rows = _native(
         _token_balanced_public(),
@@ -244,7 +251,7 @@ def test_native_token_balance_mixed_output_budgets():
             for i, (prompt, budget) in enumerate([(1000, 1), (1, 10_000), (1, 1)])
         ],
     )
-    assert [rows[str(i)]["decode_dp_rank"] for i in range(3)] == [0, 1, 1]
+    assert [_decode_rank(rows[str(i)]) for i in range(3)] == [0, 1, 1]
 
 
 def test_native_token_balance_refreshes_generated_kv_and_terminal_load():
@@ -259,4 +266,5 @@ def test_native_token_balance_refreshes_generated_kv_and_terminal_load():
             _request("after-idle", [3], at=500.0),
         ],
     )
-    assert [rows[key]["decode_dp_rank"] for key in rows] == [0, 1, 1, 0]
+    keys = ("long-output", "long-prompt", "after-growth", "after-idle")
+    assert [_decode_rank(rows[key]) for key in keys] == [0, 1, 1, 0]
