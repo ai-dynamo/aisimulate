@@ -1054,6 +1054,7 @@ def save_results(
                         task_config=row_task,
                         result_df=result_df,
                         generator_overrides=generator_overrides,
+                        backend_version=row_backend_version,
                     )
 
                     generator_config_yaml = yaml.safe_dump(cfg, sort_keys=False)

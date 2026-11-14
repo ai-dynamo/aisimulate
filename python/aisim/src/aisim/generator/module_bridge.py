@@ -122,6 +122,7 @@ def task_config_to_generator_config(
     result_df: pd.Series,
     generator_overrides: dict | None = None,
     num_gpus_per_node: int | None = None,
+    backend_version: str | None = None,
 ) -> dict:
     """Convert a task config/result row into unified generator parameters.
 
@@ -131,6 +132,10 @@ def task_config_to_generator_config(
         generator_overrides: Optional overrides dict from CLI flags.
         num_gpus_per_node: If set, overrides the NodeConfig.num_gpus_per_node
             in the generated config.
+        backend_version: The backend version the artifacts will be rendered
+            for. Context-parallel knobs are checked against this version,
+            since it picks the cli_args template. Defaults to the task's
+            perf-database version.
     """
 
     # Fail closed: rendering an EPD row would emit a deploy config that
@@ -171,6 +176,7 @@ def task_config_to_generator_config(
     ):
         encoder_dp = bool(getattr(task_config, "enable_encoder_dp", True))
     attention_backend = getattr(task_config, "attention_backend", None)
+    render_backend_version = backend_version or getattr(task_config, "primary_backend_version", None)
 
     def _build_worker_params(prefix: str, extra_overrides: dict | None) -> tuple[dict, int]:
         workers = _safe_int(_series_val(result_df, f"{prefix}workers", 1), 1)
@@ -230,7 +236,7 @@ def task_config_to_generator_config(
         # and knobs the backend version cannot launch, and derives cp_strategy.
         effective = context_parallel_params(
             backend=task_config.primary_backend_name,
-            backend_version=getattr(task_config, "primary_backend_version", None),
+            backend_version=render_backend_version,
             context_parallel_size=worker_payload.pop("context_parallel_size", 1),
             decode_context_parallel_size=worker_payload.pop("decode_context_parallel_size", 1),
             dcp_comm_backend=worker_payload.pop("dcp_comm_backend", None),
